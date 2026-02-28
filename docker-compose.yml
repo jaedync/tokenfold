@@ -1,0 +1,13 @@
+services:
+  tokenfold:
+    build: .
+    container_name: tokenfold
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - STATS_API_KEY=${STATS_API_KEY}
+      - TZ=${TZ:-America/Chicago}
+      # - STATS_OWNER=your-name
