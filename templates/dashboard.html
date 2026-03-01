@@ -532,6 +532,21 @@ body {
   text-transform: uppercase;
 }
 
+.rate-limits-updated {
+  margin-left: auto;
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--gray-dim);
+  white-space: nowrap;
+}
+
+.rate-limits-updated--stale {
+  color: var(--red);
+  font-weight: 700;
+}
+
 .rate-limits-grid {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -1233,7 +1248,8 @@ th[data-info]:hover::after { opacity: 1; }
 
   .rate-limits-grid { grid-template-columns: 1fr; }
   .rate-gauge + .rate-gauge { border-left: none; border-top: var(--border); }
-  .rate-limits-header { padding: 1rem 1.2rem 0; }
+  .rate-limits-header { padding: 1rem 1.2rem 0; flex-wrap: wrap; }
+  .rate-limits-updated { font-size: 0.55rem; }
   .rate-gauge { padding: 1.2rem; }
   .rate-gauge-stats { flex-wrap: wrap; }
   .rate-gauge-stat { flex: 1 1 40%; }
@@ -1389,6 +1405,7 @@ th[data-info]:hover::after { opacity: 1; }
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
     <h2>Rate Limits</h2>
+    <span id="rateLimitsUpdated" class="rate-limits-updated"></span>
   </div>
   <div id="rateLimitsGrid" class="rate-limits-grid"></div>
 </div>
@@ -2393,6 +2410,31 @@ function renderMode(mode) {
     html += buildGauge('5-Hour Window', hPct, fmtReset(wb.five_hour_resets_at), hExpected);
 
     grid.innerHTML = html;
+  })();
+
+  /* ── Rate limits staleness indicator ── */
+  (function(){
+    var wb = D.weekly_budget;
+    var el = document.getElementById('rateLimitsUpdated');
+    if(!el || !wb || wb.source !== 'oauth') return;
+    var STALE_S = 900; // 15 min = 3 missed cron cycles
+    function update() {
+      if(!wb.updated_at) { el.textContent = ''; return; }
+      var ageSec = (Date.now() / 1000) - wb.updated_at;
+      var text;
+      if(ageSec < 60) text = 'updated just now';
+      else if(ageSec < 3600) text = 'updated ' + Math.floor(ageSec / 60) + 'm ago';
+      else if(ageSec < 86400) {
+        var h = Math.floor(ageSec / 3600);
+        var m = Math.floor((ageSec % 3600) / 60);
+        text = 'updated ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '') + ' ago';
+      } else text = 'updated ' + Math.floor(ageSec / 86400) + 'd ago';
+      var stale = ageSec > STALE_S;
+      el.textContent = stale ? '\u26a0 ' + text : text;
+      el.classList.toggle('rate-limits-updated--stale', stale);
+    }
+    update();
+    setInterval(update, 30000);
   })();
 
   /* ── Cost by Model stacked bar ── */

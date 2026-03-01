@@ -33,6 +33,11 @@ def log(msg):
         print(f"[tokenfold] {msg}", file=sys.stderr)
 
 
+def err(msg):
+    """Always print to stderr — not gated on VERBOSE."""
+    print(f"[tokenfold] {msg}", file=sys.stderr)
+
+
 def load_cursors() -> dict:
     if CURSOR_FILE.exists():
         try:
@@ -167,12 +172,12 @@ def _get_oauth_token() -> str | None:
         creds = json.loads(CREDENTIALS_FILE.read_text())
         oauth = creds.get("claudeAiOauth", {})
     except (json.JSONDecodeError, OSError) as e:
-        log(f"Cannot read credentials: {e}")
+        err(f"Cannot read credentials: {e}")
         return None
 
     token = oauth.get("accessToken")
     if not token:
-        log("No access token in credentials")
+        err("No access token in credentials")
         return None
 
     expires_at = oauth.get("expiresAt", 0)
@@ -181,7 +186,7 @@ def _get_oauth_token() -> str | None:
     if expires_at - now_ms < 300_000:
         refresh_token = oauth.get("refreshToken")
         if not refresh_token:
-            log("Token expired, no refresh token")
+            err("Token expired, no refresh token")
             return None
         log("Refreshing OAuth token")
         try:
@@ -211,29 +216,39 @@ def _get_oauth_token() -> str | None:
             CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2))
             log("Token refreshed successfully")
             return new_token
+        except urllib.error.HTTPError as e:
+            err(f"Token refresh failed: HTTP {e.code}")
+            return None
         except Exception as e:
-            log(f"Token refresh failed: {e}")
+            err(f"Token refresh failed: {e}")
             return None
 
     return token
 
 
 def _fetch_usage(token: str) -> dict | None:
-    """Fetch usage data from Anthropic OAuth API."""
-    try:
-        req = urllib.request.Request(
-            "https://api.anthropic.com/api/oauth/usage",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        log(f"Usage fetch failed: {e}")
-        return None
+    """Fetch usage data from Anthropic OAuth API (retries once on server/network errors)."""
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                "https://api.anthropic.com/api/oauth/usage",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "Content-Type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            err(f"Usage fetch failed: HTTP {e.code}")
+            if e.code < 500:
+                return None  # client error — don't retry
+        except Exception as e:
+            err(f"Usage fetch failed: {e}")
+        if attempt == 0:
+            time.sleep(2)
+    return None
 
 
 def _push_usage(usage_data: dict):
@@ -255,8 +270,10 @@ def _push_usage(usage_data: dict):
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
             log(f"Usage pushed: {result}")
+    except urllib.error.HTTPError as e:
+        err(f"Usage push failed: HTTP {e.code}")
     except Exception as e:
-        log(f"Usage push failed: {e}")
+        err(f"Usage push failed: {e}")
 
 
 def main():
