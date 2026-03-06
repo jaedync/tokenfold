@@ -45,11 +45,12 @@ elif [ "$HOOK_EVENT" = "Stop" ]; then
     # No genuine user prompt found = automated/bot session, skip notification
     [ -z "$LAST_USER_TS" ] && exit 0
 
-    # Parse timestamp to epoch — macOS uses -j -f, Linux uses -d
-    if date -d "$LAST_USER_TS" +%s >/dev/null 2>&1; then
-      START_EPOCH=$(date -d "$LAST_USER_TS" +%s)
-    elif date -j -f "%Y-%m-%dT%H:%M:%S" "${LAST_USER_TS%%.*}" +%s >/dev/null 2>&1; then
-      START_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${LAST_USER_TS%%.*}" +%s)
+    # Parse timestamp to epoch — timestamps are UTC (trailing Z)
+    # macOS date -j doesn't support %z, so force TZ=UTC for parsing
+    if TZ=UTC date -d "$LAST_USER_TS" +%s >/dev/null 2>&1; then
+      START_EPOCH=$(TZ=UTC date -d "$LAST_USER_TS" +%s)
+    elif TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${LAST_USER_TS%%.*}" +%s >/dev/null 2>&1; then
+      START_EPOCH=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${LAST_USER_TS%%.*}" +%s)
     else
       START_EPOCH=""
     fi
