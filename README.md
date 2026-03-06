@@ -119,8 +119,8 @@ Then add to `~/.claude/settings.json`:
 ```json
 {
   "hooks": {
-    "Stop": [{ "type": "command", "command": "bash ~/notify-relay.sh" }],
-    "Notification": [{ "type": "command", "command": "bash ~/notify-relay.sh" }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "bash ~/notify-relay.sh", "timeout": 10 }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "bash ~/notify-relay.sh", "timeout": 10 }] }]
   }
 }
 ```
