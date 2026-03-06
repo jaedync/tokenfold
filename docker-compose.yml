@@ -7,7 +7,22 @@ services:
       - "5000:5000"
     volumes:
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - STATS_API_KEY=${STATS_API_KEY}
+      - DB_PATH=/app/data/claude_stats.db
       - TZ=${TZ:-America/Chicago}
       # - STATS_OWNER=your-name
+      # Notification relay
+      - NOTIFY_TOKEN=${NOTIFY_TOKEN}
+      - HA_URL=${HA_URL}
+      - HA_TOKEN=${HA_TOKEN}
+      - HA_DEVICES=${HA_DEVICES}
+    networks:
+      - default
+      - services_app_network
+
+networks:
+  services_app_network:
+    external: true

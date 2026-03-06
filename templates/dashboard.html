@@ -765,6 +765,267 @@ body {
   font-weight: 700;
 }
 
+/* ---- ENVIRONMENTAL IMPACT BAR ---- */
+
+.env-bar {
+  border-bottom: var(--border);
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 1rem 2.5rem;
+  background: var(--bg);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.env-bar:hover {
+  background: rgba(0,0,0,0.02);
+}
+
+.env-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.env-icon {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.env-equiv-text {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+  display: inline-block;
+  min-width: 16em;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 0% 1px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  transition: opacity 0.5s ease, color 0.15s, background-size 0.3s ease;
+}
+.env-equiv-text.fading { opacity: 0; }
+.env-bar:hover .env-equiv-text {
+  color: var(--black);
+  background-size: 100% 1px;
+}
+.env-bar:hover .env-value { color: var(--red); }
+.env-bar:hover .env-label { color: var(--black); }
+
+.env-label {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  transition: color 0.15s;
+}
+
+.env-value {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
+  color: var(--black);
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.env-unit {
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--gray-dim);
+  margin-left: 2px;
+}
+
+/* Info modal overlay */
+.env-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.55);
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.env-modal-overlay.visible { display: flex; }
+
+.env-modal {
+  background: var(--bg);
+  border: var(--border);
+  max-width: 620px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+.env-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.2rem 1.5rem;
+  border-bottom: 3px solid var(--black);
+  background: var(--black);
+  color: var(--bg);
+}
+
+.env-modal-header h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.env-modal-close {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--bg);
+  background: transparent;
+  color: var(--bg);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.env-modal-close:hover {
+  background: var(--red);
+}
+
+.env-modal-body {
+  padding: 1.5rem;
+}
+
+.env-modal-section {
+  margin-bottom: 1.2rem;
+}
+
+.env-modal-section:last-child { margin-bottom: 0; }
+
+.env-modal-section-title {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--black);
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--gray-light);
+}
+
+.env-modal-body p,
+.env-modal-body li {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--black);
+}
+
+.env-modal-body ul {
+  list-style: none;
+  padding: 0;
+}
+
+.env-modal-body li::before {
+  content: "\25A0";
+  color: var(--red);
+  font-size: 0.55rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.env-modal-formula {
+  background: var(--black);
+  color: var(--bg);
+  padding: 0.8rem 1rem;
+  font-family: 'DM Sans', monospace;
+  font-size: 0.75rem;
+  line-height: 1.7;
+  margin: 0.6rem 0;
+  border-left: 4px solid var(--red);
+}
+
+.env-modal-note {
+  font-size: 0.72rem !important;
+  color: var(--gray-dim) !important;
+  font-style: italic;
+}
+
+/* Comparisons bar chart in modal */
+.env-comparisons { margin: 0.4rem 0 0; }
+
+.env-cmp-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 70px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.78rem;
+}
+
+.env-cmp-label {
+  font-weight: 500;
+  color: var(--black);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.env-cmp-track {
+  height: 16px;
+  background: var(--gray-light);
+  position: relative;
+  overflow: hidden;
+}
+
+.env-cmp-fill {
+  height: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transition: width 0.4s ease;
+}
+
+.env-cmp-value {
+  font-size: 0.72rem;
+  color: var(--gray-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.env-cmp-you { font-weight: 700; }
+.env-cmp-you .env-cmp-label { color: var(--red); }
+.env-cmp-you .env-cmp-fill { background: var(--red); }
+
+.env-cmp-note {
+  font-size: 0.68rem;
+  color: var(--gray-dim);
+  margin-top: 8px;
+  line-height: 1.5;
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .env-bar { padding: 0.8rem 1.2rem; gap: 1.2rem; flex-wrap: wrap; }
+  .env-value { font-size: 1.1rem; }
+}
+
+@media (max-width: 480px) {
+  .env-bar { padding: 0.6rem 0.8rem; gap: 0.8rem; }
+  .env-value { font-size: 1rem; }
+  .env-label { font-size: 0.62rem; }
+  .env-modal { max-height: 90vh; }
+  .env-modal-body { padding: 1rem; }
+}
+
 /* ---- SECTION HEADERS ---- */
 
 .section-header {
@@ -996,7 +1257,7 @@ tr:hover td { background: rgba(26, 26, 26, 0.03); }
 
 .mb-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   padding: 12px 8px 4px;
 }
@@ -1175,6 +1436,7 @@ th[data-info]:hover::after { opacity: 1; }
 .cost-hero-label { animation: clipRight 0.4s 0.5s cubic-bezier(0.77,0,0.175,1) both; }
 .cost-hero-value { animation: clipRight 0.6s 0.55s cubic-bezier(0.77,0,0.175,1) both; }
 .cost-hero-period { animation: clipRight 0.35s 0.7s cubic-bezier(0.77,0,0.175,1) both; }
+.env-bar { animation: clipRight 0.4s 0.75s cubic-bezier(0.77,0,0.175,1) both; }
 
 /* Section headers: bar grows down, text sweeps right - triggered on scroll */
 .section-header .section-header-bar {
@@ -1199,7 +1461,8 @@ th[data-info]:hover::after { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .header-title, .header-subtitle-band, .header-geo-block,
   .date-bar, .stat-card, .cost-hero-label, .cost-hero-value,
-  .cost-hero-period { animation: none !important; }
+  .cost-hero-period, .env-bar { animation: none !important; }
+  .env-equiv-text { transition: none !important; }
   .section-header .section-header-bar { transform: none !important; transition: none !important; }
   .section-header h2 { clip-path: none !important; transition: none !important; }
   .footer { clip-path: none !important; transition: none !important; }
@@ -1376,6 +1639,7 @@ th[data-info]:hover::after { opacity: 1; }
     <div id="refreshIndicator" class="refresh-indicator">DATA UPDATED</div>
     <div class="machine-pills">{{ machines_pills|safe }}</div>
     <div class="mode-toggle">
+      <button class="mode-btn" data-mode="today" onclick="setMode('today')">Today</button>
       <button class="mode-btn" data-mode="14d" onclick="setMode('14d')">14 Days</button>
       <button class="mode-btn" data-mode="all" onclick="setMode('all')">All Time</button>
     </div>
@@ -1399,6 +1663,88 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 <div id="costMeta" class="cost-meta-bar"></div>
+
+<!-- ======== ENVIRONMENTAL IMPACT ======== -->
+<div id="envBar" class="env-bar" style="display:none">
+  <div class="env-metric">
+    <span class="env-label">Energy</span>
+    <span class="env-value" id="envEnergy">—</span>
+    <span class="env-unit" id="envEnergyUnit">Wh</span>
+  </div>
+  <div class="env-metric">
+    <span class="env-label">Water</span>
+    <span class="env-value" id="envWater">—</span>
+    <span class="env-unit" id="envWaterUnit">mL</span>
+  </div>
+  <div class="env-metric" id="envEquiv" style="display:none">
+    <span class="env-equiv-text" id="envEquivVal"></span>
+  </div>
+</div>
+
+<!-- Environmental methodology modal -->
+<div class="env-modal-overlay" id="envModal">
+  <div class="env-modal">
+    <div class="env-modal-header">
+      <h3>Estimation Methodology</h3>
+      <button class="env-modal-close" id="envModalClose">&times;</button>
+    </div>
+    <div class="env-modal-body">
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">Energy Per Token</div>
+        <ul>
+          <li><strong>&ldquo;How Hungry is AI?&rdquo;</strong> (arXiv:2505.09598, 2025) &mdash; measured Claude 3.7 Sonnet at 5.5 Wh per long query (10K in / 1.5K out)</li>
+          <li><strong>Epoch AI</strong> (2024) &mdash; bottom-up GPU energy model: E&nbsp;=&nbsp;tokens&nbsp;&times;&nbsp;2&nbsp;&times;&nbsp;active_params&nbsp;/&nbsp;(GPU_FLOPS&nbsp;&times;&nbsp;utilization)&nbsp;&times;&nbsp;power</li>
+          <li><strong>Simon Couch</strong> (2026) &mdash; Claude Code field estimates: ~1,950&nbsp;Wh/MTok output, ~390&nbsp;Wh/MTok input for Sonnet-class</li>
+          <li>Output tokens use ~5x more energy than input (autoregressive decode vs parallel prefill)</li>
+          <li>Cross-model scaling via Anthropic pricing ratios as compute proxy</li>
+        </ul>
+      </div>
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">Anthropic Infrastructure &amp; Cooling</div>
+        <ul>
+          <li><strong>AWS Trainium2</strong> (Project Rainier: IN, PA, MS) &mdash; direct-to-chip liquid cooling in a <strong>closed-loop</strong> system. AWS states this &ldquo;does not increase water consumption.&rdquo; Facility WUE: 0.15&nbsp;L/kWh; AI rack estimate: ~0.08&nbsp;L/kWh</li>
+          <li><strong>Google Cloud TPU v6+</strong> (Trillium, Ironwood) &mdash; liquid cooling with split-flow cold plates since TPU&nbsp;v3. Removes 70&ndash;75% of rack heat through liquid, not evaporative. Per-rack PUE: 1.02&ndash;1.03. Facility WUE: ~1.04&nbsp;L/kWh; TPU rack estimate: ~0.30&nbsp;L/kWh</li>
+          <li><strong>Azure NVIDIA</strong> (Grace Blackwell, Vera Rubin) &mdash; transitioning to liquid cooling for AI clusters. Microsoft historical WUE: ~1.8&nbsp;L/kWh; AI rack estimate: ~0.70&nbsp;L/kWh</li>
+        </ul>
+        <p class="env-modal-note">Facility-level WUE averages overstate water use for AI inference because modern accelerator racks use liquid cooling, not evaporative. We estimate rack-level WUE per provider, then blend equally: (0.08 + 0.30 + 0.70)&nbsp;/&nbsp;3 &asymp; 0.36&nbsp;L/kWh</p>
+      </div>
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">Data Center Efficiency</div>
+        <ul>
+          <li><strong>PUE 1.12</strong> &mdash; blended from AWS 1.15, Google 1.09 (2024 sustainability reports)</li>
+          <li><strong>On-site WUE 0.36 L/kWh</strong> &mdash; AI rack-level blend across three providers (see above)</li>
+          <li><strong>Grid water 0.50 L/kWh</strong> &mdash; US grid avg 1.8, adjusted for ~60% renewable procurement (wind/solar = near-zero water)</li>
+        </ul>
+      </div>
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">Formula</div>
+        <div class="env-modal-formula">
+          Water (mL) = Energy (Wh) &times; PUE &times; (WUE + Grid Water)<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= Energy &times; 1.12 &times; (0.36 + 0.50)<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= Energy &times; 0.963 mL/Wh
+        </div>
+        <p class="env-modal-note">Only inference compute is counted (token generation &amp; prefill). Tool execution wait time, network latency, and idle time are excluded.</p>
+      </div>
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">For Comparison</div>
+        <div id="envComparisons" class="env-comparisons"></div>
+      </div>
+      <div class="env-modal-section">
+        <div class="env-modal-section-title">Sources</div>
+        <ul>
+          <li>Jegham et al., &ldquo;How Hungry is AI?&rdquo; arXiv:2505.09598 (2025)</li>
+          <li>Epoch AI, &ldquo;How Much Energy Does ChatGPT Use?&rdquo; (2024)</li>
+          <li>Li et al., &ldquo;Making AI Less Thirsty,&rdquo; CACM (2025)</li>
+          <li>Couch, &ldquo;Electricity Use of AI Coding Agents&rdquo; (2026)</li>
+          <li>AWS 2024 Sustainability Report &mdash; PUE 1.15, WUE 0.15 L/kWh</li>
+          <li>Google 2024 Environmental Report &mdash; PUE 1.09</li>
+          <li>Water Footprint Network &mdash; product water footprints</li>
+          <li>USGS &mdash; water use estimates</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ======== RATE LIMITS ======== -->
 <div id="rateLimitsSection" class="rate-limits" style="display:none">
@@ -1992,10 +2338,17 @@ function renderMode(mode) {
   _tCharts = [];
 
   const isRecent = mode === '14d';
+  const isToday = mode === 'today';
+  const todayMB = isToday ? (D.today.model_breakdown || []) : null;
   const cphFilterKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
-  const activeMB = mb.filter(m => m[cphFilterKey] != null && m[cphFilterKey] > 0);
+  const activeMB = isToday
+    ? todayMB.filter(m => m.cost > 0 || m.api_calls > 0)
+    : mb.filter(m => m[cphFilterKey] != null && m[cphFilterKey] > 0);
   const cutoff = D.cutoff_date;
-  const daily = isRecent ? D.daily.filter(d => d.date >= cutoff) : D.daily;
+  const todayStr = D.generation_time.slice(0, 10); // YYYY-MM-DD from server TZ
+  const daily = isToday
+    ? D.daily.filter(d => d.date === todayStr)
+    : isRecent ? D.daily.filter(d => d.date >= cutoff) : D.daily;
   const dates = daily.map(d => { const p=d.date.split('-'); return p[1]+'/'+p[2]; });
 
   const numDays = daily.length || 1;
@@ -2006,7 +2359,7 @@ function renderMode(mode) {
   const totSessions = daily.reduce((s,d) => s+d.sessions, 0);
   const modelsUsed = activeMB.length;
 
-  const subagentTime = isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
+  const subagentTime = isToday ? (D.today.time_breakdown.subagent || 0) : isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
   const cardAnims = [
     [isRecent ? totSessions : D.cards.sessions, fN],
     [totPrompts, fN],
@@ -2018,7 +2371,7 @@ function renderMode(mode) {
     [Math.round(totActive/numDays), fT],
   ];
 
-  const toolData_ = isRecent ? (D.recent_tools||D.tools) : D.tools;
+  const toolData_ = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
   const topTool = Object.keys(toolData_)[0] || '-';
   const today = daily.length ? daily[daily.length - 1] : null;
   const todayPrompts = today ? today.prompts : 0;
@@ -2155,9 +2508,9 @@ function renderMode(mode) {
   }));
 
   /* ── Cost banner ── */
-  const totalCost = isRecent ? mb.reduce((s,m)=>s+m.recent_cost,0) : D.total_cost;
-  const orchCost = isRecent ? mb.reduce((s,m)=>s+m.recent_main_cost,0) : D.total_orch_cost;
-  const agentCost = isRecent ? mb.reduce((s,m)=>s+m.recent_agent_cost,0) : D.total_agent_cost;
+  const totalCost = isToday ? activeMB.reduce((s,m)=>s+m.cost,0) : isRecent ? mb.reduce((s,m)=>s+m.recent_cost,0) : D.total_cost;
+  const orchCost = isToday ? activeMB.reduce((s,m)=>s+m.main_cost,0) : isRecent ? mb.reduce((s,m)=>s+m.recent_main_cost,0) : D.total_orch_cost;
+  const agentCost = isToday ? activeMB.reduce((s,m)=>s+m.agent_cost,0) : isRecent ? mb.reduce((s,m)=>s+m.recent_agent_cost,0) : D.total_agent_cost;
   const costEl = document.getElementById('costAnim');
   animateCardValue(costEl, totalCost, fC, 1200, true);
   document.getElementById('costSplit').innerHTML =
@@ -2173,6 +2526,111 @@ function renderMode(mode) {
     return '<span>'+m.model+'</span> '+fC(m[cKey])+' ('+parts.join(', ')+')';
   });
   document.getElementById('costMeta').innerHTML = costParts.join('<br>');
+
+  /* ── Environmental impact bar ── */
+  var _envTotalW = 0;
+  (function(){
+    var totalE = 0, totalW = 0;
+    activeMB.forEach(function(m){
+      totalE += isRecent ? m.recent_energy_wh : m.energy_wh;
+      totalW += isRecent ? m.recent_water_ml : m.water_ml;
+    });
+    _envTotalW = totalW;
+    var bar = document.getElementById('envBar');
+    if (totalE <= 0) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+
+    var eEl = document.getElementById('envEnergy');
+    var eUn = document.getElementById('envEnergyUnit');
+    if (totalE >= 1000) { eEl.textContent = (totalE/1000).toFixed(1); eUn.textContent = 'kWh'; }
+    else { eEl.textContent = Math.round(totalE).toString(); eUn.textContent = 'Wh'; }
+
+    var wEl = document.getElementById('envWater');
+    var wUn = document.getElementById('envWaterUnit');
+    if (totalW >= 1000) { wEl.textContent = (totalW/1000).toFixed(2); wUn.textContent = 'L'; }
+    else { wEl.textContent = Math.round(totalW).toString(); wUn.textContent = 'mL'; }
+
+    // Water equivalent — cycling municipal water comparisons (mL units)
+    var eq = document.getElementById('envEquiv');
+    var eqVal = document.getElementById('envEquivVal');
+    if (totalW >= 25) {
+      eq.style.display = '';
+      var comparisons = [];
+      var v;
+      v = totalW / 75000;  if (v >= 0.01) comparisons.push(v >= 1 ? v.toFixed(1) + ' ten-minute showers' : (v*100).toFixed(0) + '% of a 10-min shower');
+      v = totalW / 50000;  if (v >= 0.01) comparisons.push(v >= 1 ? v.toFixed(1) + ' washing machine loads' : (v*100).toFixed(0) + '% of a washing machine load');
+      v = totalW / 25000;  if (v >= 0.01) comparisons.push(v >= 1 ? v.toFixed(1) + ' dishwashing sessions' : (v*100).toFixed(0) + '% of a dishwashing session');
+      v = totalW / 6000;   if (v >= 0.1) comparisons.push(v >= 1 ? v.toFixed(1) + ' toilet flushes' : (v*100).toFixed(0) + '% of a toilet flush');
+      v = totalW / 4000;   if (v >= 0.1) comparisons.push(v >= 1 ? v.toFixed(1) + '\u00d7 brushing teeth (tap running)' : (v*100).toFixed(0) + '% of brushing teeth');
+      v = totalW / 250;    if (v >= 0.5) comparisons.push(v >= 1 ? v.toFixed(1) + ' glasses of water' : (v*100).toFixed(0) + '% of a glass of water');
+      if (comparisons.length === 0) comparisons.push(Math.round(totalW) + ' mL');
+
+      var idx = 0;
+      eqVal.textContent = '\u2248 ' + comparisons[0];
+      if (comparisons.length > 1) {
+        setInterval(function(){
+          eqVal.classList.add('fading');
+          setTimeout(function(){
+            idx = (idx + 1) % comparisons.length;
+            eqVal.textContent = '\u2248 ' + comparisons[idx];
+            eqVal.classList.remove('fading');
+          }, 500);
+        }, 15000);
+      }
+    }
+  })();
+
+  /* ── Environmental info modal + comparisons chart ── */
+  (function(){
+    var bar = document.getElementById('envBar');
+    var modal = document.getElementById('envModal');
+    var close = document.getElementById('envModalClose');
+    if(!bar||!modal)return;
+    bar.onclick = function(){
+      modal.classList.add('visible');
+      buildComparisons();
+    };
+    close.onclick = function(){ modal.classList.remove('visible'); };
+    modal.onclick = function(e){ if(e.target===modal) modal.classList.remove('visible'); };
+    document.addEventListener('keydown', function(e){ if(e.key==='Escape') modal.classList.remove('visible'); });
+
+    var cmpBuilt = false;
+    function buildComparisons(){
+      if(cmpBuilt) return;
+      cmpBuilt = true;
+      var w = _envTotalW;
+      var el = document.getElementById('envComparisons');
+      if(!el||w<=0) return;
+      // Municipal water comparisons in mL (USGS, EPA)
+      var items = [
+        {label:'Your Claude usage', ml:w, color:'var(--red)', you:true},
+        {label:'10-min shower', ml:75000, color:'#4a90d9'},
+        {label:'Washing machine load', ml:50000, color:'var(--blue)'},
+        {label:'5-min dishwashing', ml:25000, color:'var(--yellow)'},
+        {label:'One toilet flush', ml:6000, color:'var(--gray-dim)'},
+        {label:'Brushing teeth (tap running)', ml:4000, color:'#5bb5e0'},
+        {label:'Glass of drinking water', ml:250, color:'#2ca02c'},
+      ];
+      // Scale: find max, but cap so tiny bars are still visible
+      var maxMl = Math.max.apply(null, items.map(function(x){return x.ml;}));
+      var html = '';
+      items.forEach(function(it){
+        var pct = Math.max(it.ml / maxMl * 100, 0.5);
+        var cls = it.you ? 'env-cmp-row env-cmp-you' : 'env-cmp-row';
+        var valStr;
+        if(it.ml >= 1000000) valStr = (it.ml/1000000).toFixed(1) + ' m\u00B3';
+        else if(it.ml >= 1000) valStr = (it.ml/1000).toFixed(1) + ' L';
+        else valStr = Math.round(it.ml) + ' mL';
+        html += '<div class="'+cls+'">'
+          +'<div class="env-cmp-label">'+it.label+'</div>'
+          +'<div class="env-cmp-track"><div class="env-cmp-fill" style="width:'+pct.toFixed(2)+'%;background:'+it.color+'"></div></div>'
+          +'<div class="env-cmp-value">'+valStr+'</div></div>';
+      });
+      html += '<p class="env-cmp-note">All figures are municipal/treated water &mdash; the same type used by data center cooling systems. '
+        +'Supply-chain water footprints (e.g. food production) are excluded as they are mostly rain, not comparable.</p>';
+      el.innerHTML = html;
+    }
+  })();
 
   /* ── Rate limits section (from OAuth utilization) ── */
   (function(){
@@ -2419,8 +2877,9 @@ function renderMode(mode) {
     if(!el || !wb || wb.source !== 'oauth') return;
     var STALE_S = 900; // 15 min = 3 missed cron cycles
     function update() {
-      if(!wb.updated_at) { el.textContent = ''; return; }
-      var ageSec = (Date.now() / 1000) - wb.updated_at;
+      var epoch = wb.updated_at_epoch;
+      if(!epoch) { el.textContent = ''; return; }
+      var ageSec = (Date.now() / 1000) - epoch;
       var text;
       if(ageSec < 60) text = 'updated just now';
       else if(ageSec < 3600) text = 'updated ' + Math.floor(ageSec / 60) + 'm ago';
@@ -2520,9 +2979,9 @@ function renderMode(mode) {
   }
 
   /* ── Time Breakdown doughnut ── */
-  const tbThink = isRecent ? D.time_breakdown.recent_thinking : D.time_breakdown.thinking;
-  const tbTool = isRecent ? D.time_breakdown.recent_tool_execution : D.time_breakdown.tool_execution;
-  const tbSub = isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
+  const tbThink = isToday ? D.today.time_breakdown.thinking : isRecent ? D.time_breakdown.recent_thinking : D.time_breakdown.thinking;
+  const tbTool = isToday ? D.today.time_breakdown.tool_execution : isRecent ? D.time_breakdown.recent_tool_execution : D.time_breakdown.tool_execution;
+  const tbSub = isToday ? (D.today.time_breakdown.subagent || 0) : isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
   const tbLabels = ['Thinking / Generation','Tool Execution'];
   const tbData = [tbThink, tbTool];
   const tbColors = ['#1a4b8c','#e63329'];
@@ -2540,7 +2999,7 @@ function renderMode(mode) {
   }));
   const orchTotal = tbThink + tbTool;
   const combinedTotal = orchTotal + tbSub;
-  const agentRuns = isRecent ? (D.time_breakdown.recent_agent_runs || 0) : (D.time_breakdown.agent_runs || 0);
+  const agentRuns = isToday ? (D.today.time_breakdown.agent_runs || 0) : isRecent ? (D.time_breakdown.recent_agent_runs || 0) : (D.time_breakdown.agent_runs || 0);
   let timeDetail = fT(orchTotal) + ' orchestrator';
   if (tbSub > 0) {
     timeDetail += ' &nbsp;<span style="color:var(--gray-light)">|</span>&nbsp; ' + fT(tbSub) + ' sub-agent';
@@ -2550,7 +3009,7 @@ function renderMode(mode) {
   document.getElementById('timeDetail').innerHTML = timeDetail;
 
   /* ── Tool Usage ── */
-  const toolData = isRecent ? (D.recent_tools||D.tools) : D.tools;
+  const toolData = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
   _tCharts.push(new Chart(document.getElementById('cTools'),{
     type:'bar',
     data:{labels:Object.keys(toolData),datasets:[{data:Object.values(toolData),
@@ -2564,10 +3023,11 @@ function renderMode(mode) {
   }));
 
   /* ── Project Activity ── */
-  const projSorted = D.projects.slice().sort((a,b)=>(isRecent?b.recent_cost:b.cost)-(isRecent?a.recent_cost:a.cost)).filter(p=>(isRecent?p.recent_cost:p.cost)>0);
+  const projSource = isToday ? (D.today.projects||[]) : D.projects;
+  const projSorted = projSource.slice().sort((a,b)=>(isRecent?b.recent_cost:b.cost)-(isRecent?a.recent_cost:a.cost)).filter(p=>(isToday?p.cost:(isRecent?p.recent_cost:p.cost))>0);
   const pLabels = projSorted.map(p=>p.name);
-  const pCost = projSorted.map(p=>isRecent?p.recent_cost:p.cost);
-  const pMin = projSorted.map(p=>isRecent?p.recent_minutes:p.minutes);
+  const pCost = projSorted.map(p=>isToday?p.cost:isRecent?p.recent_cost:p.cost);
+  const pMin = projSorted.map(p=>isToday?p.minutes:isRecent?p.recent_minutes:p.minutes);
   _tCharts.push(new Chart(document.getElementById('cProjects'),{
     type:'bar',
     data:{labels:pLabels,datasets:[
@@ -2587,7 +3047,7 @@ function renderMode(mode) {
   }));
 
   /* ── Machine charts ── */
-  const mSummary = isRecent ? (D.recent_machine_summary || []) : (D.machine_summary || []);
+  const mSummary = isToday ? (D.today.machine_summary || []) : isRecent ? (D.recent_machine_summary || []) : (D.machine_summary || []);
   const mSummaryFiltered = mSummary.filter(m=>m.cost>0||m.prompts>0);
   const mDailyCost = D.machine_daily_cost || {};
   const _mc = buildMachineColors([...mSummaryFiltered.map(m=>m.machine),...Object.keys(mDailyCost)]);
@@ -2612,7 +3072,7 @@ function renderMode(mode) {
       const allData = mDailyCost[machine];
       return {
         label:machine,
-        data:isRecent ? allData.filter((_,j)=>D.daily[j].date>=cutoff) : allData,
+        data:isToday ? allData.filter((_,j)=>D.daily[j].date===todayStr) : isRecent ? allData.filter((_,j)=>D.daily[j].date>=cutoff) : allData,
         backgroundColor:_mc[machine]+'70',
         borderColor:'#1a1a1a',
         borderWidth:1
@@ -2683,6 +3143,13 @@ function renderMode(mode) {
     const agentStr = agentCostVal > 0 ? fC(agentCostVal) : dot;
     const prompts = m.main_prompts ? fN(m.main_prompts) : '0';
     const agRuns = m.agent_invocations ? fN(m.agent_invocations) : '0';
+    const mEwh = isRecent ? m.recent_energy_wh : m.energy_wh;
+    const mWml = isRecent ? m.recent_water_ml : m.water_ml;
+    var eStr, wStr;
+    if (mEwh >= 1000) eStr = (mEwh/1000).toFixed(1)+' kWh';
+    else eStr = Math.round(mEwh)+' Wh';
+    if (mWml >= 1000) wStr = (mWml/1000).toFixed(2)+' L';
+    else wStr = Math.round(mWml)+' mL';
     const detail = document.createElement('tr');
     detail.className = 'mb-detail';
     detail.id = 'mbd'+i;
@@ -2698,6 +3165,10 @@ function renderMode(mode) {
       +'<div class="mb-group"><div class="mb-group-title">Cost</div>'
       +'<div class="mb-stat"><span class="mb-label">Orchestrator</span><span>'+orchStr+'</span></div>'
       +'<div class="mb-stat"><span class="mb-label">Sub-agent</span><span>'+agentStr+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Footprint</div>'
+      +'<div class="mb-stat"><span class="mb-label">Energy</span><span>'+eStr+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Water</span><span>'+wStr+'</span></div>'
       +'</div>'
       +'<div class="mb-group"><div class="mb-group-title">Orchestrator</div>'
       +'<div class="mb-stat"><span class="mb-label">Prompts</span><span>'+prompts+'</span></div>'
@@ -2715,7 +3186,9 @@ function renderMode(mode) {
   rebuildDailyTable();
   document.querySelectorAll('#dailyTable tbody tr').forEach(tr => {
     const date = tr.cells[0].textContent;
-    tr.style.display = (isRecent && date < cutoff) ? 'none' : '';
+    if (isToday) tr.style.display = date === todayStr ? '' : 'none';
+    else if (isRecent) tr.style.display = date < cutoff ? 'none' : '';
+    else tr.style.display = '';
   });
 }
 

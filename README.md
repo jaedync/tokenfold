@@ -79,6 +79,64 @@ Legacy `CLAUDE_STATS_*` env vars are still supported as fallbacks.
 | `TZ` | `America/Chicago` | Timezone for daily bucketing |
 | `DB_PATH` | `/app/data/tokenfold.db` | SQLite database path |
 | `STATS_OWNER` | *(empty)* | Display name shown on the dashboard |
+| `NOTIFY_TOKEN` | *(empty)* | Auth token for `/api/notify` (falls back to `STATS_API_KEY`) |
+| `HA_URL` | *(empty)* | Home Assistant URL (e.g. `http://homeassistant.local:8123`) |
+| `HA_TOKEN` | *(empty)* | Home Assistant long-lived access token |
+| `HA_DEVICES` | *(empty)* | Comma-separated HA notify targets (e.g. `mobile_app_phone`) |
+
+## Notification Relay (optional)
+
+Tokenfold includes an optional notification relay that forwards Claude Code hook events to [Home Assistant](https://www.home-assistant.io/) as mobile push notifications. Get notified when Claude finishes a response, needs permission, or asks a question.
+
+### Server setup
+
+Set these environment variables (or add to `.env`):
+
+```bash
+NOTIFY_TOKEN=a-random-secret         # Auth token for hook scripts
+HA_URL=http://homeassistant.local:8123
+HA_TOKEN=your-long-lived-access-token
+HA_DEVICES=mobile_app_phone1,mobile_app_phone2
+```
+
+If these are left empty, the `/api/notify` endpoint still works but silently skips the HA relay.
+
+### Claude Code hook setup
+
+On each machine you want notifications from:
+
+```bash
+# Save your Tokenfold server URL and notify token
+echo "https://your-tokenfold-server.example.com" > ~/.config/notify-relay-url
+echo "your-notify-token" > ~/.config/notify-relay-token
+
+# Copy the hook script
+cp client/notify-relay.sh ~/notify-relay.sh
+```
+
+Then add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "type": "command", "command": "bash ~/notify-relay.sh" }],
+    "Notification": [{ "type": "command", "command": "bash ~/notify-relay.sh" }]
+  }
+}
+```
+
+### Codex hook setup
+
+```bash
+# Copy the hook script
+cp client/codex-notify-relay.sh ~/codex-notify-relay.sh
+```
+
+Add to `~/.codex/config.toml`:
+
+```toml
+notify = ["bash", "~/codex-notify-relay.sh"]
+```
 
 ## Architecture
 
@@ -108,6 +166,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `GET` | `/api/stats/version` | No | Cache version (for polling) |
 | `POST` | `/api/ingest` | `X-API-Key` | Ingest session events |
 | `POST` | `/api/usage` | `X-API-Key` | Push OAuth usage data |
+| `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |
 
 ## Development

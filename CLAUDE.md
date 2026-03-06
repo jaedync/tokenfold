@@ -53,6 +53,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/dashboard.py` | GET / - Jinja2 HTML rendering with number formatting |
 | `app/api.py` | GET /api/stats - JSON passthrough of aggregator output |
 | `app/db.py` | SQLite schema, WAL pragmas, connection management |
+| `app/notify.py` | POST /api/notify - notification relay to Home Assistant |
 | `app/config.py` | Environment variable config |
 | `app/models.py` | Pydantic request/response schemas |
 
@@ -79,6 +80,10 @@ Indexes on: `session_id+type+ts_epoch`, `day`, `request_id`, `model`, `source_ma
 | `DB_PATH` | `/app/data/tokenfold.db` | SQLite path |
 | `TZ` | `America/Chicago` | Timezone for daily bucketing |
 | `STATS_OWNER` | (empty) | Display name shown on dashboard |
+| `NOTIFY_TOKEN` | (empty) | Auth token for `/api/notify` (falls back to `STATS_API_KEY`) |
+| `HA_URL` | (empty) | Home Assistant URL for notification relay |
+| `HA_TOKEN` | (empty) | Home Assistant long-lived access token |
+| `HA_DEVICES` | (empty) | Comma-separated HA notify targets |
 
 ## Client (claude-stats-push.py)
 

@@ -17,6 +17,7 @@ from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
     load_pricing, model_sort_key,
 )
+from .water import compute_energy_wh, compute_water_ml
 
 TZ = ZoneInfo(TZ_NAME)
 
@@ -131,6 +132,7 @@ def _build_dashboard_data_inner() -> dict:
     load_pricing()
     conn = get_conn()
     cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
+    today_str = datetime.now(TZ).strftime("%Y-%m-%d")
 
     # ── Pre-aggregate what we can in SQL ──
     # Tool counts - all-time (top 20) and recent (top 20)
@@ -143,6 +145,11 @@ def _build_dashboard_data_inner() -> dict:
         (cutoff_date,),
     ).fetchall()
     recent_tool_counts = {r["name"]: r["cnt"] for r in recent_tool_rows}
+    today_tool_rows = conn.execute(
+        "SELECT name, COUNT(*) as cnt FROM tool_uses WHERE day=? GROUP BY name ORDER BY cnt DESC LIMIT 20",
+        (today_str,),
+    ).fetchall()
+    today_tool_counts = {r["name"]: r["cnt"] for r in today_tool_rows}
 
     # Tool counts by day+session (for daily tool_calls)
     daily_tool_counts = defaultdict(int)
@@ -178,6 +185,8 @@ def _build_dashboard_data_inner() -> dict:
         "recent_active_s": 0.0, "recent_gen_s": 0.0, "recent_gen_out": 0,
         "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
         "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
+        "energy_wh": 0.0, "water_ml": 0.0,
+        "recent_energy_wh": 0.0, "recent_water_ml": 0.0,
     })
     project_seconds = Counter()
     project_cost = Counter()
@@ -188,6 +197,21 @@ def _build_dashboard_data_inner() -> dict:
            "recent_subagent_s": 0.0, "recent_agent_runs": 0,
            "recent_thinking_s": 0.0, "recent_tool_exec_s": 0.0,
            "tokens": 0, "human_prompts": 0, "tool_calls": total_tool_calls}
+    # Today-specific accumulators
+    today_model_stats = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+        "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
+        "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
+        "gen_s": 0.0, "gen_out": 0,
+        "energy_wh": 0.0, "water_ml": 0.0,
+    })
+    today_project_seconds = Counter()
+    today_project_cost = Counter()
+    today_mach_tokens = defaultdict(lambda: [0, 0, 0, 0, 0])
+    today_mach_cost = defaultdict(float)
+    today_tot = {"thinking_s": 0.0, "tool_exec_s": 0.0, "subagent_s": 0.0, "agent_runs": 0}
+    today_agent_ids = set()
+
     models_seen = set()
 
     # ── Q1: Token dedup per request_id ──
@@ -231,6 +255,9 @@ def _build_dashboard_data_inner() -> dict:
         if day >= cutoff_date:
             recent_project_cost[proj_dir] += req_cost
 
+        req_energy = compute_energy_wh(dm, inp, out)
+        req_water = compute_water_ml(dm, inp, out)
+
         models_seen.add(dm)
         ms = model_stats[dm]
         ms["input"] += inp
@@ -238,6 +265,8 @@ def _build_dashboard_data_inner() -> dict:
         ms["cache_write"] += cc
         ms["cache_read"] += cr
         ms["api_calls"] += 1
+        ms["energy_wh"] += req_energy
+        ms["water_ml"] += req_water
         if not r["is_sidechain"]:
             ms["main_api_calls"] += 1
             ms["main_cost"] += req_cost
@@ -248,6 +277,8 @@ def _build_dashboard_data_inner() -> dict:
             ms["recent_output"] += out
             ms["recent_cache_write"] += cc
             ms["recent_cache_read"] += cr
+            ms["recent_energy_wh"] += req_energy
+            ms["recent_water_ml"] += req_water
         if day > ms["last_seen"]:
             ms["last_seen"] = day
 
@@ -259,6 +290,19 @@ def _build_dashboard_data_inner() -> dict:
             rmt = _recent_mach_tokens[machine]
             rmt[0] += inp; rmt[1] += out; rmt[2] += cc; rmt[3] += cr; rmt[4] += 1
             _recent_mach_daily_cost[machine] += req_cost
+        if day == today_str:
+            tms = today_model_stats[dm]
+            tms["input"] += inp; tms["output"] += out
+            tms["cache_write"] += cc; tms["cache_read"] += cr
+            tms["api_calls"] += 1
+            tms["energy_wh"] += req_energy; tms["water_ml"] += req_water
+            if not r["is_sidechain"]:
+                tms["main_api_calls"] += 1
+                tms["main_cost"] += req_cost
+            today_project_cost[proj_dir] += req_cost
+            tmt = today_mach_tokens[machine]
+            tmt[0] += inp; tmt[1] += out; tmt[2] += cc; tmt[3] += cr; tmt[4] += 1
+            today_mach_cost[machine] += req_cost
 
     # ── Q2: Daily sessions + total sessions ──
     for r in conn.execute(
@@ -343,6 +387,11 @@ def _build_dashboard_data_inner() -> dict:
                 if day >= cutoff_date:
                     recent_project_seconds[proj_dir] += gap
 
+                if day == today_str:
+                    today_project_seconds[proj_dir] += gap
+                    if gap_model:
+                        today_model_stats[gap_model]["active_s"] += gap
+
                 # Classify gap: tool execution vs thinking
                 is_te = (prev_main["type"] == "assistant" and prev_main["has_tool_use"]
                          and r["type"] == "user" and r["has_tool_result"])
@@ -351,11 +400,15 @@ def _build_dashboard_data_inner() -> dict:
                     tot["tool_exec_s"] += gap
                     if day >= cutoff_date:
                         tot["recent_tool_exec_s"] += gap
+                    if day == today_str:
+                        today_tot["tool_exec_s"] += gap
                 else:
                     daily[day]["thinking_s"] += gap
                     tot["thinking_s"] += gap
                     if day >= cutoff_date:
                         tot["recent_thinking_s"] += gap
+                    if day == today_str:
+                        today_tot["thinking_s"] += gap
         prev_main = r
 
     # ── Q6: Subagent active time gaps ──
@@ -377,6 +430,9 @@ def _build_dashboard_data_inner() -> dict:
                 if day >= cutoff_date:
                     tot["recent_subagent_s"] += gap
                     agent_has_recent.add(r["agent_id"])
+                if day == today_str:
+                    today_tot["subagent_s"] += gap
+                    today_agent_ids.add(r["agent_id"])
 
                 gap_model = None
                 if prev_sub["type"] == "assistant":
@@ -391,6 +447,8 @@ def _build_dashboard_data_inner() -> dict:
                     model_stats[gap_model]["active_s"] += gap
                     if day >= cutoff_date:
                         model_stats[gap_model]["recent_active_s"] += gap
+                    if day == today_str:
+                        today_model_stats[gap_model]["active_s"] += gap
         prev_sub = r
 
     tot["agent_runs"] = (conn.execute(
@@ -455,6 +513,9 @@ def _build_dashboard_data_inner() -> dict:
         if r["day"] >= cutoff_date:
             model_stats[dm]["recent_gen_s"] += gen_time
             model_stats[dm]["recent_gen_out"] += out_tok
+        if r["day"] == today_str:
+            today_model_stats[dm]["gen_s"] += gen_time
+            today_model_stats[dm]["gen_out"] += out_tok
 
     # Merge SQL-computed daily tool counts
     for day, cnt in daily_tool_counts.items():
@@ -561,6 +622,10 @@ def _build_dashboard_data_inner() -> dict:
             "recent_cost_output": round(ms["recent_output"] * p[1] / 1e6, 2),
             "recent_cost_cache_write": round(ms["recent_cache_write"] * p[2] / 1e6, 2),
             "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
+            "energy_wh": round(ms["energy_wh"], 1),
+            "water_ml": round(ms["water_ml"], 1),
+            "recent_energy_wh": round(ms["recent_energy_wh"], 1),
+            "recent_water_ml": round(ms["recent_water_ml"], 1),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
             "recent_output_tok_per_s": round(recent_output_tok_per_s, 1) if recent_output_tok_per_s is not None else None,
@@ -767,14 +832,54 @@ def _build_dashboard_data_inner() -> dict:
             extra = usage.get("extra_usage") or {}
 
             resets_at_iso = seven_day.get("resets_at", "")
+            five_hour_resets_iso = five_hour.get("resets_at", "")
+
+            # Detect stale data: if resets_at is in the past, the period
+            # rolled over since the last push.  Zero out utilization
+            # percentages (they belong to the old period) and project
+            # the window forward so cost/active-time queries cover the
+            # current period instead of the expired one.
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            data_is_stale = False
+            if resets_at_iso:
+                try:
+                    reset_dt = datetime.fromisoformat(
+                        resets_at_iso.replace("Z", "+00:00"))
+                    if reset_dt <= now_utc:
+                        data_is_stale = True
+                        # Project forward: advance resets_at by whole
+                        # periods (7 days) until it's in the future.
+                        week_s = 7 * 24 * 3600
+                        elapsed = (now_utc - reset_dt).total_seconds()
+                        periods_passed = int(elapsed // week_s) + 1
+                        resets_at_iso = (
+                            reset_dt + timedelta(seconds=periods_passed * week_s)
+                        ).isoformat()
+                except (ValueError, TypeError):
+                    pass
+            if five_hour_resets_iso:
+                try:
+                    fh_reset_dt = datetime.fromisoformat(
+                        five_hour_resets_iso.replace("Z", "+00:00"))
+                    if fh_reset_dt <= now_utc:
+                        data_is_stale = True
+                        five_hr_s = 5 * 3600
+                        elapsed = (now_utc - fh_reset_dt).total_seconds()
+                        periods_passed = int(elapsed // five_hr_s) + 1
+                        five_hour_resets_iso = (
+                            fh_reset_dt + timedelta(seconds=periods_passed * five_hr_s)
+                        ).isoformat()
+                except (ValueError, TypeError):
+                    pass
+
             weekly_budget = {
                 "source": "oauth",
-                "weekly_pct": seven_day.get("utilization", 0),
+                "weekly_pct": 0 if data_is_stale else (seven_day.get("utilization", 0)),
                 "weekly_resets_at": resets_at_iso,
-                "five_hour_pct": five_hour.get("utilization", 0),
-                "five_hour_resets_at": five_hour.get("resets_at", ""),
-                "sonnet_pct": seven_day_sonnet.get("utilization", 0) if seven_day_sonnet else None,
-                "opus_pct": seven_day_opus.get("utilization", 0) if seven_day_opus else None,
+                "five_hour_pct": 0 if data_is_stale else (five_hour.get("utilization", 0)),
+                "five_hour_resets_at": five_hour_resets_iso,
+                "sonnet_pct": (0 if data_is_stale else seven_day_sonnet.get("utilization", 0)) if seven_day_sonnet else None,
+                "opus_pct": (0 if data_is_stale else seven_day_opus.get("utilization", 0)) if seven_day_opus else None,
                 "extra_usage": {
                     "enabled": extra.get("is_enabled", False),
                     "monthly_limit_cents": extra.get("monthly_limit", 0),
@@ -782,6 +887,8 @@ def _build_dashboard_data_inner() -> dict:
                     "pct": extra.get("utilization", 0),
                 } if extra else None,
                 "updated_at": updated_at,
+                "updated_at_epoch": datetime.fromisoformat(updated_at).timestamp() if updated_at else None,
+                "data_is_stale": data_is_stale,
             }
 
             # ── Precise weekly window stats (cost + active time) ──
@@ -854,6 +961,109 @@ def _build_dashboard_data_inner() -> dict:
         for k in _top_project_dirs
     ]
 
+    # ── Build today data ──
+    today_tot["agent_runs"] = len(today_agent_ids)
+
+    # Today machine summary
+    today_machine_stats = {}
+    for m, tmt in today_mach_tokens.items():
+        today_machine_stats[m] = {
+            "api_calls": tmt[4],
+            "input_tokens": tmt[0], "output_tokens": tmt[1],
+            "cache_creation_tokens": tmt[2], "cache_read_tokens": tmt[3],
+        }
+    for r in conn.execute(
+        "SELECT source_machine, COUNT(*) as prompts "
+        "FROM events WHERE is_human_prompt=1 AND day=? GROUP BY source_machine",
+        (today_str,),
+    ):
+        m = r["source_machine"]
+        if m in today_machine_stats:
+            today_machine_stats[m]["prompts"] = r["prompts"]
+        else:
+            today_machine_stats[m] = {"api_calls": 0, "prompts": r["prompts"],
+                                      "input_tokens": 0, "output_tokens": 0,
+                                      "cache_creation_tokens": 0, "cache_read_tokens": 0}
+    for r in conn.execute(
+        "SELECT source_machine, COUNT(*) as cnt FROM tool_uses WHERE day=? GROUP BY source_machine",
+        (today_str,),
+    ):
+        m = r["source_machine"]
+        if m in today_machine_stats:
+            today_machine_stats[m]["tool_calls"] = r["cnt"]
+    today_machine_summary = []
+    for m_name in sorted(today_machine_stats, key=lambda x: -(today_machine_stats[x].get("prompts", 0))):
+        tms = today_machine_stats[m_name]
+        total_tok = tms["input_tokens"] + tms["output_tokens"] + tms["cache_creation_tokens"] + tms["cache_read_tokens"]
+        m_cost = today_mach_cost.get(m_name, 0.0)
+        today_machine_summary.append({
+            "machine": m_name,
+            "prompts": tms.get("prompts", 0),
+            "api_calls": tms["api_calls"],
+            "tool_calls": tms.get("tool_calls", 0),
+            "total_tokens": total_tok,
+            "cost": round(m_cost, 2),
+        })
+
+    # Today model breakdown
+    today_model_breakdown = []
+    for name in sorted(today_model_stats, key=lambda m: model_sort_key(m)):
+        tms = today_model_stats[name]
+        total_tok = tms["input"] + tms["output"] + tms["cache_write"] + tms["cache_read"]
+        cost = compute_cost(name, tms["input"], tms["output"], tms["cache_write"], tms["cache_read"])
+        p = get_pricing(name)
+        main_cost = round(tms["main_cost"], 2)
+        agent_cost = round(cost - tms["main_cost"], 2)
+        active_hours = tms["active_s"] / 3600
+        cost_per_hour = (cost / active_hours) if active_hours > 0 else None
+        output_tok_per_s = (tms["gen_out"] / tms["gen_s"]) if tms["gen_s"] > 0 else None
+        today_model_breakdown.append({
+            "model": name, "api_calls": tms["api_calls"],
+            "input": tms["input"], "output": tms["output"],
+            "cache_write": tms["cache_write"], "cache_read": tms["cache_read"],
+            "total_tokens": total_tok, "cost": round(cost, 2),
+            "main_cost": main_cost, "agent_cost": agent_cost,
+            "active_hours": round(active_hours, 1),
+            "cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
+            "all_cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
+            "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
+            "all_output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
+            "cost_input": round(tms["input"] * p[0] / 1e6, 2),
+            "cost_output": round(tms["output"] * p[1] / 1e6, 2),
+            "cost_cache_write": round(tms["cache_write"] * p[2] / 1e6, 2),
+            "cost_cache_read": round(tms["cache_read"] * p[3] / 1e6, 2),
+            "energy_wh": round(tms["energy_wh"], 1),
+            "water_ml": round(tms["water_ml"], 1),
+            "main_prompts": tms.get("main_prompts", 0),
+            "agent_invocations": tms.get("agent_invocations", 0),
+            "avg_cost_per_turn": None,
+            "avg_cost_per_agent": None,
+            "last_seen": today_str,
+        })
+
+    # Today projects
+    _today_proj_dirs = sorted(today_project_cost, key=lambda x: -today_project_cost[x])[:15]
+    _today_proj_display = _make_display_names(_today_proj_dirs)
+    _today_projects = [
+        {"name": _today_proj_display[k],
+         "minutes": round(today_project_seconds[k] / 60),
+         "cost": round(today_project_cost[k], 2)}
+        for k in _today_proj_dirs
+    ]
+
+    today_data = {
+        "model_breakdown": today_model_breakdown,
+        "tools": today_tool_counts,
+        "time_breakdown": {
+            "thinking": round(today_tot["thinking_s"]),
+            "tool_execution": round(today_tot["tool_exec_s"]),
+            "subagent": round(today_tot["subagent_s"]),
+            "agent_runs": today_tot["agent_runs"],
+        },
+        "projects": _today_projects,
+        "machine_summary": today_machine_summary,
+    }
+
     return {
         "cards": {
             "sessions": sessions_count,
@@ -882,6 +1092,8 @@ def _build_dashboard_data_inner() -> dict:
         "projects": _projects_list,
         "model_breakdown": model_breakdown,
         "total_cost": round(total_cost, 2),
+        "total_energy_wh": round(sum(m["energy_wh"] for m in model_breakdown), 1),
+        "total_water_ml": round(sum(m["water_ml"] for m in model_breakdown), 1),
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),
         "total_agent_cost": round(sum(m["agent_cost"] for m in model_breakdown), 2),
         "benchmarks": {
@@ -904,5 +1116,6 @@ def _build_dashboard_data_inner() -> dict:
         "hourly": hourly_list,
         "weekly_budget": weekly_budget,
         "last_active_ts": last_active_ts,
+        "today": today_data,
         "version": get_cache_version(),
     }

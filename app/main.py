@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import close_conn, get_conn
+from .notify import init_notify_token
 from .pricing import load_pricing
 
 
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
         load_pricing()
     except Exception:
         pass
+    init_notify_token()
     yield
     # Shutdown
     close_conn()
@@ -29,10 +31,12 @@ app = FastAPI(title="Tokenfold", lifespan=lifespan)
 from .ingest import router as ingest_router
 from .api import router as api_router
 from .dashboard import router as dashboard_router
+from .notify import router as notify_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
 app.include_router(dashboard_router)
+app.include_router(notify_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():
