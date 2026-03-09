@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import close_conn, get_conn
+from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
 from .pricing import load_pricing
 from . import usage_fetcher
@@ -23,8 +24,11 @@ async def lifespan(app: FastAPI):
         pass
     init_notify_token()
     usage_fetcher.start()
+    await init_light()
+    start_watchdog()
     yield
     # Shutdown
+    stop_watchdog()
     usage_fetcher.stop()
     close_conn()
 

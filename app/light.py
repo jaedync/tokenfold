@@ -1,13 +1,14 @@
 """ORBB activity light — changes color based on Claude Code activity state.
 
-Tracks active sessions by ID. Light is "working" (blue) when any session is
-active, "idle" (amber) only when all sessions have stopped. Stale sessions
-auto-expire after ORBB_SESSION_TTL seconds.
+Tracks active sessions by ID. Light is "working" when any session is
+active, "idle" only when all sessions have stopped. Stale sessions
+auto-expire after ORBB_SESSION_TTL seconds via a background watchdog.
 
 Uses Home Assistant light/turn_on service with gentle transitions.
 Entity: light.orbb (IKEA ZHA bulb, supports xy + color_temp modes).
 """
 
+import asyncio
 import logging
 import time
 
@@ -20,6 +21,7 @@ from .config import (
     HA_URL,
     ORBB_ENTITY,
     ORBB_IDLE_COLOR,
+    ORBB_IDLE_KELVIN,
     ORBB_SESSION_TTL,
     ORBB_TRANSITION,
     ORBB_WORKING_COLOR,
@@ -32,6 +34,11 @@ log = logging.getLogger(__name__)
 # Active session tracking: session_id → last_seen_timestamp
 # Note: in-memory dict — works with single-worker uvicorn only.
 _active_sessions: dict[str, float] = {}
+
+# Background watchdog task handle
+_watchdog_task: asyncio.Task | None = None
+
+_WATCHDOG_INTERVAL = 60  # seconds between stale-session sweeps
 
 
 def _cleanup_stale():
@@ -50,11 +57,16 @@ async def signal_idle():
     """
     _cleanup_stale()
     if not _active_sessions:
-        await _set_light_color(ORBB_IDLE_COLOR)
+        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
 
 
-async def _set_light_color(rgb: list[int], transition: int = ORBB_TRANSITION):
-    """Call HA light/turn_on to set ORBB color with transition."""
+async def _set_light(
+    *,
+    rgb: list[int] | None = None,
+    kelvin: int | None = None,
+    transition: int = ORBB_TRANSITION,
+):
+    """Call HA light/turn_on with either rgb_color or color_temp_kelvin."""
     if not HA_URL or not HA_TOKEN:
         log.debug("HA not configured, skipping light control")
         return
@@ -63,11 +75,14 @@ async def _set_light_color(rgb: list[int], transition: int = ORBB_TRANSITION):
         "Authorization": f"Bearer {HA_TOKEN}",
         "Content-Type": "application/json",
     }
-    payload = {
+    payload: dict = {
         "entity_id": ORBB_ENTITY,
-        "rgb_color": rgb,
         "transition": transition,
     }
+    if rgb:
+        payload["rgb_color"] = rgb
+    elif kelvin:
+        payload["color_temp_kelvin"] = kelvin
 
     async with httpx.AsyncClient(timeout=8) as client:
         r = await client.post(
@@ -76,7 +91,74 @@ async def _set_light_color(rgb: list[int], transition: int = ORBB_TRANSITION):
             json=payload,
         )
         r.raise_for_status()
-        log.info("ORBB set to rgb=%s transition=%ds", rgb, transition)
+        log.info("ORBB set to %s transition=%ds", payload, transition)
+
+
+# ── Background watchdog ──────────────────────────────────────────────
+
+
+async def _watchdog_loop():
+    """Periodically clean stale sessions and transition light to idle."""
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL)
+        try:
+            was_active = len(_active_sessions) > 0
+            _cleanup_stale()
+            is_active = len(_active_sessions) > 0
+            if was_active and not is_active:
+                await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+                log.info("ORBB watchdog: all sessions expired, set to idle")
+        except Exception as e:
+            log.warning("ORBB watchdog error: %s", e)
+
+
+def start_watchdog():
+    """Start the background watchdog task. Called during app lifespan."""
+    global _watchdog_task
+    _watchdog_task = asyncio.create_task(_watchdog_loop())
+    log.info("ORBB watchdog started (interval=%ds, ttl=%ds)", _WATCHDOG_INTERVAL, ORBB_SESSION_TTL)
+
+
+def stop_watchdog():
+    """Cancel the background watchdog task. Called during app shutdown."""
+    global _watchdog_task
+    if _watchdog_task:
+        _watchdog_task.cancel()
+        _watchdog_task = None
+
+
+async def init_light():
+    """Set light to idle on startup so we always start from a known state."""
+    try:
+        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+        log.info("ORBB initialized to idle on startup")
+    except Exception as e:
+        log.warning("ORBB init failed (HA may be unreachable): %s", e)
+
+
+# ── Endpoints ────────────────────────────────────────────────────────
+
+
+@router.get("/api/light")
+async def light_status():
+    now = time.monotonic()
+    sessions = {
+        sid: {"age_s": round(now - ts, 1), "ttl_remaining_s": round(ORBB_SESSION_TTL - (now - ts), 1)}
+        for sid, ts in _active_sessions.items()
+    }
+
+    return {
+        "state": "working" if _active_sessions else "idle",
+        "active_sessions": len(_active_sessions),
+        "sessions": sessions,
+        "config": {
+            "entity": ORBB_ENTITY,
+            "working_color": ORBB_WORKING_COLOR,
+            "idle_color": ORBB_IDLE_COLOR,
+            "transition_s": ORBB_TRANSITION,
+            "session_ttl_s": ORBB_SESSION_TTL,
+        },
+    }
 
 
 @router.post("/api/light")
@@ -92,7 +174,6 @@ async def light_state(request: Request, authorization: str | None = Header(defau
         return JSONResponse({"error": "state must be 'working' or 'idle'"}, status_code=400)
 
     _cleanup_stale()
-    was_active = len(_active_sessions) > 0
 
     if state == "working":
         _active_sessions[session_id] = time.monotonic()
@@ -101,15 +182,13 @@ async def light_state(request: Request, authorization: str | None = Header(defau
         _active_sessions.pop(session_id, None)
         is_active = len(_active_sessions) > 0
 
-    # Only change the light when transitioning between states
-    changed = False
+    # Always reassert the correct color — acts as a heartbeat so the light
+    # stays accurate even if HA drifted or someone changed it manually.
     try:
-        if is_active and not was_active:
-            await _set_light_color(ORBB_WORKING_COLOR)
-            changed = True
-        elif not is_active and was_active:
-            await _set_light_color(ORBB_IDLE_COLOR)
-            changed = True
+        if is_active:
+            await _set_light(rgb=ORBB_WORKING_COLOR)
+        else:
+            await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
     except Exception as e:
         log.warning("Failed to set ORBB light: %s", e)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
@@ -119,5 +198,5 @@ async def light_state(request: Request, authorization: str | None = Header(defau
         "state": state,
         "session_id": session_id,
         "active_sessions": len(_active_sessions),
-        "light_changed": changed,
+        "light_color": ORBB_WORKING_COLOR if is_active else {"kelvin": ORBB_IDLE_KELVIN},
     }

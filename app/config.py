@@ -20,7 +20,8 @@ HA_DEVICES = [d.strip() for d in os.environ.get("HA_DEVICES", "").split(",") if 
 
 # ORBB activity light (optional — all empty = feature disabled)
 ORBB_ENTITY = os.environ.get("ORBB_ENTITY", "light.orbb")
-ORBB_WORKING_COLOR = [120, 140, 255]   # soft blue-purple — "thinking"
-ORBB_IDLE_COLOR = [255, 180, 100]      # warm amber — "resting"
+ORBB_WORKING_COLOR = [255, 122, 10]    # Claude orange — "thinking"
+ORBB_IDLE_COLOR = None                  # 2200K warm white — "resting"
+ORBB_IDLE_KELVIN = 2202                 # warmest the bulb supports
 ORBB_TRANSITION = 3                     # seconds for gentle color fade
 ORBB_SESSION_TTL = 300                  # seconds before stale session auto-expires
