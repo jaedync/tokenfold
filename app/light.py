@@ -20,10 +20,12 @@ from .config import (
     HA_TOKEN,
     HA_URL,
     ORBB_ENTITY,
+    ORBB_IDLE_BRIGHTNESS,
     ORBB_IDLE_COLOR,
     ORBB_IDLE_KELVIN,
     ORBB_SESSION_TTL,
     ORBB_TRANSITION,
+    ORBB_WORKING_BRIGHTNESS,
     ORBB_WORKING_COLOR,
 )
 from .notify import _check_auth
@@ -57,13 +59,14 @@ async def signal_idle():
     """
     _cleanup_stale()
     if not _active_sessions:
-        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN, brightness=ORBB_IDLE_BRIGHTNESS)
 
 
 async def _set_light(
     *,
     rgb: list[int] | None = None,
     kelvin: int | None = None,
+    brightness: int | None = None,
     transition: int = ORBB_TRANSITION,
 ):
     """Call HA light/turn_on with either rgb_color or color_temp_kelvin."""
@@ -83,6 +86,8 @@ async def _set_light(
         payload["rgb_color"] = rgb
     elif kelvin:
         payload["color_temp_kelvin"] = kelvin
+    if brightness is not None:
+        payload["brightness"] = brightness
 
     async with httpx.AsyncClient(timeout=8) as client:
         r = await client.post(
@@ -106,7 +111,7 @@ async def _watchdog_loop():
             _cleanup_stale()
             is_active = len(_active_sessions) > 0
             if was_active and not is_active:
-                await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+                await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN, brightness=ORBB_IDLE_BRIGHTNESS)
                 log.info("ORBB watchdog: all sessions expired, set to idle")
         except Exception as e:
             log.warning("ORBB watchdog error: %s", e)
@@ -130,7 +135,7 @@ def stop_watchdog():
 async def init_light():
     """Set light to idle on startup so we always start from a known state."""
     try:
-        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+        await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN, brightness=ORBB_IDLE_BRIGHTNESS)
         log.info("ORBB initialized to idle on startup")
     except Exception as e:
         log.warning("ORBB init failed (HA may be unreachable): %s", e)
@@ -186,9 +191,9 @@ async def light_state(request: Request, authorization: str | None = Header(defau
     # stays accurate even if HA drifted or someone changed it manually.
     try:
         if is_active:
-            await _set_light(rgb=ORBB_WORKING_COLOR)
+            await _set_light(rgb=ORBB_WORKING_COLOR, brightness=ORBB_WORKING_BRIGHTNESS)
         else:
-            await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN)
+            await _set_light(rgb=ORBB_IDLE_COLOR, kelvin=ORBB_IDLE_KELVIN, brightness=ORBB_IDLE_BRIGHTNESS)
     except Exception as e:
         log.warning("Failed to set ORBB light: %s", e)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
