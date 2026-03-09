@@ -9,8 +9,18 @@ RECENCY_DAYS = 14
 LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 PRICING_CACHE_TTL = 86400  # 24 hours
 
+# OAuth credentials file (mounted from host)
+CLAUDE_CREDENTIALS_PATH = os.environ.get("CLAUDE_CREDENTIALS_PATH", "/app/credentials.json")
+
 # Notify relay (optional — all empty = feature disabled)
 NOTIFY_TOKEN = os.environ.get("NOTIFY_TOKEN", "")
 HA_URL = os.environ.get("HA_URL", "")
 HA_TOKEN = os.environ.get("HA_TOKEN", "")
 HA_DEVICES = [d.strip() for d in os.environ.get("HA_DEVICES", "").split(",") if d.strip()]
+
+# ORBB activity light (optional — all empty = feature disabled)
+ORBB_ENTITY = os.environ.get("ORBB_ENTITY", "light.orbb")
+ORBB_WORKING_COLOR = [120, 140, 255]   # soft blue-purple — "thinking"
+ORBB_IDLE_COLOR = [255, 180, 100]      # warm amber — "resting"
+ORBB_TRANSITION = 3                     # seconds for gentle color fade
+ORBB_SESSION_TTL = 300                  # seconds before stale session auto-expires
