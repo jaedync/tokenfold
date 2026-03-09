@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .db import close_conn, get_conn
 from .notify import init_notify_token
 from .pricing import load_pricing
+from . import usage_fetcher
 
 
 @asynccontextmanager
@@ -21,8 +22,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     init_notify_token()
+    usage_fetcher.start()
     yield
     # Shutdown
+    usage_fetcher.stop()
     close_conn()
 
 
@@ -32,11 +35,13 @@ from .ingest import router as ingest_router
 from .api import router as api_router
 from .dashboard import router as dashboard_router
 from .notify import router as notify_router
+from .light import router as light_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
 app.include_router(dashboard_router)
 app.include_router(notify_router)
+app.include_router(light_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():
