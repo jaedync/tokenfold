@@ -29,8 +29,5 @@ else
   exit 0
 fi
 
-curl -s -S --connect-timeout 3 --max-time 8 \
-  -X POST "$RELAY_URL/api/notify" \
-  -H "Authorization: Bearer $RELAY_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" >/dev/null 2>&1 || true
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"$SCRIPT_DIR/relay-post.sh" /api/notify "$PAYLOAD" || true
