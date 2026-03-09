@@ -30,6 +30,7 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 # Active session tracking: session_id → last_seen_timestamp
+# Note: in-memory dict — works with single-worker uvicorn only.
 _active_sessions: dict[str, float] = {}
 
 
@@ -40,6 +41,16 @@ def _cleanup_stale():
     for sid in expired:
         del _active_sessions[sid]
         log.info("ORBB session expired: %s", sid)
+
+
+async def signal_idle():
+    """Clean up stale sessions and set light to idle if no sessions remain.
+
+    Called from notify.py as a best-effort fallback on stop events.
+    """
+    _cleanup_stale()
+    if not _active_sessions:
+        await _set_light_color(ORBB_IDLE_COLOR)
 
 
 async def _set_light_color(rgb: list[int], transition: int = ORBB_TRANSITION):

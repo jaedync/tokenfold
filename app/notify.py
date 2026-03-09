@@ -182,19 +182,13 @@ async def notify(request: Request, authorization: str | None = Header(default=No
 
     errors = await _relay_to_ha(ha_payload, devices)
 
-    # Auto-set ORBB to idle for this session on stop events
+    # Best-effort: clean up stale ORBB sessions and go idle if none remain
     if data.get("event") == "stop":
         try:
-            from .light import _set_light_color, _active_sessions, _cleanup_stale
-            from .config import ORBB_IDLE_COLOR
-            # Use machine+project as a fallback session ID
-            fallback_sid = f"{data.get('machine', 'unknown')}-{data.get('project', 'unknown')}"
-            _active_sessions.pop(fallback_sid, None)
-            _cleanup_stale()
-            if not _active_sessions:
-                await _set_light_color(ORBB_IDLE_COLOR)
+            from .light import signal_idle
+            await signal_idle()
         except Exception:
-            pass  # best-effort
+            pass
 
     if errors:
         return JSONResponse({"ok": False, "errors": errors}, status_code=502)
