@@ -3,7 +3,7 @@ GET /api/rate-limits — returns rate limit / usage data.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
@@ -13,6 +13,26 @@ from .aggregator import build_dashboard_data, get_cache_version
 from .config import IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn
 from .pricing import compute_cost, display_model
+
+
+def _scrub_to_minute(iso_str: str) -> str:
+    """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
+
+    Removes subsecond and second precision so a per-account microsecond
+    offset can't fingerprint the account across responses.
+
+    Returns the input unchanged if empty or unparseable.
+    """
+    if not iso_str:
+        return iso_str
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return iso_str
+    return (
+        dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    )
+
 
 router = APIRouter()
 TZ = ZoneInfo(TZ_NAME)
@@ -58,9 +78,9 @@ async def rate_limits():
     weekly_budget = {
         "source": "oauth",
         "weekly_pct": seven_day.get("utilization", 0),
-        "weekly_resets_at": resets_at_iso,
+        "weekly_resets_at": _scrub_to_minute(resets_at_iso),
         "five_hour_pct": five_hour.get("utilization", 0),
-        "five_hour_resets_at": five_hour.get("resets_at", ""),
+        "five_hour_resets_at": _scrub_to_minute(five_hour.get("resets_at", "")),
         "sonnet_pct": seven_day_sonnet.get("utilization", 0) if seven_day_sonnet else None,
         "opus_pct": seven_day_opus.get("utilization", 0) if seven_day_opus else None,
         "extra_usage": {
