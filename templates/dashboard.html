@@ -2367,8 +2367,8 @@ function renderMode(mode) {
     [totActive, fT],
     [totTools, fN],
     [modelsUsed, String],
-    [Math.round(totPrompts/numDays), fN],
-    [Math.round(totActive/numDays), fT],
+    [isToday ? D.cards.avg_prompts_day : Math.round(totPrompts/numDays), fN],
+    [isToday ? D.cards.avg_active_day_s : Math.round(totActive/numDays), fT],
   ];
 
   const toolData_ = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
@@ -2395,10 +2395,13 @@ function renderMode(mode) {
       const pps = totSessions > 0 ? (totPrompts / totSessions).toFixed(1) : '0';
       sub.innerHTML = '<span style="color:var(--yellow)">~' + pps + '</span> prompts/session';
     } else if (i === 1) {
-      // Prompts (plain bg): today's count
-      sub.innerHTML = todayPrompts > 0
-        ? '<span style="color:var(--red)">' + fN(todayPrompts) + '</span> today'
-        : '<span style="color:var(--gray-dim)">no prompts today</span>';
+      // Prompts: mode-aware subtitle
+      if (isToday) {
+        sub.textContent = '';
+      } else {
+        const avgPD = Math.round(totPrompts / numDays);
+        sub.innerHTML = '<span style="color:var(--yellow)">' + fN(avgPD) + '</span> avg/day';
+      }
     } else if (i === 2) {
       // Tokens (red bg): cache hit + I/O
       sub.innerHTML = '<span style="color:var(--yellow)">' + hitPct + '%</span> cache hit'
@@ -2417,18 +2420,33 @@ function renderMode(mode) {
         ? 'primary: <strong>' + primaryModel.model + '</strong>'
         : '';
     } else if (i === 6) {
-      // Avg Prompts (plain bg): today vs average
-      const delta = todayPrompts - avgPrompts;
-      const sign = delta > 0 ? '+' : '';
-      const color = delta > 0 ? 'var(--red)' : delta < 0 ? 'var(--blue)' : 'var(--gray-dim)';
-      sub.innerHTML = todayPrompts > 0
-        ? '<span style="color:var(--red)">' + fN(todayPrompts) + '</span> today <span style="color:' + color + '">(' + sign + delta + ')</span>'
-        : '<span style="color:var(--gray-dim)">no prompts today</span>';
-    } else if (i === 7 && subagentTime > 0) {
-      const subVal = Math.round(subagentTime / numDays);
-      sub.innerHTML = '<span style="color:var(--blue)">~ ' + fT(subVal) + '</span> sub-agent';
+      // Avg Prompts: today vs all-time average comparison
+      if (isToday) {
+        const delta = todayPrompts - D.cards.avg_prompts_day;
+        const sign = delta > 0 ? '+' : '';
+        const color = delta > 0 ? 'var(--red)' : delta < 0 ? 'var(--blue)' : 'var(--gray-dim)';
+        sub.innerHTML = todayPrompts > 0
+          ? '<span style="color:var(--red)">' + fN(todayPrompts) + '</span> today <span style="color:' + color + '">(' + sign + delta + ')</span>'
+          : '<span style="color:var(--gray-dim)">no prompts today</span>';
+      } else {
+        sub.innerHTML = todayPrompts > 0
+          ? '<span style="color:var(--red)">' + fN(todayPrompts) + '</span> today'
+          : '<span style="color:var(--gray-dim)">no prompts today</span>';
+      }
     } else if (i === 7) {
-      sub.textContent = '';
+      if (isToday) {
+        const delta = totActive - D.cards.avg_active_day_s;
+        const sign = delta > 0 ? '+' : '';
+        const color = delta > 0 ? 'var(--red)' : delta < 0 ? 'var(--blue)' : 'var(--gray-dim)';
+        sub.innerHTML = totActive > 0
+          ? '<span style="color:var(--red)">' + fT(totActive) + '</span> today <span style="color:' + color + '">(' + sign + fT(Math.abs(delta)) + ')</span>'
+          : '';
+      } else if (subagentTime > 0) {
+        const subVal = Math.round(subagentTime / numDays);
+        sub.innerHTML = '<span style="color:var(--blue)">~ ' + fT(subVal) + '</span> sub-agent';
+      } else {
+        sub.textContent = '';
+      }
     }
   });
 

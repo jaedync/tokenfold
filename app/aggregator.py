@@ -1,17 +1,20 @@
-"""Rebuild aggregated data from events/tool_uses tables.
+"""Rebuild aggregated dashboard data from daily_summary rows.
 
-Produces the same JSON structure as generate-dashboard.py's parse_and_compute(),
-querying from SQLite instead of walking JSONL files.
+Reads pre-computed per-day summaries (built by summarizer.py) and merges them
+into the same JSON structure the old event-scanning code produced.  Hourly
+activity is still computed live from events/tool_uses (48h window).
 """
 
+import json
+import random
 import re
 import threading
-from bisect import bisect_right
+import time as _time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .config import IDLE_THRESHOLD_S, RECENCY_DAYS, TZ_NAME
+from .config import RECENCY_DAYS, TZ_NAME
 from .db import get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
@@ -21,7 +24,7 @@ from .water import compute_energy_wh, compute_water_ml
 
 TZ = ZoneInfo(TZ_NAME)
 
-# In-memory cache - rebuilt only after ingest or on first request
+# In-memory cache — rebuilt only after ingest or on first request
 _cache_lock = threading.Lock()
 _cached_data: dict | None = None
 _cache_version: int = 0
@@ -54,9 +57,9 @@ def _strip_prefix(dir_name: str):
 def _leaf_project_name(dir_name: str) -> str:
     """Extract the leaf project name from a dash-encoded project path.
 
-    ``-home-user-services-my-project``  → ``my-project``
-    ``-Users-user-development-my-app``  → ``my-app``
-    ``C--Users-User-Documents-my-code`` → ``my-code``
+    ``-home-jaedy-services-claude-stats-v2``  → ``claude-stats-v2``
+    ``-Users-jaedy-development-caldera-mcp``  → ``caldera-mcp``
+    ``C--Users-Acme-Documents-aswp-claude`` → ``aswp-claude``
     """
     result = _strip_prefix(dir_name)
     if result is None:
@@ -89,29 +92,52 @@ def _make_display_names(raw_dirs: list[str]) -> dict[str, str]:
                 else:
                     short[d] = remainder
             else:
-                # Home dir only - disambiguate by extracting username
+                # Home dir only — disambiguate by extracting username
                 um = re.search(r"(?:home|Users)-([^-]+)", d)
                 short[d] = "~ (" + um.group(1) + ")" if um else d.strip("-")
     return short
 
 
+_rebuilding = False
+
+
 def invalidate_cache():
-    """Clear cached dashboard data, forcing rebuild on next request."""
-    global _cached_data, _cache_version
+    """Trigger eager background rebuild. Serves stale cache during rebuild."""
+    trigger_eager_rebuild()
+
+
+def trigger_eager_rebuild():
+    """Rebuild cache in background thread. Serves previous cache during rebuild."""
+    global _rebuilding
     with _cache_lock:
-        _cached_data = None
-        _cache_version += 1
+        if _rebuilding:
+            return  # rebuild already in progress
+        _rebuilding = True
+        _cache_version_bump()
+
+    def _rebuild():
+        global _cached_data, _rebuilding
+        try:
+            data = _build_dashboard_data_inner()
+            with _cache_lock:
+                _cached_data = data
+        finally:
+            with _cache_lock:
+                _rebuilding = False
+
+    threading.Thread(target=_rebuild, daemon=True).start()
+
+
+def _cache_version_bump():
+    """Increment cache version (caller must hold _cache_lock)."""
+    global _cache_version
+    _cache_version += 1
 
 
 def get_cache_version() -> int:
     """Return current cache version (incremented on each invalidation)."""
     with _cache_lock:
         return _cache_version
-
-
-def aggregate_days(touched_days: set[str] | None = None):
-    """Incremental stub - dashboard always queries live."""
-    pass
 
 
 def build_dashboard_data() -> dict:
@@ -127,623 +153,47 @@ def build_dashboard_data() -> dict:
     return data
 
 
-def _build_dashboard_data_inner() -> dict:
-    """Query events + tool_uses and produce the full dashboard JSON blob."""
-    load_pricing()
-    conn = get_conn()
-    cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
-    today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-
-    # ── Pre-aggregate what we can in SQL ──
-    # Tool counts - all-time (top 20) and recent (top 20)
-    tool_counts_rows = conn.execute(
-        "SELECT name, COUNT(*) as cnt FROM tool_uses GROUP BY name ORDER BY cnt DESC LIMIT 20"
-    ).fetchall()
-    tool_counts = {r["name"]: r["cnt"] for r in tool_counts_rows}
-    recent_tool_rows = conn.execute(
-        "SELECT name, COUNT(*) as cnt FROM tool_uses WHERE day>=? GROUP BY name ORDER BY cnt DESC LIMIT 20",
-        (cutoff_date,),
-    ).fetchall()
-    recent_tool_counts = {r["name"]: r["cnt"] for r in recent_tool_rows}
-    today_tool_rows = conn.execute(
-        "SELECT name, COUNT(*) as cnt FROM tool_uses WHERE day=? GROUP BY name ORDER BY cnt DESC LIMIT 20",
-        (today_str,),
-    ).fetchall()
-    today_tool_counts = {r["name"]: r["cnt"] for r in today_tool_rows}
-
-    # Tool counts by day+session (for daily tool_calls)
-    daily_tool_counts = defaultdict(int)
-    for r in conn.execute("SELECT day, COUNT(*) as cnt FROM tool_uses GROUP BY day"):
-        daily_tool_counts[r["day"]] = r["cnt"]
-    total_tool_calls = sum(daily_tool_counts.values())
-
-    # Last active timestamp (most recent event epoch)
-    last_active_row = conn.execute("SELECT MAX(ts_epoch) as ts FROM events").fetchone()
-    last_active_ts = last_active_row["ts"] if last_active_row and last_active_row["ts"] else None
-
-    # Source machines with last activity
-    _machine_last_active = {}
-    for r in conn.execute(
-        "SELECT source_machine, MAX(ts_epoch) as last_ts FROM events GROUP BY source_machine"
-    ):
-        _machine_last_active[r["source_machine"]] = r["last_ts"]
-    machine_list = list(_machine_last_active.keys())
-
-    # ── Bulk SQL queries (replace per-session N+1 loop) ──
-
-    daily = defaultdict(lambda: {
-        "sessions": 0, "human_prompts": 0, "input_tokens": 0,
-        "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0,
-        "tool_calls": 0, "active_s": 0.0, "thinking_s": 0.0,
-        "tool_exec_s": 0.0, "cost": 0.0,
-    })
-    model_stats = defaultdict(lambda: {
-        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
-        "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
-        "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
-        "gen_s": 0.0, "gen_out": 0,
-        "recent_active_s": 0.0, "recent_gen_s": 0.0, "recent_gen_out": 0,
-        "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
-        "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
-        "energy_wh": 0.0, "water_ml": 0.0,
-        "recent_energy_wh": 0.0, "recent_water_ml": 0.0,
-    })
-    project_seconds = Counter()
-    project_cost = Counter()
-    recent_project_seconds = Counter()
-    recent_project_cost = Counter()
-    tot = {"thinking_s": 0.0, "tool_exec_s": 0.0, "active_s": 0.0,
-           "subagent_s": 0.0, "agent_runs": 0,
-           "recent_subagent_s": 0.0, "recent_agent_runs": 0,
-           "recent_thinking_s": 0.0, "recent_tool_exec_s": 0.0,
-           "tokens": 0, "human_prompts": 0, "tool_calls": total_tool_calls}
-    # Today-specific accumulators
-    today_model_stats = defaultdict(lambda: {
-        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
-        "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
-        "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
-        "gen_s": 0.0, "gen_out": 0,
-        "energy_wh": 0.0, "water_ml": 0.0,
-    })
-    today_project_seconds = Counter()
-    today_project_cost = Counter()
-    today_mach_tokens = defaultdict(lambda: [0, 0, 0, 0, 0])
-    today_mach_cost = defaultdict(float)
-    today_tot = {"thinking_s": 0.0, "tool_exec_s": 0.0, "subagent_s": 0.0, "agent_runs": 0}
-    today_agent_ids = set()
-
-    models_seen = set()
-
-    # ── Q1: Token dedup per request_id ──
-    # Single query replaces the per-session req_data dict accumulation.
-    # GROUP BY request_id with MAX() deduplicates streaming token repeats.
-    requests = conn.execute(
-        "SELECT request_id, COALESCE(project_dir,'unknown') as project_dir, "
-        "source_machine, session_id, day, model, is_sidechain, agent_id, "
-        "MAX(input_tokens) as inp, MAX(output_tokens) as out, "
-        "MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
-        "MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
-        "FROM events "
-        "WHERE type='assistant' AND model IS NOT NULL AND model != '<synthetic>' "
-        "AND request_id IS NOT NULL "
-        "GROUP BY request_id"
-    ).fetchall()
-
-    # Per-machine accumulators (built from Q1 to avoid separate queries)
-    _mach_tokens = defaultdict(lambda: [0, 0, 0, 0, 0])  # inp,out,cc,cr,calls
-    _mach_daily_cost = defaultdict(lambda: defaultdict(float))  # machine→day→cost
-    _recent_mach_tokens = defaultdict(lambda: [0, 0, 0, 0, 0])
-    _recent_mach_daily_cost = defaultdict(float)  # machine→cost
-
-    for r in requests:
-        inp, out = r["inp"] or 0, r["out"] or 0
-        cc, cr = r["cc"] or 0, r["cr"] or 0
-        day = r["day"]
-        dm = display_model(r["model"])
-        proj_dir = r["project_dir"]
-        machine = r["source_machine"]
-
-        daily[day]["input_tokens"] += inp
-        daily[day]["output_tokens"] += out
-        daily[day]["cache_creation_tokens"] += cc
-        daily[day]["cache_read_tokens"] += cr
-        tot["tokens"] += inp + out + cc + cr
-
-        req_cost = compute_cost(dm, inp, out, cc, cr)
-        daily[day]["cost"] += req_cost
-        project_cost[proj_dir] += req_cost
-        if day >= cutoff_date:
-            recent_project_cost[proj_dir] += req_cost
-
-        req_energy = compute_energy_wh(dm, inp, out)
-        req_water = compute_water_ml(dm, inp, out)
-
-        models_seen.add(dm)
-        ms = model_stats[dm]
-        ms["input"] += inp
-        ms["output"] += out
-        ms["cache_write"] += cc
-        ms["cache_read"] += cr
-        ms["api_calls"] += 1
-        ms["energy_wh"] += req_energy
-        ms["water_ml"] += req_water
-        if not r["is_sidechain"]:
-            ms["main_api_calls"] += 1
-            ms["main_cost"] += req_cost
-            if day >= cutoff_date:
-                ms["recent_main_cost"] += req_cost
-        if day >= cutoff_date:
-            ms["recent_input"] += inp
-            ms["recent_output"] += out
-            ms["recent_cache_write"] += cc
-            ms["recent_cache_read"] += cr
-            ms["recent_energy_wh"] += req_energy
-            ms["recent_water_ml"] += req_water
-        if day > ms["last_seen"]:
-            ms["last_seen"] = day
-
-        # Machine stats (avoids separate per-machine SQL queries)
-        mt = _mach_tokens[machine]
-        mt[0] += inp; mt[1] += out; mt[2] += cc; mt[3] += cr; mt[4] += 1
-        _mach_daily_cost[machine][day] += req_cost
-        if day >= cutoff_date:
-            rmt = _recent_mach_tokens[machine]
-            rmt[0] += inp; rmt[1] += out; rmt[2] += cc; rmt[3] += cr; rmt[4] += 1
-            _recent_mach_daily_cost[machine] += req_cost
-        if day == today_str:
-            tms = today_model_stats[dm]
-            tms["input"] += inp; tms["output"] += out
-            tms["cache_write"] += cc; tms["cache_read"] += cr
-            tms["api_calls"] += 1
-            tms["energy_wh"] += req_energy; tms["water_ml"] += req_water
-            if not r["is_sidechain"]:
-                tms["main_api_calls"] += 1
-                tms["main_cost"] += req_cost
-            today_project_cost[proj_dir] += req_cost
-            tmt = today_mach_tokens[machine]
-            tmt[0] += inp; tmt[1] += out; tmt[2] += cc; tmt[3] += cr; tmt[4] += 1
-            today_mach_cost[machine] += req_cost
-
-    # ── Q2: Daily sessions + total sessions ──
-    for r in conn.execute(
-        "SELECT day, COUNT(DISTINCT session_id) as cnt "
-        "FROM events WHERE agent_id IS NULL GROUP BY day"
-    ):
-        daily[r["day"]]["sessions"] = r["cnt"]
-
-    sessions_count = (conn.execute(
-        "SELECT COUNT(DISTINCT session_id) FROM events"
-    ).fetchone()[0] or 0)
-
-    # ── Q3: Human prompts per day ──
-    for r in conn.execute(
-        "SELECT day, COUNT(*) as cnt "
-        "FROM events WHERE is_human_prompt=1 AND is_sidechain=0 GROUP BY day"
-    ):
-        daily[r["day"]]["human_prompts"] = r["cnt"]
-        tot["human_prompts"] += r["cnt"]
-
-    # ── Q4: Prompt→model attribution ──
-    # For each human prompt, find the next assistant event's model in the same
-    # session. Fetches all relevant events in one query (instead of per-session)
-    # and iterates once to attribute prompts to models.
-    pending_prompts = 0
-    current_session = None
-    for r in conn.execute(
-        "SELECT session_id, ts_epoch, type, is_human_prompt, model "
-        "FROM events "
-        "WHERE is_sidechain=0 AND agent_id IS NULL "
-        "AND ("
-        "  (type='user' AND is_human_prompt=1) OR "
-        "  (type='assistant' AND model IS NOT NULL AND model != '<synthetic>')"
-        ") "
-        "ORDER BY session_id, ts_epoch"
-    ):
-        if r["session_id"] != current_session:
-            pending_prompts = 0
-            current_session = r["session_id"]
-        if r["is_human_prompt"]:
-            pending_prompts += 1
-        elif r["type"] == "assistant":
-            dm = display_model(r["model"])
-            model_stats[dm]["main_prompts"] += pending_prompts
-            pending_prompts = 0
-
-    # ── Q5: Main session active time gaps ──
-    # Sorted fetch + Python-side gap computation (faster than LAG window).
-    prev_main = None
-    for r in conn.execute(
-        "SELECT session_id, project_dir, day, ts_epoch, type, model, "
-        "has_tool_use, has_tool_result "
-        "FROM events "
-        "WHERE is_sidechain=0 AND agent_id IS NULL "
-        "AND type IN ('user','assistant') "
-        "ORDER BY session_id, ts_epoch"
-    ):
-        if prev_main and prev_main["session_id"] == r["session_id"]:
-            gap = r["ts_epoch"] - prev_main["ts_epoch"]
-            if 0 < gap < IDLE_THRESHOLD_S:
-                day = prev_main["day"]
-                proj_dir = r["project_dir"] or "unknown"
-
-                # Model attribution: prefer prev (if assistant), then curr
-                gap_model = None
-                if prev_main["type"] == "assistant":
-                    pm = prev_main["model"] or ""
-                    if pm and pm != "<synthetic>":
-                        gap_model = display_model(pm)
-                if not gap_model and r["type"] == "assistant":
-                    cm = r["model"] or ""
-                    if cm and cm != "<synthetic>":
-                        gap_model = display_model(cm)
-                if gap_model:
-                    model_stats[gap_model]["active_s"] += gap
-                    if day >= cutoff_date:
-                        model_stats[gap_model]["recent_active_s"] += gap
-
-                daily[day]["active_s"] += gap
-                tot["active_s"] += gap
-                project_seconds[proj_dir] += gap
-                if day >= cutoff_date:
-                    recent_project_seconds[proj_dir] += gap
-
-                if day == today_str:
-                    today_project_seconds[proj_dir] += gap
-                    if gap_model:
-                        today_model_stats[gap_model]["active_s"] += gap
-
-                # Classify gap: tool execution vs thinking
-                is_te = (prev_main["type"] == "assistant" and prev_main["has_tool_use"]
-                         and r["type"] == "user" and r["has_tool_result"])
-                if is_te:
-                    daily[day]["tool_exec_s"] += gap
-                    tot["tool_exec_s"] += gap
-                    if day >= cutoff_date:
-                        tot["recent_tool_exec_s"] += gap
-                    if day == today_str:
-                        today_tot["tool_exec_s"] += gap
-                else:
-                    daily[day]["thinking_s"] += gap
-                    tot["thinking_s"] += gap
-                    if day >= cutoff_date:
-                        tot["recent_thinking_s"] += gap
-                    if day == today_str:
-                        today_tot["thinking_s"] += gap
-        prev_main = r
-
-    # ── Q6: Subagent active time gaps ──
-    # Sorted fetch + Python-side gap computation (faster than LAG window).
-    agent_has_recent = set()
-    prev_sub = None
-    for r in conn.execute(
-        "SELECT agent_id, day, ts_epoch, type, model "
-        "FROM events "
-        "WHERE agent_id IS NOT NULL AND type IN ('user','assistant') "
-        "ORDER BY agent_id, ts_epoch"
-    ):
-        if prev_sub and prev_sub["agent_id"] == r["agent_id"]:
-            gap = r["ts_epoch"] - prev_sub["ts_epoch"]
-            if 0 < gap < IDLE_THRESHOLD_S:
-                day = prev_sub["day"]
-
-                tot["subagent_s"] += gap
-                if day >= cutoff_date:
-                    tot["recent_subagent_s"] += gap
-                    agent_has_recent.add(r["agent_id"])
-                if day == today_str:
-                    today_tot["subagent_s"] += gap
-                    today_agent_ids.add(r["agent_id"])
-
-                gap_model = None
-                if prev_sub["type"] == "assistant":
-                    pm = prev_sub["model"] or ""
-                    if pm and pm != "<synthetic>":
-                        gap_model = display_model(pm)
-                if not gap_model and r["type"] == "assistant":
-                    cm = r["model"] or ""
-                    if cm and cm != "<synthetic>":
-                        gap_model = display_model(cm)
-                if gap_model:
-                    model_stats[gap_model]["active_s"] += gap
-                    if day >= cutoff_date:
-                        model_stats[gap_model]["recent_active_s"] += gap
-                    if day == today_str:
-                        today_model_stats[gap_model]["active_s"] += gap
-        prev_sub = r
-
-    tot["agent_runs"] = (conn.execute(
-        "SELECT COUNT(DISTINCT agent_id) FROM events "
-        "WHERE agent_id IS NOT NULL AND type IN ('user','assistant')"
-    ).fetchone()[0] or 0)
-    tot["recent_agent_runs"] = len(agent_has_recent)
-
-    # ── Q7: Agent invocations per model ──
-    agent_model_pairs = set()
-    for r in conn.execute(
-        "SELECT agent_id, model FROM events "
-        "WHERE agent_id IS NOT NULL AND type='assistant' "
-        "AND model IS NOT NULL AND model != '<synthetic>' "
-        "GROUP BY agent_id, model"
-    ):
-        dm = display_model(r["model"])
-        pair = (r["agent_id"], dm)
-        if pair not in agent_model_pairs:
-            agent_model_pairs.add(pair)
-            model_stats[dm]["agent_invocations"] += 1
-
-    # ── Q8: Generation time ──
-    # Build user timestamp indices for bisect lookup (two bulk queries).
-    main_user_ts = defaultdict(list)
-    for r in conn.execute(
-        "SELECT session_id, ts_epoch FROM events "
-        "WHERE type='user' AND is_sidechain=0 AND agent_id IS NULL "
-        "ORDER BY session_id, ts_epoch"
-    ):
-        main_user_ts[r["session_id"]].append(r["ts_epoch"])
-
-    agent_user_ts_map = defaultdict(list)
-    for r in conn.execute(
-        "SELECT agent_id, ts_epoch FROM events "
-        "WHERE type='user' AND agent_id IS NOT NULL "
-        "ORDER BY agent_id, ts_epoch"
-    ):
-        agent_user_ts_map[r["agent_id"]].append(r["ts_epoch"])
-
-    for r in requests:
-        out_tok = r["out"] or 0
-        if out_tok < 50 or not r["model"]:
-            continue
-        aid = r["agent_id"]
-        if aid:
-            ts_list = agent_user_ts_map.get(aid)
-        else:
-            ts_list = main_user_ts.get(r["session_id"])
-        if not ts_list:
-            continue
-        idx = bisect_right(ts_list, r["first_ts"])
-        if idx == 0:
-            continue
-        preceding_user_ts = ts_list[idx - 1]
-        gen_time = r["last_ts"] - preceding_user_ts
-        if gen_time < 0.5 or gen_time > 120:
-            continue
-        dm = display_model(r["model"])
-        model_stats[dm]["gen_s"] += gen_time
-        model_stats[dm]["gen_out"] += out_tok
-        if r["day"] >= cutoff_date:
-            model_stats[dm]["recent_gen_s"] += gen_time
-            model_stats[dm]["recent_gen_out"] += out_tok
-        if r["day"] == today_str:
-            today_model_stats[dm]["gen_s"] += gen_time
-            today_model_stats[dm]["gen_out"] += out_tok
-
-    # Merge SQL-computed daily tool counts
-    for day, cnt in daily_tool_counts.items():
-        daily[day]["tool_calls"] = cnt
-
-    # ── Build date range ──
-    if daily:
-        all_dates = sorted(daily.keys())
-        start = datetime.strptime(all_dates[0], "%Y-%m-%d")
-        end = datetime.strptime(all_dates[-1], "%Y-%m-%d")
-        date_range = []
-        cur = start
-        while cur <= end:
-            date_range.append(cur.strftime("%Y-%m-%d"))
-            cur += timedelta(days=1)
-    else:
-        date_range = []
-
-    num_days = len(date_range) or 1
-    make_empty_day = lambda: {
-        "sessions": 0, "human_prompts": 0, "input_tokens": 0,
-        "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0,
-        "tool_calls": 0, "active_s": 0.0, "thinking_s": 0.0,
-        "tool_exec_s": 0.0, "cost": 0.0,
-    }
-    daily_list = []
-    for d in date_range:
-        dd = daily.get(d, make_empty_day())
-        daily_list.append({
-            "date": d,
-            "sessions": dd["sessions"],
-            "prompts": dd["human_prompts"],
-            "tool_calls": dd["tool_calls"],
-            "active_minutes": round(dd["active_s"] / 60),
-            "input_tokens": dd["input_tokens"],
-            "output_tokens": dd["output_tokens"],
-            "cache_creation_tokens": dd["cache_creation_tokens"],
-            "cache_read_tokens": dd["cache_read_tokens"],
-            "cost": round(dd["cost"], 2),
-        })
-
-    # ── Model breakdown ──
-    total_cost = 0.0
-    model_breakdown = []
-    for name in sorted(model_stats, key=lambda m: model_sort_key(m)):
-        ms = model_stats[name]
-        total_tok = ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
-        cost = compute_cost(name, ms["input"], ms["output"], ms["cache_write"], ms["cache_read"])
-        p = get_pricing(name)
-        total_cost += cost
-        main_cost = round(ms["main_cost"], 2)
-        agent_cost = round(cost - ms["main_cost"], 2)
-        avg_cost_per_turn = (ms["main_cost"] / ms["main_prompts"]
-                             if ms["main_prompts"] > 0 else None)
-        avg_cost_per_agent = (agent_cost / ms["agent_invocations"]
-                              if ms["agent_invocations"] > 0 else None)
-        active_hours = ms["active_s"] / 3600
-        recent_cost = compute_cost(name, ms["recent_input"], ms["recent_output"],
-                                   ms["recent_cache_write"], ms["recent_cache_read"])
-        recent_hours = ms["recent_active_s"] / 3600
-        if recent_hours >= 0.5:
-            cost_per_hour = recent_cost / recent_hours
-        elif active_hours > 0:
-            cost_per_hour = cost / active_hours
-        else:
-            cost_per_hour = None
-        if ms["recent_gen_s"] > 0:
-            output_tok_per_s = ms["recent_gen_out"] / ms["recent_gen_s"]
-        elif ms["gen_s"] > 0:
-            output_tok_per_s = ms["gen_out"] / ms["gen_s"]
-        else:
-            output_tok_per_s = None
-        recent_active_hours = recent_hours
-        recent_cost_per_hour = (recent_cost / recent_hours) if recent_hours >= 0.5 else None
-        all_cost_per_hour = (cost / active_hours) if active_hours > 0 else None
-        recent_output_tok_per_s = (ms["recent_gen_out"] / ms["recent_gen_s"]) if ms["recent_gen_s"] > 0 else None
-        all_output_tok_per_s = (ms["gen_out"] / ms["gen_s"]) if ms["gen_s"] > 0 else None
-        model_breakdown.append({
-            "model": name, "api_calls": ms["api_calls"],
-            "input": ms["input"], "output": ms["output"],
-            "cache_write": ms["cache_write"], "cache_read": ms["cache_read"],
-            "total_tokens": total_tok, "cost": round(cost, 2),
-            "main_cost": main_cost, "agent_cost": agent_cost,
-            "avg_cost_per_turn": round(avg_cost_per_turn, 4) if avg_cost_per_turn is not None else None,
-            "avg_cost_per_agent": round(avg_cost_per_agent, 4) if avg_cost_per_agent is not None else None,
-            "main_prompts": ms["main_prompts"],
-            "agent_invocations": ms["agent_invocations"],
-            "active_hours": round(active_hours, 1),
-            "cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
-            "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
-            "cost_input": round(ms["input"] * p[0] / 1e6, 2),
-            "cost_output": round(ms["output"] * p[1] / 1e6, 2),
-            "cost_cache_write": round(ms["cache_write"] * p[2] / 1e6, 2),
-            "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
-            "last_seen": ms["last_seen"],
-            "recent": ms["last_seen"] >= cutoff_date,
-            "recent_input": ms["recent_input"], "recent_output": ms["recent_output"],
-            "recent_cache_write": ms["recent_cache_write"], "recent_cache_read": ms["recent_cache_read"],
-            "recent_total_tokens": ms["recent_input"] + ms["recent_output"] + ms["recent_cache_write"] + ms["recent_cache_read"],
-            "recent_cost": round(recent_cost, 2),
-            "recent_main_cost": round(ms["recent_main_cost"], 2),
-            "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
-            "recent_cost_input": round(ms["recent_input"] * p[0] / 1e6, 2),
-            "recent_cost_output": round(ms["recent_output"] * p[1] / 1e6, 2),
-            "recent_cost_cache_write": round(ms["recent_cache_write"] * p[2] / 1e6, 2),
-            "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
-            "energy_wh": round(ms["energy_wh"], 1),
-            "water_ml": round(ms["water_ml"], 1),
-            "recent_energy_wh": round(ms["recent_energy_wh"], 1),
-            "recent_water_ml": round(ms["recent_water_ml"], 1),
-            "recent_active_hours": round(recent_active_hours, 1),
-            "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
-            "recent_output_tok_per_s": round(recent_output_tok_per_s, 1) if recent_output_tok_per_s is not None else None,
-            "all_cost_per_hour": round(all_cost_per_hour, 2) if all_cost_per_hour is not None else None,
-            "all_output_tok_per_s": round(all_output_tok_per_s, 1) if all_output_tok_per_s is not None else None,
-        })
-
-    models_donut = {
-        name: ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
-        for name, ms in sorted(model_stats.items(),
-            key=lambda kv: -(kv[1]["input"] + kv[1]["output"] +
-                             kv[1]["cache_write"] + kv[1]["cache_read"]))
+def _empty_dashboard(cutoff_date: str) -> dict:
+    """Return the dashboard structure with no data (used when no summaries exist)."""
+    now = datetime.now(TZ)
+    return {
+        "cards": {
+            "sessions": 0, "human_prompts": 0, "total_tokens": 0,
+            "active_time_s": 0, "tool_calls": 0, "models_used": 0,
+            "avg_prompts_day": 0, "avg_active_day_s": 0,
+        },
+        "daily": [], "models": {}, "tools": {}, "recent_tools": {},
+        "time_breakdown": {
+            "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
+            "recent_subagent": 0, "recent_agent_runs": 0,
+            "recent_thinking": 0, "recent_tool_execution": 0,
+        },
+        "projects": [], "model_breakdown": [],
+        "total_cost": 0, "total_orch_cost": 0, "total_agent_cost": 0, "total_water_ml": 0,
+        "benchmarks": {}, "output_pricing": {}, "model_pricing": {},
+        "cutoff_date": cutoff_date, "recency_days": RECENCY_DAYS,
+        "generation_time": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "data_range": "No data",
+        "machines": [], "machine_summary": [], "recent_machine_summary": [],
+        "machine_daily_cost": {}, "model_order": MODEL_ORDER,
+        "hourly": [], "weekly_budget": None,
+        "last_active_ts": None, "version": get_cache_version(),
+        "today": {"model_breakdown": [], "time_breakdown": {
+            "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
+        }, "tools": {}, "projects": [], "machine_summary": []},
     }
 
-    # ── Per-machine stats (derived from Q1 pre-computed accumulators) ──
-    machine_stats = {}
-    for m, mt in _mach_tokens.items():
-        machine_stats[m] = {
-            "api_calls": mt[4],
-            "input_tokens": mt[0], "output_tokens": mt[1],
-            "cache_creation_tokens": mt[2], "cache_read_tokens": mt[3],
-        }
-    # Prompts per machine (lightweight - one event per prompt, no dedup)
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as prompts "
-        "FROM events WHERE is_human_prompt=1 GROUP BY source_machine"
-    ):
-        m = r["source_machine"]
-        if m in machine_stats:
-            machine_stats[m]["prompts"] = r["prompts"]
-        else:
-            machine_stats[m] = {"api_calls": 0, "prompts": r["prompts"],
-                                "input_tokens": 0, "output_tokens": 0,
-                                "cache_creation_tokens": 0, "cache_read_tokens": 0}
-    # Tool calls per machine
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as cnt FROM tool_uses GROUP BY source_machine"
-    ):
-        m = r["source_machine"]
-        if m in machine_stats:
-            machine_stats[m]["tool_calls"] = r["cnt"]
-    machine_daily = _mach_daily_cost  # already computed in Q1 loop
-    # Build machine summary list
-    machine_summary = []
-    for m_name in sorted(machine_stats, key=lambda x: -(machine_stats[x].get("prompts", 0))):
-        ms = machine_stats[m_name]
-        total_tok = ms["input_tokens"] + ms["output_tokens"] + ms["cache_creation_tokens"] + ms["cache_read_tokens"]
-        m_cost = sum(machine_daily.get(m_name, {}).values())
-        machine_summary.append({
-            "machine": m_name,
-            "prompts": ms.get("prompts", 0),
-            "api_calls": ms["api_calls"],
-            "tool_calls": ms.get("tool_calls", 0),
-            "total_tokens": total_tok,
-            "cost": round(m_cost, 2),
-        })
-    # ── Recent per-machine stats (derived from Q1 pre-computed accumulators) ──
-    recent_machine_stats = {}
-    for m, rmt in _recent_mach_tokens.items():
-        recent_machine_stats[m] = {
-            "api_calls": rmt[4],
-            "input_tokens": rmt[0], "output_tokens": rmt[1],
-            "cache_creation_tokens": rmt[2], "cache_read_tokens": rmt[3],
-        }
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as prompts "
-        "FROM events WHERE is_human_prompt=1 AND day>=? GROUP BY source_machine",
-        (cutoff_date,),
-    ):
-        m = r["source_machine"]
-        if m in recent_machine_stats:
-            recent_machine_stats[m]["prompts"] = r["prompts"]
-        else:
-            recent_machine_stats[m] = {"api_calls": 0, "prompts": r["prompts"],
-                                        "input_tokens": 0, "output_tokens": 0,
-                                        "cache_creation_tokens": 0, "cache_read_tokens": 0}
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as cnt FROM tool_uses WHERE day>=? GROUP BY source_machine",
-        (cutoff_date,),
-    ):
-        m = r["source_machine"]
-        if m in recent_machine_stats:
-            recent_machine_stats[m]["tool_calls"] = r["cnt"]
-    recent_machine_summary = []
-    for m_name in sorted(recent_machine_stats, key=lambda x: -(recent_machine_stats[x].get("prompts", 0))):
-        rms = recent_machine_stats[m_name]
-        total_tok = rms["input_tokens"] + rms["output_tokens"] + rms["cache_creation_tokens"] + rms["cache_read_tokens"]
-        m_cost = _recent_mach_daily_cost.get(m_name, 0.0)
-        recent_machine_summary.append({
-            "machine": m_name,
-            "prompts": rms.get("prompts", 0),
-            "api_calls": rms["api_calls"],
-            "tool_calls": rms.get("tool_calls", 0),
-            "total_tokens": total_tok,
-            "cost": round(m_cost, 2),
-        })
 
-    # Build machine daily series for stacked chart
-    machine_daily_series = {}
-    for m_name in machine_stats:
-        series = []
-        for d in date_range:
-            series.append(round(machine_daily.get(m_name, {}).get(d, 0.0), 2))
-        machine_daily_series[m_name] = series
-
-    # ── Hourly activity: 24h grid anchored at 1am ──
-    # Today's hours (1am → current) = blue, yesterday fills the rest = yellow.
-    # Grid always runs 1am → 12am (24 cells).  Each cell pulls from today
-    # if that hour has occurred, otherwise from yesterday.
+def _build_hourly(conn) -> list[dict]:
+    """Build the 24-slot hourly activity grid from live event data (48h window)."""
     now_h = datetime.now(TZ)
-    current_hour_num = now_h.hour  # 0-23
+    current_hour_num = now_h.hour
     today = now_h.replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday = today - timedelta(days=1)
-    N_HOURS = 24
 
     hourly_list = []
-    for slot in range(N_HOURS):
-        clock_hour = slot  # slot 0 = 12am, slot 23 = 11pm
+    for slot in range(24):
+        clock_hour = slot
         is_today = clock_hour <= current_hour_num
         h = (today if is_today else yesterday) + timedelta(hours=clock_hour)
         hn = clock_hour % 12 or 12
@@ -758,17 +208,10 @@ def _build_dashboard_data_inner() -> dict:
             "_epoch": h.timestamp(),
         })
 
-    # Query window spans all referenced hours
     all_epochs = [hl["_epoch"] for hl in hourly_list]
     h_start_epoch = min(all_epochs)
     h_end_epoch = max(all_epochs) + 3600
-    # Build epoch→index lookup for mapping query results back
     epoch_to_idx = {hl["_epoch"]: i for i, hl in enumerate(hourly_list)}
-
-    # Helper: map a raw epoch from SQL to the hourly_list index
-    def _epoch_to_slot(raw_epoch):
-        floor_ep = int(raw_epoch // 3600) * 3600
-        return epoch_to_idx.get(floor_ep)
 
     for r in conn.execute(
         "SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
@@ -810,147 +253,478 @@ def _build_dashboard_data_inner() -> dict:
 
     for hl in hourly_list:
         hl["cost"] = round(hl["cost"], 2)
-        del hl["_epoch"]  # strip internal field
+        del hl["_epoch"]
 
-    # ── Weekly usage budget gauge (from OAuth API data) ──
-    import json as _json
-    oauth_row = conn.execute(
-        "SELECT value FROM meta WHERE key='oauth_usage'"
+    return hourly_list
+
+
+def _build_today_data(conn, today_str: str) -> dict:
+    """Build the 'today' sub-object from today's daily_summary row.
+
+    Returns model_breakdown, time_breakdown, tools, projects, and
+    machine_summary scoped to just today.
+    """
+    row = conn.execute(
+        "SELECT * FROM daily_summary WHERE day = ?", (today_str,)
     ).fetchone()
-    weekly_budget = None
-    if oauth_row:
-        try:
-            stored = _json.loads(oauth_row["value"])
-            usage = stored.get("data", {})
-            updated_at = stored.get("updated_at", "")
 
-            # Build gauge data from real Anthropic utilization
-            seven_day = usage.get("seven_day") or {}
-            five_hour = usage.get("five_hour") or {}
-            seven_day_sonnet = usage.get("seven_day_sonnet") or {}
-            seven_day_opus = usage.get("seven_day_opus") or {}
-            extra = usage.get("extra_usage") or {}
+    if not row:
+        return {
+            "model_breakdown": [], "time_breakdown": {
+                "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
+            },
+            "tools": {}, "projects": [], "machine_summary": [],
+        }
 
-            resets_at_iso = seven_day.get("resets_at", "")
-            five_hour_resets_iso = five_hour.get("resets_at", "")
+    # Model breakdown for today
+    model_data = json.loads(row["model_json"] or "{}")
+    gen_data = json.loads(row["gen_json"] or "{}")
+    today_mb = []
+    for mname, md in sorted(model_data.items(), key=lambda kv: model_sort_key(kv[0])):
+        inp = md.get("input", 0)
+        out = md.get("output", 0)
+        cw = md.get("cache_write", 0)
+        cr = md.get("cache_read", 0)
+        cost = compute_cost(mname, inp, out, cw, cr)
+        p = get_pricing(mname)
+        main_cost = md.get("main_cost", 0.0)
+        agent_cost = round(cost - main_cost, 2)
+        active_hours = md.get("active_s", 0.0) / 3600
+        gd = gen_data.get(mname, {})
+        gen_s = gd.get("gen_s", 0.0)
+        gen_out = gd.get("gen_out", 0)
+        energy = compute_energy_wh(mname, inp, out)
+        water = compute_water_ml(mname, inp, out)
+        today_mb.append({
+            "model": mname,
+            "api_calls": md.get("api_calls", 0),
+            "input": inp, "output": out,
+            "cache_write": cw, "cache_read": cr,
+            "total_tokens": inp + out + cw + cr,
+            "cost": round(cost, 2),
+            "main_cost": round(main_cost, 2),
+            "agent_cost": agent_cost,
+            "main_prompts": md.get("main_prompts", 0),
+            "agent_invocations": md.get("agent_invocations", 0),
+            "active_hours": round(active_hours, 1),
+            "cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
+            "all_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
+            "output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
+            "all_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
+            "cost_input": round(inp * p[0] / 1e6, 2),
+            "cost_output": round(out * p[1] / 1e6, 2),
+            "cost_cache_write": round(cw * p[2] / 1e6, 2),
+            "cost_cache_read": round(cr * p[3] / 1e6, 2),
+            # Today view uses the same keys as recent/all for compatibility
+            "recent_cost": round(cost, 2),
+            "recent_main_cost": round(main_cost, 2),
+            "recent_agent_cost": agent_cost,
+            "recent_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
+            "recent_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
+            "recent_active_hours": round(active_hours, 1),
+            "recent_cost_input": round(inp * p[0] / 1e6, 2),
+            "recent_cost_output": round(out * p[1] / 1e6, 2),
+            "recent_cost_cache_write": round(cw * p[2] / 1e6, 2),
+            "recent_cost_cache_read": round(cr * p[3] / 1e6, 2),
+            "recent_input": inp, "recent_output": out,
+            "recent_cache_write": cw, "recent_cache_read": cr,
+            "recent_total_tokens": inp + out + cw + cr,
+            "last_seen": today_str, "recent": True,
+            "energy_wh": round(energy, 1),
+            "water_ml": round(water, 1),
+            "recent_energy_wh": round(energy, 1),
+            "recent_water_ml": round(water, 1),
+        })
 
-            # Detect stale data: if resets_at is in the past, the period
-            # rolled over since the last push.  Zero out utilization
-            # percentages (they belong to the old period) and project
-            # the window forward so cost/active-time queries cover the
-            # current period instead of the expired one.
-            now_utc = datetime.now(ZoneInfo("UTC"))
-            data_is_stale = False
-            if resets_at_iso:
-                try:
-                    reset_dt = datetime.fromisoformat(
-                        resets_at_iso.replace("Z", "+00:00"))
-                    if reset_dt <= now_utc:
-                        data_is_stale = True
-                        # Project forward: advance resets_at by whole
-                        # periods (7 days) until it's in the future.
-                        week_s = 7 * 24 * 3600
-                        elapsed = (now_utc - reset_dt).total_seconds()
-                        periods_passed = int(elapsed // week_s) + 1
-                        resets_at_iso = (
-                            reset_dt + timedelta(seconds=periods_passed * week_s)
-                        ).isoformat()
-                except (ValueError, TypeError):
-                    pass
-            if five_hour_resets_iso:
-                try:
-                    fh_reset_dt = datetime.fromisoformat(
-                        five_hour_resets_iso.replace("Z", "+00:00"))
-                    if fh_reset_dt <= now_utc:
-                        data_is_stale = True
-                        five_hr_s = 5 * 3600
-                        elapsed = (now_utc - fh_reset_dt).total_seconds()
-                        periods_passed = int(elapsed // five_hr_s) + 1
-                        five_hour_resets_iso = (
-                            fh_reset_dt + timedelta(seconds=periods_passed * five_hr_s)
-                        ).isoformat()
-                except (ValueError, TypeError):
-                    pass
+    # Time breakdown for today
+    time_breakdown = {
+        "thinking": round(row["thinking_s"]),
+        "tool_execution": round(row["tool_exec_s"]),
+        "subagent": round(row["subagent_s"]),
+        "agent_runs": row["agent_runs"],
+    }
 
-            weekly_budget = {
-                "source": "oauth",
-                "weekly_pct": 0 if data_is_stale else (seven_day.get("utilization", 0)),
-                "weekly_resets_at": resets_at_iso,
-                "five_hour_pct": 0 if data_is_stale else (five_hour.get("utilization", 0)),
-                "five_hour_resets_at": five_hour_resets_iso,
-                "sonnet_pct": (0 if data_is_stale else seven_day_sonnet.get("utilization", 0)) if seven_day_sonnet else None,
-                "opus_pct": (0 if data_is_stale else seven_day_opus.get("utilization", 0)) if seven_day_opus else None,
-                "extra_usage": {
-                    "enabled": extra.get("is_enabled", False),
-                    "monthly_limit_cents": extra.get("monthly_limit", 0),
-                    "used_cents": extra.get("used_credits", 0),
-                    "pct": extra.get("utilization", 0),
-                } if extra else None,
-                "updated_at": updated_at,
-                "updated_at_epoch": datetime.fromisoformat(updated_at).timestamp() if updated_at else None,
-                "data_is_stale": data_is_stale,
-            }
+    # Tools for today
+    tools = json.loads(row["tool_json"] or "{}")
 
-            # ── Precise weekly window stats (cost + active time) ──
-            # Compute from raw events using exact epoch boundaries instead
-            # of daily buckets, so partial-day boundaries are handled correctly.
-            if resets_at_iso:
-                try:
-                    reset_dt = datetime.fromisoformat(resets_at_iso.replace("Z", "+00:00"))
-                    reset_epoch = reset_dt.timestamp()
-                    week_start_epoch = reset_epoch - 7 * 24 * 3600
+    # Projects for today
+    proj_data = json.loads(row["project_json"] or "{}")
+    raw_dirs = sorted(proj_data, key=lambda x: -proj_data[x].get("cost", 0))[:15]
+    proj_display = _make_display_names(raw_dirs)
+    projects = [
+        {"name": proj_display[k], "minutes": round(proj_data[k].get("seconds", 0) / 60),
+         "cost": round(proj_data[k].get("cost", 0), 2),
+         "recent_minutes": round(proj_data[k].get("seconds", 0) / 60),
+         "recent_cost": round(proj_data[k].get("cost", 0), 2)}
+        for k in raw_dirs
+    ]
 
-                    # Cost: deduplicate by request_id, filter by epoch window
-                    week_cost = 0.0
-                    for r in conn.execute(
-                        "SELECT model, SUM(inp) as inp, SUM(out) as out, "
-                        "SUM(cc) as cc, SUM(cr) as cr "
-                        "FROM ("
-                        "  SELECT model, request_id, "
-                        "  MAX(input_tokens) as inp, MAX(output_tokens) as out, "
-                        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
-                        "  FROM events WHERE type='assistant' AND model IS NOT NULL "
-                        "  AND model != '<synthetic>' AND request_id IS NOT NULL "
-                        "  AND ts_epoch>=? AND ts_epoch<? "
-                        "  GROUP BY model, request_id"
-                        ") GROUP BY model",
-                        (week_start_epoch, reset_epoch),
-                    ):
-                        dm = display_model(r["model"])
-                        week_cost += compute_cost(
-                            dm, r["inp"] or 0, r["out"] or 0,
-                            r["cc"] or 0, r["cr"] or 0)
+    # Machine summary for today
+    mach_data = json.loads(row["machine_json"] or "{}")
+    machine_summary = []
+    for mname in sorted(mach_data, key=lambda x: -mach_data[x].get("prompts", 0)):
+        mv = mach_data[mname]
+        total_tok = mv.get("input", 0) + mv.get("output", 0) + mv.get("cache_write", 0) + mv.get("cache_read", 0)
+        machine_summary.append({
+            "machine": mname,
+            "prompts": mv.get("prompts", 0),
+            "api_calls": mv.get("calls", 0),
+            "tool_calls": mv.get("tool_calls", 0),
+            "total_tokens": total_tok,
+            "cost": round(mv.get("cost", 0), 2),
+        })
 
-                    # Active time: sum gaps from session timelines within window
-                    # Use a SQL approach: get all relevant user/assistant events
-                    # in the window, ordered by session, then compute gaps.
-                    week_active_s = 0.0
-                    prev_evt = None
-                    for e in conn.execute(
-                        "SELECT session_id, ts_epoch, type, is_sidechain, "
-                        "has_tool_use, has_tool_result, agent_id "
-                        "FROM events "
-                        "WHERE ts_epoch>=? AND ts_epoch<? "
-                        "AND type IN ('user','assistant') "
-                        "AND is_sidechain=0 AND agent_id IS NULL "
-                        "ORDER BY session_id, ts_epoch",
-                        (week_start_epoch, reset_epoch),
-                    ):
-                        if (prev_evt and
-                                prev_evt["session_id"] == e["session_id"]):
-                            gap = e["ts_epoch"] - prev_evt["ts_epoch"]
-                            if 0 < gap < IDLE_THRESHOLD_S:
-                                week_active_s += gap
-                        prev_evt = e
+    return {
+        "model_breakdown": today_mb,
+        "time_breakdown": time_breakdown,
+        "tools": tools,
+        "projects": projects,
+        "machine_summary": machine_summary,
+    }
 
-                    weekly_budget["week_cost"] = round(week_cost, 2)
-                    weekly_budget["week_active_s"] = round(week_active_s)
-                except (ValueError, TypeError, OSError):
-                    pass
-        except (ValueError, KeyError):
-            pass
 
-    # ── Project display names (short, disambiguated) ──
+def _build_dashboard_data_inner() -> dict:
+    """Read daily_summary rows and produce the full dashboard JSON blob."""
+    load_pricing()
+    conn = get_conn()
+    cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
+
+    # ── Read all summary rows ──
+    rows = conn.execute(
+        "SELECT * FROM daily_summary ORDER BY day"
+    ).fetchall()
+
+    if not rows:
+        return _empty_dashboard(cutoff_date)
+
+    # ── Accumulators ──
+    model_stats = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+        "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
+        "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
+        "gen_s": 0.0, "gen_out": 0,
+        "recent_active_s": 0.0, "recent_gen_s": 0.0, "recent_gen_out": 0,
+        "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
+        "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
+    })
+    project_seconds: Counter = Counter()
+    project_cost: Counter = Counter()
+    recent_project_seconds: Counter = Counter()
+    recent_project_cost: Counter = Counter()
+    tot = {
+        "thinking_s": 0.0, "tool_exec_s": 0.0, "active_s": 0.0,
+        "subagent_s": 0.0, "agent_runs": 0,
+        "recent_subagent_s": 0.0, "recent_agent_runs": 0,
+        "recent_thinking_s": 0.0, "recent_tool_exec_s": 0.0,
+        "tokens": 0, "human_prompts": 0, "tool_calls": 0, "sessions": 0,
+    }
+    models_seen: set[str] = set()
+    all_tool_counts: Counter = Counter()
+    recent_tool_counts: Counter = Counter()
+
+    # Per-machine accumulators
+    mach_all: dict[str, dict] = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+        "calls": 0, "prompts": 0, "tool_calls": 0, "cost": 0.0,
+    })
+    mach_recent: dict[str, dict] = defaultdict(lambda: {
+        "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+        "calls": 0, "prompts": 0, "tool_calls": 0, "cost": 0.0,
+    })
+    mach_daily_cost: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    machine_set: set[str] = set()
+
+    daily_map: dict[str, dict] = {}
+
+    # ── Merge each day's summary ──
+    for row in rows:
+        day = row["day"]
+        is_recent = day >= cutoff_date
+
+        # Scalar daily fields
+        daily_map[day] = {
+            "sessions": row["sessions"],
+            "human_prompts": row["human_prompts"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cache_creation_tokens": row["cache_creation_tokens"],
+            "cache_read_tokens": row["cache_read_tokens"],
+            "tool_calls": row["tool_calls"],
+            "active_s": row["active_s"],
+            "thinking_s": row["thinking_s"],
+            "tool_exec_s": row["tool_exec_s"],
+            "cost": row["cost"],
+        }
+
+        tot["sessions"] += row["sessions"]
+        tot["human_prompts"] += row["human_prompts"]
+        tot["tool_calls"] += row["tool_calls"]
+        tot["tokens"] += (row["input_tokens"] + row["output_tokens"]
+                          + row["cache_creation_tokens"] + row["cache_read_tokens"])
+        tot["active_s"] += row["active_s"]
+        tot["thinking_s"] += row["thinking_s"]
+        tot["tool_exec_s"] += row["tool_exec_s"]
+        tot["subagent_s"] += row["subagent_s"]
+        tot["agent_runs"] += row["agent_runs"]
+        if is_recent:
+            tot["recent_thinking_s"] += row["thinking_s"]
+            tot["recent_tool_exec_s"] += row["tool_exec_s"]
+            tot["recent_subagent_s"] += row["subagent_s"]
+            tot["recent_agent_runs"] += row["agent_runs"]
+
+        # ── model_json ──
+        model_data = json.loads(row["model_json"] or "{}")
+        for mname, md in model_data.items():
+            models_seen.add(mname)
+            ms = model_stats[mname]
+            ms["input"] += md.get("input", 0)
+            ms["output"] += md.get("output", 0)
+            ms["cache_write"] += md.get("cache_write", 0)
+            ms["cache_read"] += md.get("cache_read", 0)
+            ms["api_calls"] += md.get("api_calls", 0)
+            ms["main_api_calls"] += md.get("main_api_calls", 0)
+            ms["main_cost"] += md.get("main_cost", 0.0)
+            ms["main_prompts"] += md.get("main_prompts", 0)
+            ms["agent_invocations"] += md.get("agent_invocations", 0)
+            ms["active_s"] += md.get("active_s", 0.0)
+            if day > ms["last_seen"]:
+                ms["last_seen"] = day
+            if is_recent:
+                ms["recent_input"] += md.get("input", 0)
+                ms["recent_output"] += md.get("output", 0)
+                ms["recent_cache_write"] += md.get("cache_write", 0)
+                ms["recent_cache_read"] += md.get("cache_read", 0)
+                ms["recent_main_cost"] += md.get("main_cost", 0.0)
+                ms["recent_active_s"] += md.get("active_s", 0.0)
+
+        # ── gen_json (generation time — stored separately from model_json) ──
+        gen_data = json.loads(row["gen_json"] or "{}")
+        for mname, gd in gen_data.items():
+            ms = model_stats[mname]
+            ms["gen_s"] += gd.get("gen_s", 0.0)
+            ms["gen_out"] += gd.get("gen_out", 0)
+            if is_recent:
+                ms["recent_gen_s"] += gd.get("gen_s", 0.0)
+                ms["recent_gen_out"] += gd.get("gen_out", 0)
+
+        # ── project_json ──
+        proj_data = json.loads(row["project_json"] or "{}")
+        for pdir, pd in proj_data.items():
+            project_seconds[pdir] += pd.get("seconds", 0.0)
+            project_cost[pdir] += pd.get("cost", 0.0)
+            if is_recent:
+                recent_project_seconds[pdir] += pd.get("seconds", 0.0)
+                recent_project_cost[pdir] += pd.get("cost", 0.0)
+
+        # ── machine_json ──
+        mach_data = json.loads(row["machine_json"] or "{}")
+        for mname, md in mach_data.items():
+            machine_set.add(mname)
+            ma = mach_all[mname]
+            ma["input"] += md.get("input", 0)
+            ma["output"] += md.get("output", 0)
+            ma["cache_write"] += md.get("cache_write", 0)
+            ma["cache_read"] += md.get("cache_read", 0)
+            ma["calls"] += md.get("calls", 0)
+            ma["prompts"] += md.get("prompts", 0)
+            ma["tool_calls"] += md.get("tool_calls", 0)
+            ma["cost"] += md.get("cost", 0.0)
+            mach_daily_cost[mname][day] += md.get("cost", 0.0)
+            if is_recent:
+                mr = mach_recent[mname]
+                mr["input"] += md.get("input", 0)
+                mr["output"] += md.get("output", 0)
+                mr["cache_write"] += md.get("cache_write", 0)
+                mr["cache_read"] += md.get("cache_read", 0)
+                mr["calls"] += md.get("calls", 0)
+                mr["prompts"] += md.get("prompts", 0)
+                mr["tool_calls"] += md.get("tool_calls", 0)
+                mr["cost"] += md.get("cost", 0.0)
+
+        # ── tool_json ──
+        tool_data = json.loads(row["tool_json"] or "{}")
+        for tname, cnt in tool_data.items():
+            all_tool_counts[tname] += cnt
+            if is_recent:
+                recent_tool_counts[tname] += cnt
+
+    # ── Build date range (fill gaps) ──
+    all_dates = sorted(daily_map.keys())
+    start = datetime.strptime(all_dates[0], "%Y-%m-%d")
+    end = datetime.strptime(all_dates[-1], "%Y-%m-%d")
+    date_range: list[str] = []
+    cur = start
+    while cur <= end:
+        date_range.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+
+    num_days = len(date_range) or 1
+
+    # ── daily list ──
+    daily_list = []
+    for d in date_range:
+        dd = daily_map.get(d)
+        if dd:
+            daily_list.append({
+                "date": d,
+                "sessions": dd["sessions"],
+                "prompts": dd["human_prompts"],
+                "tool_calls": dd["tool_calls"],
+                "active_minutes": round(dd["active_s"] / 60),
+                "input_tokens": dd["input_tokens"],
+                "output_tokens": dd["output_tokens"],
+                "cache_creation_tokens": dd["cache_creation_tokens"],
+                "cache_read_tokens": dd["cache_read_tokens"],
+                "cost": round(dd["cost"], 2),
+            })
+        else:
+            daily_list.append({
+                "date": d, "sessions": 0, "prompts": 0, "tool_calls": 0,
+                "active_minutes": 0, "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_tokens": 0, "cache_read_tokens": 0, "cost": 0,
+            })
+
+    # ── Tool counts (top 20) ──
+    tool_counts = dict(all_tool_counts.most_common(20))
+    recent_tools = dict(recent_tool_counts.most_common(20))
+
+    # ── Model breakdown ──
+    total_cost = 0.0
+    model_breakdown = []
+    for name in sorted(model_stats, key=lambda m: model_sort_key(m)):
+        ms = model_stats[name]
+        total_tok = ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
+        cost = compute_cost(name, ms["input"], ms["output"], ms["cache_write"], ms["cache_read"])
+        p = get_pricing(name)
+        total_cost += cost
+        main_cost = round(ms["main_cost"], 2)
+        agent_cost = round(cost - ms["main_cost"], 2)
+        avg_cost_per_turn = (ms["main_cost"] / ms["main_prompts"]
+                             if ms["main_prompts"] > 0 else None)
+        avg_cost_per_agent = (agent_cost / ms["agent_invocations"]
+                              if ms["agent_invocations"] > 0 else None)
+        active_hours = ms["active_s"] / 3600
+        recent_cost = compute_cost(name, ms["recent_input"], ms["recent_output"],
+                                   ms["recent_cache_write"], ms["recent_cache_read"])
+        recent_hours = ms["recent_active_s"] / 3600
+        if recent_hours >= 0.5:
+            cost_per_hour = recent_cost / recent_hours
+        elif active_hours > 0:
+            cost_per_hour = cost / active_hours
+        else:
+            cost_per_hour = None
+        if ms["recent_gen_s"] > 0:
+            output_tok_per_s = ms["recent_gen_out"] / ms["recent_gen_s"]
+        elif ms["gen_s"] > 0:
+            output_tok_per_s = ms["gen_out"] / ms["gen_s"]
+        else:
+            output_tok_per_s = None
+        recent_active_hours = recent_hours
+        recent_cost_per_hour = (recent_cost / recent_hours) if recent_hours >= 0.5 else None
+        all_cost_per_hour = (cost / active_hours) if active_hours > 0 else None
+        recent_output_tok_per_s = (ms["recent_gen_out"] / ms["recent_gen_s"]) if ms["recent_gen_s"] > 0 else None
+        all_output_tok_per_s = (ms["gen_out"] / ms["gen_s"]) if ms["gen_s"] > 0 else None
+        energy = compute_energy_wh(name, ms["input"], ms["output"])
+        water = compute_water_ml(name, ms["input"], ms["output"])
+        recent_energy = compute_energy_wh(name, ms["recent_input"], ms["recent_output"])
+        recent_water = compute_water_ml(name, ms["recent_input"], ms["recent_output"])
+        model_breakdown.append({
+            "model": name, "api_calls": ms["api_calls"],
+            "input": ms["input"], "output": ms["output"],
+            "cache_write": ms["cache_write"], "cache_read": ms["cache_read"],
+            "total_tokens": total_tok, "cost": round(cost, 2),
+            "main_cost": main_cost, "agent_cost": agent_cost,
+            "avg_cost_per_turn": round(avg_cost_per_turn, 4) if avg_cost_per_turn is not None else None,
+            "avg_cost_per_agent": round(avg_cost_per_agent, 4) if avg_cost_per_agent is not None else None,
+            "main_prompts": ms["main_prompts"],
+            "agent_invocations": ms["agent_invocations"],
+            "active_hours": round(active_hours, 1),
+            "cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
+            "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
+            "cost_input": round(ms["input"] * p[0] / 1e6, 2),
+            "cost_output": round(ms["output"] * p[1] / 1e6, 2),
+            "cost_cache_write": round(ms["cache_write"] * p[2] / 1e6, 2),
+            "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
+            "last_seen": ms["last_seen"],
+            "recent": ms["last_seen"] >= cutoff_date,
+            "recent_input": ms["recent_input"], "recent_output": ms["recent_output"],
+            "recent_cache_write": ms["recent_cache_write"], "recent_cache_read": ms["recent_cache_read"],
+            "recent_total_tokens": ms["recent_input"] + ms["recent_output"] + ms["recent_cache_write"] + ms["recent_cache_read"],
+            "recent_cost": round(recent_cost, 2),
+            "recent_main_cost": round(ms["recent_main_cost"], 2),
+            "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
+            "recent_cost_input": round(ms["recent_input"] * p[0] / 1e6, 2),
+            "recent_cost_output": round(ms["recent_output"] * p[1] / 1e6, 2),
+            "recent_cost_cache_write": round(ms["recent_cache_write"] * p[2] / 1e6, 2),
+            "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
+            "recent_active_hours": round(recent_active_hours, 1),
+            "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
+            "recent_output_tok_per_s": round(recent_output_tok_per_s, 1) if recent_output_tok_per_s is not None else None,
+            "all_cost_per_hour": round(all_cost_per_hour, 2) if all_cost_per_hour is not None else None,
+            "all_output_tok_per_s": round(all_output_tok_per_s, 1) if all_output_tok_per_s is not None else None,
+            "energy_wh": round(energy, 1),
+            "water_ml": round(water, 1),
+            "recent_energy_wh": round(recent_energy, 1),
+            "recent_water_ml": round(recent_water, 1),
+        })
+
+    # ── Models donut (sorted by total tokens descending) ──
+    models_donut = {
+        name: ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
+        for name, ms in sorted(model_stats.items(),
+            key=lambda kv: -(kv[1]["input"] + kv[1]["output"] +
+                             kv[1]["cache_write"] + kv[1]["cache_read"]))
+    }
+
+    # ── Machine summaries ──
+    machine_list = sorted(machine_set)
+    machine_summary = []
+    for m_name in sorted(mach_all, key=lambda x: -mach_all[x]["prompts"]):
+        ma = mach_all[m_name]
+        total_tok = ma["input"] + ma["output"] + ma["cache_write"] + ma["cache_read"]
+        machine_summary.append({
+            "machine": m_name,
+            "prompts": ma["prompts"],
+            "api_calls": ma["calls"],
+            "tool_calls": ma["tool_calls"],
+            "total_tokens": total_tok,
+            "cost": round(ma["cost"], 2),
+        })
+
+    recent_machine_summary = []
+    for m_name in sorted(mach_recent, key=lambda x: -mach_recent[x]["prompts"]):
+        mr = mach_recent[m_name]
+        total_tok = mr["input"] + mr["output"] + mr["cache_write"] + mr["cache_read"]
+        recent_machine_summary.append({
+            "machine": m_name,
+            "prompts": mr["prompts"],
+            "api_calls": mr["calls"],
+            "tool_calls": mr["tool_calls"],
+            "total_tokens": total_tok,
+            "cost": round(mr["cost"], 2),
+        })
+
+    # ── Machine daily cost series ──
+    machine_daily_series: dict[str, list[float]] = {}
+    for m_name in mach_all:
+        series = []
+        for d in date_range:
+            series.append(round(mach_daily_cost.get(m_name, {}).get(d, 0.0), 2))
+        machine_daily_series[m_name] = series
+
+    # ── Last active timestamp ──
+    last_active_row = conn.execute("SELECT MAX(ts_epoch) as ts FROM events").fetchone()
+    last_active_ts = last_active_row["ts"] if last_active_row and last_active_row["ts"] else None
+
+    # ── Sessions count (total distinct, from summary) ──
+    # Note: session counts from summaries are per-day distinct, so the total
+    # may overcount sessions spanning midnight.  Use the sum as a close approx.
+    sessions_count = tot["sessions"]
+
+    # ── Hourly (live query) ──
+    hourly_list = _build_hourly(conn)
+
+    # ── Project display names ──
     _top_project_dirs = sorted(project_cost, key=lambda x: -project_cost[x])[:15]
     _proj_display = _make_display_names(_top_project_dirs)
     _projects_list = [
@@ -960,109 +734,6 @@ def _build_dashboard_data_inner() -> dict:
          "recent_cost": round(recent_project_cost.get(k, 0), 2)}
         for k in _top_project_dirs
     ]
-
-    # ── Build today data ──
-    today_tot["agent_runs"] = len(today_agent_ids)
-
-    # Today machine summary
-    today_machine_stats = {}
-    for m, tmt in today_mach_tokens.items():
-        today_machine_stats[m] = {
-            "api_calls": tmt[4],
-            "input_tokens": tmt[0], "output_tokens": tmt[1],
-            "cache_creation_tokens": tmt[2], "cache_read_tokens": tmt[3],
-        }
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as prompts "
-        "FROM events WHERE is_human_prompt=1 AND day=? GROUP BY source_machine",
-        (today_str,),
-    ):
-        m = r["source_machine"]
-        if m in today_machine_stats:
-            today_machine_stats[m]["prompts"] = r["prompts"]
-        else:
-            today_machine_stats[m] = {"api_calls": 0, "prompts": r["prompts"],
-                                      "input_tokens": 0, "output_tokens": 0,
-                                      "cache_creation_tokens": 0, "cache_read_tokens": 0}
-    for r in conn.execute(
-        "SELECT source_machine, COUNT(*) as cnt FROM tool_uses WHERE day=? GROUP BY source_machine",
-        (today_str,),
-    ):
-        m = r["source_machine"]
-        if m in today_machine_stats:
-            today_machine_stats[m]["tool_calls"] = r["cnt"]
-    today_machine_summary = []
-    for m_name in sorted(today_machine_stats, key=lambda x: -(today_machine_stats[x].get("prompts", 0))):
-        tms = today_machine_stats[m_name]
-        total_tok = tms["input_tokens"] + tms["output_tokens"] + tms["cache_creation_tokens"] + tms["cache_read_tokens"]
-        m_cost = today_mach_cost.get(m_name, 0.0)
-        today_machine_summary.append({
-            "machine": m_name,
-            "prompts": tms.get("prompts", 0),
-            "api_calls": tms["api_calls"],
-            "tool_calls": tms.get("tool_calls", 0),
-            "total_tokens": total_tok,
-            "cost": round(m_cost, 2),
-        })
-
-    # Today model breakdown
-    today_model_breakdown = []
-    for name in sorted(today_model_stats, key=lambda m: model_sort_key(m)):
-        tms = today_model_stats[name]
-        total_tok = tms["input"] + tms["output"] + tms["cache_write"] + tms["cache_read"]
-        cost = compute_cost(name, tms["input"], tms["output"], tms["cache_write"], tms["cache_read"])
-        p = get_pricing(name)
-        main_cost = round(tms["main_cost"], 2)
-        agent_cost = round(cost - tms["main_cost"], 2)
-        active_hours = tms["active_s"] / 3600
-        cost_per_hour = (cost / active_hours) if active_hours > 0 else None
-        output_tok_per_s = (tms["gen_out"] / tms["gen_s"]) if tms["gen_s"] > 0 else None
-        today_model_breakdown.append({
-            "model": name, "api_calls": tms["api_calls"],
-            "input": tms["input"], "output": tms["output"],
-            "cache_write": tms["cache_write"], "cache_read": tms["cache_read"],
-            "total_tokens": total_tok, "cost": round(cost, 2),
-            "main_cost": main_cost, "agent_cost": agent_cost,
-            "active_hours": round(active_hours, 1),
-            "cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
-            "all_cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
-            "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
-            "all_output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
-            "cost_input": round(tms["input"] * p[0] / 1e6, 2),
-            "cost_output": round(tms["output"] * p[1] / 1e6, 2),
-            "cost_cache_write": round(tms["cache_write"] * p[2] / 1e6, 2),
-            "cost_cache_read": round(tms["cache_read"] * p[3] / 1e6, 2),
-            "energy_wh": round(tms["energy_wh"], 1),
-            "water_ml": round(tms["water_ml"], 1),
-            "main_prompts": tms.get("main_prompts", 0),
-            "agent_invocations": tms.get("agent_invocations", 0),
-            "avg_cost_per_turn": None,
-            "avg_cost_per_agent": None,
-            "last_seen": today_str,
-        })
-
-    # Today projects
-    _today_proj_dirs = sorted(today_project_cost, key=lambda x: -today_project_cost[x])[:15]
-    _today_proj_display = _make_display_names(_today_proj_dirs)
-    _today_projects = [
-        {"name": _today_proj_display[k],
-         "minutes": round(today_project_seconds[k] / 60),
-         "cost": round(today_project_cost[k], 2)}
-        for k in _today_proj_dirs
-    ]
-
-    today_data = {
-        "model_breakdown": today_model_breakdown,
-        "tools": today_tool_counts,
-        "time_breakdown": {
-            "thinking": round(today_tot["thinking_s"]),
-            "tool_execution": round(today_tot["tool_exec_s"]),
-            "subagent": round(today_tot["subagent_s"]),
-            "agent_runs": today_tot["agent_runs"],
-        },
-        "projects": _today_projects,
-        "machine_summary": today_machine_summary,
-    }
 
     return {
         "cards": {
@@ -1078,7 +749,7 @@ def _build_dashboard_data_inner() -> dict:
         "daily": daily_list,
         "models": models_donut,
         "tools": tool_counts,
-        "recent_tools": recent_tool_counts,
+        "recent_tools": recent_tools,
         "time_breakdown": {
             "thinking": round(tot["thinking_s"]),
             "tool_execution": round(tot["tool_exec_s"]),
@@ -1092,10 +763,9 @@ def _build_dashboard_data_inner() -> dict:
         "projects": _projects_list,
         "model_breakdown": model_breakdown,
         "total_cost": round(total_cost, 2),
-        "total_energy_wh": round(sum(m["energy_wh"] for m in model_breakdown), 1),
-        "total_water_ml": round(sum(m["water_ml"] for m in model_breakdown), 1),
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),
         "total_agent_cost": round(sum(m["agent_cost"] for m in model_breakdown), 2),
+        "total_water_ml": round(sum(m["water_ml"] for m in model_breakdown), 1),
         "benchmarks": {
             name: MODEL_BENCHMARKS.get(name, {})
             for name in model_stats if MODEL_BENCHMARKS.get(name)
@@ -1108,14 +778,89 @@ def _build_dashboard_data_inner() -> dict:
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": (f"since {datetime.strptime(date_range[0], '%Y-%m-%d').strftime('%b %-d, %Y')}" if date_range else "No data"),
         "machines": machine_list,
-        "machine_last_active": _machine_last_active,
         "machine_summary": machine_summary,
         "recent_machine_summary": recent_machine_summary,
         "machine_daily_cost": machine_daily_series,
         "model_order": MODEL_ORDER,
         "hourly": hourly_list,
-        "weekly_budget": weekly_budget,
+        "weekly_budget": None,
         "last_active_ts": last_active_ts,
-        "today": today_data,
         "version": get_cache_version(),
+        "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d")),
     }
+
+
+# ── Background sweep timers ──────────────────────────────────────────────────
+
+_sweep_timers: list[threading.Timer] = []
+_last_full_sweep: float = 0.0
+
+PERIODIC_SWEEP_INTERVAL = 3600    # 1 hour
+FULL_SWEEP_INTERVAL = 86400       # 24 hours
+SWEEP_JITTER_MAX = 600            # 0-10 minutes random offset
+
+
+def _jitter() -> float:
+    """Random delay 60-600 seconds to avoid landing on the hour."""
+    return random.uniform(60, SWEEP_JITTER_MAX)
+
+
+def start_sweeps():
+    """Start the periodic and full sweep background timers."""
+    _schedule_periodic_sweep()
+    _schedule_full_sweep()
+
+
+def stop_sweeps():
+    """Cancel all pending sweep timers."""
+    for t in _sweep_timers:
+        t.cancel()
+    _sweep_timers.clear()
+
+
+def _schedule_periodic_sweep():
+    delay = PERIODIC_SWEEP_INTERVAL + _jitter()
+    t = threading.Timer(delay, _run_periodic_sweep)
+    t.daemon = True
+    t.start()
+    _sweep_timers.append(t)
+
+
+def _schedule_full_sweep():
+    delay = FULL_SWEEP_INTERVAL + _jitter()
+    t = threading.Timer(delay, _run_full_sweep)
+    t.daemon = True
+    t.start()
+    _sweep_timers.append(t)
+
+
+def _run_periodic_sweep():
+    """Recompute last 7 days of summaries, unless a full sweep ran recently."""
+    global _last_full_sweep
+    # Skip if a full sweep ran within the last hour
+    if _time.time() - _last_full_sweep < PERIODIC_SWEEP_INTERVAL:
+        _schedule_periodic_sweep()
+        return
+
+    try:
+        from .summarizer import summarize_days
+        today = datetime.now(TZ)
+        days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+        summarize_days(days)
+        trigger_eager_rebuild()
+    except Exception:
+        pass  # Don't crash the timer on transient errors
+    _schedule_periodic_sweep()
+
+
+def _run_full_sweep():
+    """Recompute all daily summaries."""
+    global _last_full_sweep
+    try:
+        from .summarizer import summarize_days
+        summarize_days(None)  # all days
+        _last_full_sweep = _time.time()
+        trigger_eager_rebuild()
+    except Exception:
+        pass
+    _schedule_full_sweep()

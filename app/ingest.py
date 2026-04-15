@@ -323,10 +323,13 @@ async def ingest(req: IngestRequest, x_api_key: str = Header(alias="X-API-Key"))
         conn.rollback()
         raise
 
-    # Invalidate cached dashboard data so next request rebuilds
+    # Recompute today's summary and trigger eager cache rebuild
     if accepted > 0:
-        from .aggregator import invalidate_cache
-        invalidate_cache()
+        from .summarizer import summarize_days
+        from .aggregator import trigger_eager_rebuild
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        summarize_days([today])
+        trigger_eager_rebuild()
 
     return IngestResponse(
         accepted=accepted,

@@ -110,6 +110,30 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS daily_summary (
+    day               TEXT PRIMARY KEY,
+    sessions          INTEGER DEFAULT 0,
+    human_prompts     INTEGER DEFAULT 0,
+    tool_calls        INTEGER DEFAULT 0,
+    input_tokens      INTEGER DEFAULT 0,
+    output_tokens     INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    active_s          REAL DEFAULT 0,
+    thinking_s        REAL DEFAULT 0,
+    tool_exec_s       REAL DEFAULT 0,
+    subagent_s        REAL DEFAULT 0,
+    agent_runs        INTEGER DEFAULT 0,
+    cost              REAL DEFAULT 0,
+    model_json        TEXT DEFAULT '{}',
+    project_json      TEXT DEFAULT '{}',
+    machine_json      TEXT DEFAULT '{}',
+    tool_json         TEXT DEFAULT '{}',
+    prompt_model_json TEXT DEFAULT '{}',
+    gen_json          TEXT DEFAULT '{}',
+    updated_at        TEXT NOT NULL
+);
 """
 
 

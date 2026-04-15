@@ -26,11 +26,35 @@ async def lifespan(app: FastAPI):
     usage_fetcher.start()
     await init_light()
     start_watchdog()
+
+    # Backfill daily_summary if empty, then warm the cache
+    from .aggregator import trigger_eager_rebuild, start_sweeps, stop_sweeps
+    _backfill_if_needed()
+    trigger_eager_rebuild()
+
+    # Start periodic sweep timers
+    start_sweeps()
+
     yield
+
     # Shutdown
+    stop_sweeps()
     stop_watchdog()
     usage_fetcher.stop()
     close_conn()
+
+
+def _backfill_if_needed():
+    """Populate daily_summary table if it's empty but events exist."""
+    conn = get_conn()
+    summary_count = conn.execute("SELECT COUNT(*) FROM daily_summary").fetchone()[0]
+    if summary_count > 0:
+        return  # Already populated
+    event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    if event_count == 0:
+        return  # No data at all
+    from .summarizer import summarize_days
+    summarize_days(None)  # Backfill all days
 
 
 app = FastAPI(title="Tokenfold", lifespan=lifespan)
