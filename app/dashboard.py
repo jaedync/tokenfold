@@ -114,8 +114,7 @@ async def dashboard(request: Request):
     else:
         machines_pills = '<span class="machine-pill" style="color:var(--gray-dim)">no machines</span>'
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "data_json": json.dumps(data),
         "cards_html": cards_html,
         "table_rows": table_rows,
