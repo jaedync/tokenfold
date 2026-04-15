@@ -6,6 +6,7 @@ microsecond offsets of OAuth resets_at cannot fingerprint the account.
 """
 
 import json
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -39,7 +40,7 @@ def _truncate_to_minute(iso_str: str) -> tuple[str, float] | tuple[None, None]:
     return dt.isoformat(), dt.timestamp()
 
 
-def _implied_limit(spend_usd: float, pct_used: float) -> float | None:
+def _implied_limit(spend_usd: float, pct_used: float | None) -> float | None:
     """spend / (pct/100), or None when utilization is too low to be trustworthy."""
     if pct_used is None or pct_used < MIN_PCT_FOR_IMPLIED_LIMIT:
         return None
@@ -47,7 +48,7 @@ def _implied_limit(spend_usd: float, pct_used: float) -> float | None:
 
 
 def _window_block(
-    conn,
+    conn: sqlite3.Connection,
     raw_resets_at: str,
     pct_used: float | None,
     window_seconds: int,
@@ -62,7 +63,7 @@ def _window_block(
     return {
         "pct_used": pct_used if pct_used is not None else 0.0,
         "spend_usd": spend,
-        "implied_limit_usd": _implied_limit(spend, pct_used or 0.0),
+        "implied_limit_usd": _implied_limit(spend, pct_used),
         "resets_at": resets_iso,
         "resets_in_s": max(0, int(resets_epoch - now_epoch)),
     }
