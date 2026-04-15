@@ -7,6 +7,7 @@ Designed to run every 5 minutes via cron (Linux) or launchd (macOS).
 
 import json
 import os
+import random
 import socket
 import sys
 import time
@@ -24,6 +25,7 @@ CURSOR_FILE = Path(os.environ.get(
 ))
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
 VERBOSE = os.environ.get("TOKENFOLD_VERBOSE", os.environ.get("CLAUDE_STATS_VERBOSE", "0")) == "1"
 
@@ -163,10 +165,11 @@ def push_batch(project_dir: str, session_file: str, cursor_line: int,
         return None
 
 
+
+
 def _get_oauth_token() -> str | None:
     """Read OAuth access token from Claude credentials, refreshing if expired."""
     if not CREDENTIALS_FILE.exists():
-        log("No credentials file found")
         return None
     try:
         creds = json.loads(CREDENTIALS_FILE.read_text())
@@ -177,29 +180,27 @@ def _get_oauth_token() -> str | None:
 
     token = oauth.get("accessToken")
     if not token:
-        err("No access token in credentials")
         return None
 
     expires_at = oauth.get("expiresAt", 0)
     now_ms = time.time() * 1000
-    # Refresh if token expires within 5 minutes
     if expires_at - now_ms < 300_000:
         refresh_token = oauth.get("refreshToken")
         if not refresh_token:
-            err("Token expired, no refresh token")
             return None
         log("Refreshing OAuth token")
         try:
             body = json.dumps({
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
+                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+                "scope": "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
             }).encode()
             req = urllib.request.Request(
                 "https://platform.claude.com/v1/oauth/token",
                 data=body,
                 headers={
                     "Content-Type": "application/json",
-                    "anthropic-beta": "oauth-2025-04-20",
                 },
                 method="POST",
             )
@@ -208,17 +209,16 @@ def _get_oauth_token() -> str | None:
             new_token = data.get("access_token")
             new_refresh = data.get("refresh_token", refresh_token)
             new_expires = int(time.time() * 1000) + data.get("expires_in", 7200) * 1000
-            # Update credentials file
             oauth["accessToken"] = new_token
             oauth["refreshToken"] = new_refresh
             oauth["expiresAt"] = new_expires
             creds["claudeAiOauth"] = oauth
-            CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2))
+            # Atomic write: tmp file + rename to avoid corruption on concurrent reads
+            tmp = CREDENTIALS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(creds, indent=2))
+            tmp.rename(CREDENTIALS_FILE)
             log("Token refreshed successfully")
             return new_token
-        except urllib.error.HTTPError as e:
-            err(f"Token refresh failed: HTTP {e.code}")
-            return None
         except Exception as e:
             err(f"Token refresh failed: {e}")
             return None
@@ -226,54 +226,116 @@ def _get_oauth_token() -> str | None:
     return token
 
 
-def _fetch_usage(token: str) -> dict | None:
-    """Fetch usage data from Anthropic OAuth API (retries once on server/network errors)."""
-    for attempt in range(2):
-        try:
-            req = urllib.request.Request(
-                "https://api.anthropic.com/api/oauth/usage",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "anthropic-beta": "oauth-2025-04-20",
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            err(f"Usage fetch failed: HTTP {e.code}")
-            if e.code < 500:
-                return None  # client error — don't retry
-        except Exception as e:
-            err(f"Usage fetch failed: {e}")
-        if attempt == 0:
-            time.sleep(2)
-    return None
+def _get_claude_version() -> str:
+    """Get installed claude CLI version for User-Agent header."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            [CLAUDE_BIN, "--version"],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, "CLAUDECODE": ""},
+        )
+        ver = result.stdout.strip().split()[0] if result.stdout else ""
+        if ver and ver[0].isdigit():
+            return ver
+    except Exception:
+        pass
+    return "2.1.71"  # fallback
 
 
-def _push_usage(usage_data: dict):
-    """POST usage data to the server."""
-    payload = json.dumps({
-        "machine": MACHINE_NAME,
-        "usage": usage_data,
-    }).encode()
+USAGE_BACKOFF_FILE = Path.home() / ".tokenfold-usage-backoff"
+USAGE_BACKOFF_STEPS = [300, 900, 1800, 3600, 7200, 14400]  # 5m, 15m, 30m, 1h, 2h, 4h
+
+
+def _usage_is_backed_off() -> bool:
+    """Check if we're in a backoff period from a previous 429."""
+    if not USAGE_BACKOFF_FILE.exists():
+        return False
+    try:
+        data = json.loads(USAGE_BACKOFF_FILE.read_text())
+        resume_at = data.get("resume_at", 0)
+        if time.time() < resume_at:
+            remaining = int(resume_at - time.time())
+            log(f"Usage fetch backed off, {remaining}s remaining")
+            return True
+        return False
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def _usage_backoff_on_429():
+    """Record a 429 and set the next backoff window."""
+    failures = 0
+    try:
+        if USAGE_BACKOFF_FILE.exists():
+            data = json.loads(USAGE_BACKOFF_FILE.read_text())
+            failures = data.get("failures", 0)
+    except (json.JSONDecodeError, OSError):
+        pass
+    failures += 1
+    step = min(failures - 1, len(USAGE_BACKOFF_STEPS) - 1)
+    wait = USAGE_BACKOFF_STEPS[step]
+    resume_at = time.time() + wait
+    USAGE_BACKOFF_FILE.write_text(json.dumps({"failures": failures, "resume_at": resume_at}))
+    log(f"Usage 429'd, backing off {wait}s (failure #{failures})")
+
+
+def _usage_backoff_clear():
+    """Clear the backoff file on success."""
+    try:
+        USAGE_BACKOFF_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _fetch_and_push_usage():
+    """Fetch usage from Anthropic API and push to server (best-effort)."""
+    if _usage_is_backed_off():
+        return
+
+    # Jitter: 0-90s random delay so requests don't land on exact cron intervals
+    jitter = random.randint(0, 90)
+    log(f"Usage fetch jitter: {jitter}s")
+    time.sleep(jitter)
+
+    token = _get_oauth_token()
+    if not token:
+        return
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-code/{_get_claude_version()}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            usage = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        err(f"Usage fetch: HTTP {e.code}")
+        if e.code == 429:
+            _usage_backoff_on_429()
+        return
+    except Exception as e:
+        err(f"Usage fetch: {e}")
+        return
+
+    payload = json.dumps({"machine": MACHINE_NAME, "usage": usage}).encode()
     req = urllib.request.Request(
         f"{SERVER_URL}/api/usage",
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": API_KEY,
-        },
+        headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
             log(f"Usage pushed: {result}")
-    except urllib.error.HTTPError as e:
-        err(f"Usage push failed: HTTP {e.code}")
+            _usage_backoff_clear()
     except Exception as e:
-        err(f"Usage push failed: {e}")
+        err(f"Usage push: {e}")
 
 
 def main():
@@ -341,11 +403,7 @@ def main():
         log(f"Done: {total_accepted} accepted, {total_dupes} duplicates")
 
     # Push OAuth usage data (best-effort, failures don't affect event sync)
-    token = _get_oauth_token()
-    if token:
-        usage = _fetch_usage(token)
-        if usage:
-            _push_usage(usage)
+    _fetch_and_push_usage()
 
 
 if __name__ == "__main__":
