@@ -357,8 +357,7 @@ async def store_usage(request: Request, x_api_key: str = Header(alias="X-API-Key
     )
     conn.commit()
 
-    # Invalidate cache so dashboard picks up new usage data
-    from .aggregator import invalidate_cache
-    invalidate_cache()
+    # Rate limit data is now served from /api/rate-limits directly,
+    # no need to rebuild the full dashboard cache for usage updates.
 
     return {"status": "ok", "updated_at": now}

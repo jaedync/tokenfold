@@ -2650,17 +2650,30 @@ function renderMode(mode) {
     }
   })();
 
-  /* ── Rate limits section (from OAuth utilization) ── */
+  /* ── Rate limits section (async from /api/rate-limits) ── */
   (function(){
-    var wb = D.weekly_budget;
     var section = document.getElementById('rateLimitsSection');
     var grid = document.getElementById('rateLimitsGrid');
     if(!section || !grid) return;
+
+    // Show section with loading state
+    section.style.display = '';
+    grid.innerHTML = '<div style="color:var(--gray-dim);font-size:0.9rem;padding:1rem">Loading rate limits...</div>';
+
+    function renderAllRateLimits(wb) {
     if(!wb || wb.source !== 'oauth') { section.style.display = 'none'; return; }
 
     section.style.display = '';
 
-    function barColor(pct) {
+    function barColor(pct, expectedPct) {
+      // Color based on pace, not absolute percentage
+      if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
+        var ratio = pct / expectedPct;
+        if(ratio <= 1.1) return 'var(--blue)';    // on pace or under
+        if(ratio <= 1.35) return 'var(--yellow)';  // moderately over
+        return 'var(--red)';                        // significantly over
+      }
+      // Fallback when no expected data (e.g. stale)
       if(pct < 50) return 'var(--blue)';
       if(pct < 80) return 'var(--yellow)';
       return 'var(--red)';
@@ -2698,7 +2711,7 @@ function renderMode(mode) {
     function buildGauge(label, pct, resetLabel, expectedPct, opts) {
       opts = opts || {};
       var clamp = Math.min(pct, 100);
-      var color = barColor(pct);
+      var color = barColor(pct, expectedPct);
       var innerHtml = '';
 
       // Day boundary lines (weekly only)
@@ -2759,9 +2772,16 @@ function renderMode(mode) {
         fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
       }
 
+      var chartBtnHtml = '';
+      if(opts.chartBtn) {
+        chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View usage pace chart">'
+          + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+          + '</button>';
+      }
+
       return '<div class="rate-gauge">'
         + '<div class="rate-gauge-head">'
-        + '<span class="rate-gauge-label">' + label + '</span>'
+        + '<span class="rate-gauge-label">' + label + chartBtnHtml + '</span>'
         + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
         + '</div>'
         + '<div class="rate-gauge-track" style="' + (opts.dayLines ? 'margin-bottom:10px' : '') + '">'
@@ -2881,19 +2901,18 @@ function renderMode(mode) {
     html += buildGauge('Weekly Limit', wPct, fmtReset(wb.weekly_resets_at), wExpected, {
       dayLines: weeklyDayLines,
       projectedPct: weeklyProjected,
-      stats: weeklyStats
+      stats: weeklyStats,
+      chartBtn: true
     });
     html += buildGauge('5-Hour Window', hPct, fmtReset(wb.five_hour_resets_at), hExpected);
 
     grid.innerHTML = html;
-  })();
 
   /* ── Rate limits staleness indicator ── */
   (function(){
-    var wb = D.weekly_budget;
     var el = document.getElementById('rateLimitsUpdated');
     if(!el || !wb || wb.source !== 'oauth') return;
-    var STALE_S = 900; // 15 min = 3 missed cron cycles
+    var STALE_S = 3600; // 1 hour — usage windows are 5h/7d so minor staleness is fine
     function update() {
       var epoch = wb.updated_at_epoch;
       if(!epoch) { el.textContent = ''; return; }
