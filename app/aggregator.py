@@ -174,7 +174,8 @@ def _empty_dashboard(cutoff_date: str) -> dict:
         "cutoff_date": cutoff_date, "recency_days": RECENCY_DAYS,
         "generation_time": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": "No data",
-        "machines": [], "machine_summary": [], "recent_machine_summary": [],
+        "machines": [], "machine_last_active": {},
+        "machine_summary": [], "recent_machine_summary": [],
         "machine_daily_cost": {}, "model_order": MODEL_ORDER,
         "hourly": [], "weekly_budget": None,
         "last_active_ts": None, "version": get_cache_version(),
@@ -712,9 +713,19 @@ def _build_dashboard_data_inner() -> dict:
             series.append(round(mach_daily_cost.get(m_name, {}).get(d, 0.0), 2))
         machine_daily_series[m_name] = series
 
-    # ── Last active timestamp ──
-    last_active_row = conn.execute("SELECT MAX(ts_epoch) as ts FROM events").fetchone()
-    last_active_ts = last_active_row["ts"] if last_active_row and last_active_row["ts"] else None
+    # ── Last active timestamp (global + per machine) ──
+    # daily_summary can't answer "active in last 15 minutes" — needs minute-grain
+    # timestamps from raw events. Indexed on source_machine, cheap.
+    machine_last_active: dict[str, float] = {}
+    last_active_ts = None
+    for r in conn.execute(
+        "SELECT source_machine, MAX(ts_epoch) as ts FROM events "
+        "GROUP BY source_machine"
+    ):
+        if r["ts"]:
+            machine_last_active[r["source_machine"]] = r["ts"]
+            if last_active_ts is None or r["ts"] > last_active_ts:
+                last_active_ts = r["ts"]
 
     # ── Sessions count (total distinct, from summary) ──
     # Note: session counts from summaries are per-day distinct, so the total
@@ -778,6 +789,7 @@ def _build_dashboard_data_inner() -> dict:
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": (f"since {datetime.strptime(date_range[0], '%Y-%m-%d').strftime('%b %-d, %Y')}" if date_range else "No data"),
         "machines": machine_list,
+        "machine_last_active": machine_last_active,
         "machine_summary": machine_summary,
         "recent_machine_summary": recent_machine_summary,
         "machine_daily_cost": machine_daily_series,
