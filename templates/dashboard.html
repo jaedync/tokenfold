@@ -748,6 +748,133 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* Weekly usage chart modal */
+.usage-chart-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.6);
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  backdrop-filter: blur(2px);
+}
+.usage-chart-overlay.visible { display: flex; }
+
+.usage-chart-modal {
+  background: var(--bg);
+  border: var(--border);
+  width: 100%;
+  max-width: 960px;
+  max-height: 90vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+.usage-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 3px solid var(--black);
+  background: var(--black);
+  color: var(--bg);
+}
+
+.usage-chart-header h3 {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.usage-chart-close {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--bg);
+  background: transparent;
+  color: var(--bg);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.usage-chart-close:hover { background: var(--red); }
+
+.usage-chart-body {
+  padding: 0.6rem 1.2rem 1.2rem;
+}
+
+.usage-chart-canvas-wrap {
+  position: relative;
+  height: 420px;
+}
+
+.usage-chart-legend {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: 1rem;
+  justify-content: center;
+}
+
+.usage-chart-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+}
+
+.usage-chart-legend-swatch {
+  width: 18px;
+  height: 3px;
+}
+
+.usage-chart-legend-swatch--dashed {
+  background: repeating-linear-gradient(
+    90deg, var(--gray-dim) 0, var(--gray-dim) 5px, transparent 5px, transparent 9px
+  );
+  height: 2px;
+}
+
+/* Chart trigger button on gauge */
+.rate-gauge-chart-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--black);
+  background: transparent;
+  cursor: pointer;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  transition: background 0.15s, transform 0.15s;
+  position: relative;
+  top: -1px;
+}
+.rate-gauge-chart-btn:hover {
+  background: var(--black);
+}
+.rate-gauge-chart-btn:hover svg { stroke: var(--bg); }
+.rate-gauge-chart-btn svg {
+  width: 13px;
+  height: 13px;
+  stroke: var(--black);
+  stroke-width: 2;
+  fill: none;
+}
+
+@media (max-width: 700px) {
+  .usage-chart-modal { max-width: 100%; margin: 0.5rem; }
+  .usage-chart-canvas-wrap { height: min(55vh, 320px); }
+  .usage-chart-body { padding: 0.5rem 0.8rem 1rem; }
+}
 
 /* ---- COST META BAR ---- */
 
@@ -1754,6 +1881,39 @@ th[data-info]:hover::after { opacity: 1; }
     <span id="rateLimitsUpdated" class="rate-limits-updated"></span>
   </div>
   <div id="rateLimitsGrid" class="rate-limits-grid"></div>
+</div>
+
+<!-- Weekly usage chart modal -->
+<div id="usageChartOverlay" class="usage-chart-overlay">
+  <div class="usage-chart-modal">
+    <div class="usage-chart-header">
+      <h3>Weekly Usage Pace</h3>
+      <button class="usage-chart-close" id="usageChartClose">&times;</button>
+    </div>
+    <div class="usage-chart-body">
+      <div class="usage-chart-canvas-wrap">
+        <canvas id="usageChartCanvas"></canvas>
+      </div>
+      <div class="usage-chart-legend">
+        <div class="usage-chart-legend-item">
+          <span class="usage-chart-legend-swatch" style="background:var(--blue)"></span>
+          Actual usage
+        </div>
+        <div class="usage-chart-legend-item">
+          <span class="usage-chart-legend-swatch usage-chart-legend-swatch--dashed"></span>
+          Expected pace
+        </div>
+        <div class="usage-chart-legend-item">
+          <span class="usage-chart-legend-swatch" style="background:rgba(245,197,24,0.35)"></span>
+          Gap to expected
+        </div>
+        <div class="usage-chart-legend-item">
+          <span class="usage-chart-legend-swatch" style="background:rgba(230,51,41,0.35)"></span>
+          Over limit
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ======== STRIPE ======== -->
@@ -2931,6 +3091,393 @@ function renderMode(mode) {
     }
     update();
     setInterval(update, 30000);
+  })();
+
+  /* ── Weekly usage pace chart (modal popup) ── */
+  (function(){
+    if(!wb || !wb.hourly_costs || !wb.weekly_resets_at) return;
+
+    var overlay = document.getElementById('usageChartOverlay');
+    var trigger = document.getElementById('usageChartTrigger');
+    var closeBtn = document.getElementById('usageChartClose');
+    if(!overlay || !trigger) return;
+
+    var usageChart = null;
+
+    function buildChart() {
+      if(usageChart) return; // already built
+
+      var canvas = document.getElementById('usageChartCanvas');
+      if(!canvas) return;
+
+      var WEEK_MS = 7 * 24 * 3600 * 1000;
+      var resetTime = new Date(wb.weekly_resets_at).getTime();
+      var weekStart = resetTime - WEEK_MS;
+      var weekStartEpoch = wb.week_start_epoch || (weekStart / 1000);
+      var nowExact = (Date.now() / 1000 - weekStartEpoch) / 3600;
+      var nowH = Math.floor(nowExact);
+      var totalHours = 168; // 7 * 24
+
+      // Build sparse map from hourly_costs
+      var costByHour = {};
+      for(var i = 0; i < wb.hourly_costs.length; i++) {
+        costByHour[wb.hourly_costs[i].h] = wb.hourly_costs[i].c;
+      }
+
+      // Build cumulative actual and expected arrays
+      var labels = [];
+      var actualData = [];
+      var expectedData = [];
+      var totalCost = wb.week_cost || 0;
+      // Estimate budget: if we have wPct and week_cost, budget = week_cost / (wPct/100)
+      var wPct = wb.weekly_pct || 0;
+      var estimatedBudget = (wPct > 1 && totalCost > 0) ? (totalCost / wPct * 100) : null;
+
+      var cumCost = 0;
+      var maxH = Math.min(nowH + 1, totalHours);
+
+      // CST offset for day labels
+      var cstOff = -6 * 60;
+      var DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+      // Find hours until first midnight from week start (to avoid label collisions)
+      var startCstDate = new Date(weekStartEpoch * 1000 + cstOff * 60000);
+      var hoursToFirstMidnight = 24 - startCstDate.getUTCHours();
+      if(hoursToFirstMidnight === 24) hoursToFirstMidnight = 0;
+      var MIN_LABEL_GAP = 6; // minimum hours between labels
+
+      var lastLabelH = -MIN_LABEL_GAP; // allow first label
+      for(var h = 0; h <= totalHours; h++) {
+        var epochMs = (weekStartEpoch + h * 3600) * 1000;
+        var cstDate = new Date(epochMs + cstOff * 60000);
+        var cstHour = cstDate.getUTCHours();
+        var lbl = '';
+        if(h === 0 && hoursToFirstMidnight >= MIN_LABEL_GAP) {
+          // Only label the start if midnight isn't coming soon
+          lbl = DAY_ABBR[cstDate.getUTCDay()];
+          lastLabelH = h;
+        } else if(cstHour === 0 && h > 0) {
+          lbl = DAY_ABBR[cstDate.getUTCDay()];
+          lastLabelH = h;
+        } else if(cstHour === 12 && (h - lastLabelH) >= MIN_LABEL_GAP) {
+          lbl = '12p';
+          lastLabelH = h;
+        }
+        labels.push(lbl);
+
+        if(h <= maxH) {
+          cumCost += (costByHour[h] || 0);
+          // Express as percentage of estimated budget
+          if(estimatedBudget) {
+            actualData.push(Math.round((cumCost / estimatedBudget) * 10000) / 100);
+          } else {
+            actualData.push(round2(cumCost));
+          }
+        } else {
+          actualData.push(null);
+        }
+
+        // Expected: linear from 0% to 100% (or 0 to estimatedBudget)
+        if(estimatedBudget) {
+          expectedData.push(Math.round((h / totalHours) * 10000) / 100);
+        } else {
+          expectedData.push(null);
+        }
+      }
+
+      function round2(v) { return Math.round(v * 100) / 100; }
+
+      // 100% limit line (flat) — only where actual data exists
+      var limitData = [];
+      if(estimatedBudget) {
+        for(var h = 0; h <= totalHours; h++) {
+          limitData.push(actualData[h] !== null ? 100 : null);
+        }
+      }
+
+      var yLabel = estimatedBudget ? 'Usage (% of limit)' : 'Cumulative cost ($)';
+
+      // Compute nice cost step for y2 axis
+      // costNiceMax rounds up to a clean number; pctMax scales y to match
+      var costStep = 100, costNiceMax = null, pctMax = 100;
+      if(estimatedBudget) {
+        var steps = [10, 25, 50, 100, 200, 250, 500, 1000];
+        var ideal = estimatedBudget / 5;
+        costStep = steps[0];
+        for(var si = 0; si < steps.length; si++) {
+          if(steps[si] >= ideal) { costStep = steps[si]; break; }
+          costStep = steps[si];
+        }
+        costNiceMax = Math.ceil(estimatedBudget / costStep) * costStep;
+        pctMax = (costNiceMax / estimatedBudget) * 100;
+      }
+      var tooltipSuffix = estimatedBudget ? '%' : '';
+
+      // Precompute working-hours bands (8am–5pm CT) as hour-index ranges
+      var workBands = [];
+      var WORK_START = 8, WORK_END = 17; // 8am – 5pm
+      for(var h = 0; h < totalHours; h++) {
+        var ep = (weekStartEpoch + h * 3600) * 1000;
+        var cd = new Date(ep + cstOff * 60000);
+        var ch = cd.getUTCHours();
+        if(ch === WORK_START) {
+          // Find end of this working block
+          var endH = h + (WORK_END - WORK_START);
+          if(endH > totalHours) endH = totalHours;
+          workBands.push([h, endH]);
+        }
+      }
+
+      // Working hours background shading + "Now" line plugin
+      var chartPlugins = {
+        id: 'workHoursAndNow',
+        beforeDatasetsDraw: function(chart) {
+          var xAxis = chart.scales.x;
+          var yAxis = chart.scales.y;
+          var ctx = chart.ctx;
+          ctx.save();
+          ctx.fillStyle = 'rgba(26, 26, 26, 0.03)';
+          for(var i = 0; i < workBands.length; i++) {
+            var x1 = xAxis.getPixelForValue(workBands[i][0]);
+            var x2 = xAxis.getPixelForValue(workBands[i][1]);
+            ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
+          }
+          ctx.restore();
+        },
+        afterDraw: function(chart) {
+          if(nowExact < 0 || nowExact > totalHours) return;
+          var xAxis = chart.scales.x;
+          var yAxis = chart.scales.y;
+          var x = xAxis.getPixelForValue(nowExact);
+          var ctx = chart.ctx;
+          ctx.save();
+          ctx.beginPath();
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = 'rgba(230, 51, 41, 0.8)';
+          ctx.lineWidth = 2;
+          ctx.moveTo(x, yAxis.top);
+          ctx.lineTo(x, yAxis.bottom);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(230, 51, 41, 0.7)';
+          ctx.font = '600 9px "DM Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('NOW', x, yAxis.top - 4);
+          ctx.restore();
+        }
+      };
+
+      usageChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Actual usage',
+              data: actualData,
+              borderColor: '#1a4b8c',
+              backgroundColor: 'rgba(26, 75, 140, 0.08)',
+              borderWidth: 2.5,
+              fill: 'origin',
+              pointRadius: 0,
+              pointHitRadius: 6,
+              tension: 0.15,
+              spanGaps: false,
+              order: 2
+            },
+            {
+              label: 'Expected pace',
+              data: expectedData,
+              borderColor: '#6b6860',
+              borderWidth: 1.5,
+              borderDash: [6, 4],
+              fill: false,
+              pointRadius: 0,
+              pointHitRadius: 0,
+              tension: 0,
+              order: 3
+            },
+            {
+              label: '_gap_to_expected',
+              data: estimatedBudget ? actualData : [],
+              borderColor: 'transparent',
+              borderWidth: 0,
+              fill: {target: '-1', above: 'rgba(245, 197, 24, 0.18)', below: 'rgba(245, 197, 24, 0.18)'},
+              pointRadius: 0,
+              pointHitRadius: 0,
+              tension: 0.15,
+              spanGaps: false,
+              order: 2
+            },
+            {
+              label: 'Usage limit',
+              data: estimatedBudget ? limitData : [],
+              borderColor: 'rgba(230, 51, 41, 0.4)',
+              borderWidth: 1,
+              borderDash: [4, 4],
+              fill: false,
+              pointRadius: 0,
+              pointHitRadius: 0,
+              tension: 0,
+              order: 4
+            },
+            {
+              label: '_over_limit',
+              data: estimatedBudget ? actualData : [],
+              borderColor: 'transparent',
+              borderWidth: 0,
+              fill: {target: '-1', above: 'rgba(230, 51, 41, 0.25)', below: 'transparent'},
+              pointRadius: 0,
+              pointHitRadius: 0,
+              tension: 0.15,
+              spanGaps: false,
+              order: 1
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          layout: { padding: { top: 18 } },
+          interaction: {
+            mode: 'index',
+            intersect: false
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1a1a1a',
+              titleFont: { family: '"DM Sans"', size: 11, weight: '700' },
+              bodyFont: { family: '"DM Sans"', size: 11 },
+              padding: 10,
+              cornerRadius: 0,
+              borderColor: '#1a1a1a',
+              borderWidth: 2,
+              callbacks: {
+                title: function(items) {
+                  var idx = items[0].dataIndex;
+                  var epochMs = (weekStartEpoch + idx * 3600) * 1000;
+                  var d = new Date(epochMs + cstOff * 60000);
+                  var day = DAY_ABBR[d.getUTCDay()];
+                  var hr = d.getUTCHours();
+                  var ampm = hr >= 12 ? 'p' : 'a';
+                  hr = hr % 12 || 12;
+                  return day + ' ' + hr + ampm;
+                },
+                label: function(ctx) {
+                  if(ctx.raw === null) return '';
+                  // Hide ghost datasets and limit line from tooltip
+                  if(ctx.dataset.label.charAt(0) === '_') return '';
+                  if(ctx.dataset.label === 'Usage limit') return '';
+                  var v = ctx.raw;
+                  if(estimatedBudget) {
+                    return ctx.dataset.label + ': ' + v.toFixed(1) + '%';
+                  }
+                  return ctx.dataset.label + ': $' + v.toFixed(2);
+                },
+                filter: function(item) {
+                  return item.dataset.label.charAt(0) !== '_' && item.dataset.label !== 'Usage limit';
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(216,212,204,0.5)', lineWidth: 1 },
+              border: { color: '#1a1a1a', width: 3 },
+              ticks: {
+                font: { family: '"DM Sans"', size: 10, weight: '600' },
+                color: '#6b6860',
+                maxRotation: 0,
+                autoSkip: false,
+                callback: function(val, idx) {
+                  return labels[idx] || '';
+                }
+              }
+            },
+            y: {
+              beginAtZero: true,
+              max: estimatedBudget ? pctMax : undefined,
+              grid: { color: 'rgba(216,212,204,0.4)' },
+              border: { color: '#1a1a1a', width: 3 },
+              title: {
+                display: true,
+                text: yLabel,
+                font: { family: '"DM Sans"', size: 10, weight: '700' },
+                color: '#6b6860'
+              },
+              ticks: {
+                font: { family: '"DM Sans"', size: 10 },
+                color: '#6b6860',
+                callback: function(v) {
+                  if(estimatedBudget && v > 100) return '';
+                  return estimatedBudget ? v + '%' : '$' + v;
+                }
+              }
+            },
+            y2: estimatedBudget ? {
+              position: 'right',
+              beginAtZero: true,
+              max: costNiceMax,
+              grid: { drawOnChartArea: false },
+              border: { color: '#1a1a1a', width: 3 },
+              title: {
+                display: true,
+                text: 'Estimated cost ($)',
+                font: { family: '"DM Sans"', size: 10, weight: '700' },
+                color: '#6b6860'
+              },
+              ticks: {
+                stepSize: costStep,
+                font: { family: '"DM Sans"', size: 10 },
+                color: '#6b6860',
+                callback: function(v) {
+                  return '$' + v;
+                }
+              }
+            } : undefined
+          }
+        },
+        plugins: [chartPlugins]
+      });
+    }
+
+    trigger.addEventListener('click', function(e) {
+      e.stopPropagation();
+      overlay.classList.add('visible');
+      // Defer chart build so canvas has dimensions
+      setTimeout(buildChart, 50);
+    });
+
+    function closeModal() {
+      overlay.classList.remove('visible');
+    }
+
+    if(closeBtn) closeBtn.addEventListener('click', closeModal);
+    overlay.addEventListener('click', function(e) {
+      if(e.target === overlay) closeModal();
+    });
+    document.addEventListener('keydown', function(e) {
+      if(e.key === 'Escape' && overlay.classList.contains('visible')) closeModal();
+    });
+  })();
+
+    } // end renderAllRateLimits
+
+    // Fetch rate limits from API
+    fetch('/api/rate-limits')
+      .then(function(r) { return r.json(); })
+      .then(function(data) { renderAllRateLimits(data.weekly_budget); })
+      .catch(function() {
+        grid.innerHTML = '<div style="color:var(--gray-dim);font-size:0.9rem;padding:1rem">Rate limits unavailable</div>';
+      });
+
+    // Poll every 60s to keep rate limits fresh
+    setInterval(function() {
+      fetch('/api/rate-limits')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { renderAllRateLimits(data.weekly_budget); })
+        .catch(function() {});
+    }, 60000);
   })();
 
   /* ── Cost by Model stacked bar ── */
