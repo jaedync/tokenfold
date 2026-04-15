@@ -7,6 +7,7 @@ services:
       - "5000:5000"
     volumes:
       - ./data:/app/data
+      - ~/.claude/.credentials.json:/app/credentials.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
