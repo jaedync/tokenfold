@@ -54,6 +54,8 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/api.py` | GET /api/stats - JSON passthrough of aggregator output |
 | `app/db.py` | SQLite schema, WAL pragmas, connection management |
 | `app/notify.py` | POST /api/notify - notification relay to Home Assistant |
+| `app/ha.py` | GET /api/ha - flat scrubbed metrics for Home Assistant REST sensors |
+| `app/cost_windows.py` | Shared helper: dedup-by-request_id cost over an event window |
 | `app/config.py` | Environment variable config |
 | `app/models.py` | Pydantic request/response schemas |
 
