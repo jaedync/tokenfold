@@ -12,7 +12,6 @@ import asyncio
 import logging
 import time
 
-import httpx
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
@@ -69,34 +68,13 @@ async def _set_light(
     brightness: int | None = None,
     transition: int = ORBB_TRANSITION,
 ):
-    """Call HA light/turn_on with either rgb_color or color_temp_kelvin."""
-    if not HA_URL or not HA_TOKEN:
-        log.debug("HA not configured, skipping light control")
-        return
+    """Disabled: ORBB actuation is off. Session tracking and endpoints still work.
 
-    headers = {
-        "Authorization": f"Bearer {HA_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload: dict = {
-        "entity_id": ORBB_ENTITY,
-        "transition": transition,
-    }
-    if rgb:
-        payload["rgb_color"] = rgb
-    elif kelvin:
-        payload["color_temp_kelvin"] = kelvin
-    if brightness is not None:
-        payload["brightness"] = brightness
-
-    async with httpx.AsyncClient(timeout=8) as client:
-        r = await client.post(
-            f"{HA_URL}/api/services/light/turn_on",
-            headers=headers,
-            json=payload,
-        )
-        r.raise_for_status()
-        log.info("ORBB set to %s transition=%ds", payload, transition)
+    The /api/light GET and POST routes continue to accept traffic and update
+    _active_sessions so existing clients aren't broken. Only the HA call-out
+    to physically drive the bulb is suppressed.
+    """
+    return
 
 
 # ── Background watchdog ──────────────────────────────────────────────
