@@ -162,22 +162,22 @@ def _empty_dashboard(cutoff_date: str) -> dict:
             "active_time_s": 0, "tool_calls": 0, "models_used": 0,
             "avg_prompts_day": 0, "avg_active_day_s": 0,
         },
-        "daily": [], "models": {}, "tools": {}, "recent_tools": {},
+        "daily": [], "tools": {}, "recent_tools": {},
         "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
             "recent_subagent": 0, "recent_agent_runs": 0,
             "recent_thinking": 0, "recent_tool_execution": 0,
         },
         "projects": [], "model_breakdown": [],
-        "total_cost": 0, "total_orch_cost": 0, "total_agent_cost": 0, "total_water_ml": 0,
+        "total_cost": 0, "total_orch_cost": 0, "total_agent_cost": 0,
         "benchmarks": {}, "output_pricing": {}, "model_pricing": {},
-        "cutoff_date": cutoff_date, "recency_days": RECENCY_DAYS,
+        "cutoff_date": cutoff_date,
         "generation_time": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": "No data",
         "machines": [], "machine_last_active": {},
         "machine_summary": [], "recent_machine_summary": [],
         "machine_daily_cost": {}, "model_order": MODEL_ORDER,
-        "hourly": [], "weekly_budget": None,
+        "hourly": [],
         "last_active_ts": None, "version": get_cache_version(),
         "today": {"cost": 0.0, "model_breakdown": [], "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
@@ -677,14 +677,6 @@ def _build_dashboard_data_inner() -> dict:
             "recent_water_ml": round(recent_water, 1),
         })
 
-    # ── Models donut (sorted by total tokens descending) ──
-    models_donut = {
-        name: ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
-        for name, ms in sorted(model_stats.items(),
-            key=lambda kv: -(kv[1]["input"] + kv[1]["output"] +
-                             kv[1]["cache_write"] + kv[1]["cache_read"]))
-    }
-
     # ── Machine summaries ──
     machine_list = sorted(machine_set)
     machine_summary = []
@@ -766,7 +758,6 @@ def _build_dashboard_data_inner() -> dict:
             "avg_active_day_s": round(tot["active_s"] / num_days),
         },
         "daily": daily_list,
-        "models": models_donut,
         "tools": tool_counts,
         "recent_tools": recent_tools,
         "time_breakdown": {
@@ -784,7 +775,6 @@ def _build_dashboard_data_inner() -> dict:
         "total_cost": round(total_cost, 2),
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),
         "total_agent_cost": round(sum(m["agent_cost"] for m in model_breakdown), 2),
-        "total_water_ml": round(sum(m["water_ml"] for m in model_breakdown), 1),
         "benchmarks": {
             name: MODEL_BENCHMARKS.get(name, {})
             for name in model_stats if MODEL_BENCHMARKS.get(name)
@@ -793,7 +783,6 @@ def _build_dashboard_data_inner() -> dict:
         "model_pricing": {name: {"input": p[0], "output": p[1], "cache_write": p[2], "cache_read": p[3]}
                           for name in model_stats for p in [get_pricing(name)]},
         "cutoff_date": cutoff_date,
-        "recency_days": RECENCY_DAYS,
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": (f"since {datetime.strptime(date_range[0], '%Y-%m-%d').strftime('%b %-d, %Y')}" if date_range else "No data"),
         "machines": machine_list,
@@ -803,7 +792,6 @@ def _build_dashboard_data_inner() -> dict:
         "machine_daily_cost": machine_daily_series,
         "model_order": MODEL_ORDER,
         "hourly": hourly_list,
-        "weekly_budget": None,
         "last_active_ts": last_active_ts,
         "version": get_cache_version(),
         "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d")),
