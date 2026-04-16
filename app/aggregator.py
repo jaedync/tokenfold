@@ -179,7 +179,7 @@ def _empty_dashboard(cutoff_date: str) -> dict:
         "machine_daily_cost": {}, "model_order": MODEL_ORDER,
         "hourly": [], "weekly_budget": None,
         "last_active_ts": None, "version": get_cache_version(),
-        "today": {"model_breakdown": [], "time_breakdown": {
+        "today": {"cost": 0.0, "model_breakdown": [], "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
         }, "tools": {}, "projects": [], "machine_summary": []},
     }
@@ -291,6 +291,10 @@ def _build_today_data(conn, today_str: str) -> dict:
         p = get_pricing(mname)
         main_cost = md.get("main_cost", 0.0)
         agent_cost = round(cost - main_cost, 2)
+        main_prompts = md.get("main_prompts", 0)
+        agent_invocations = md.get("agent_invocations", 0)
+        avg_cost_per_turn = (main_cost / main_prompts) if main_prompts > 0 else None
+        avg_cost_per_agent = (agent_cost / agent_invocations) if agent_invocations > 0 else None
         active_hours = md.get("active_s", 0.0) / 3600
         gd = gen_data.get(mname, {})
         gen_s = gd.get("gen_s", 0.0)
@@ -306,8 +310,10 @@ def _build_today_data(conn, today_str: str) -> dict:
             "cost": round(cost, 2),
             "main_cost": round(main_cost, 2),
             "agent_cost": agent_cost,
-            "main_prompts": md.get("main_prompts", 0),
-            "agent_invocations": md.get("agent_invocations", 0),
+            "avg_cost_per_turn": round(avg_cost_per_turn, 4) if avg_cost_per_turn is not None else None,
+            "avg_cost_per_agent": round(avg_cost_per_agent, 4) if avg_cost_per_agent is not None else None,
+            "main_prompts": main_prompts,
+            "agent_invocations": agent_invocations,
             "active_hours": round(active_hours, 1),
             "cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
             "all_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
