@@ -271,6 +271,7 @@ def _build_today_data(conn, today_str: str) -> dict:
 
     if not row:
         return {
+            "cost": 0.0,
             "model_breakdown": [], "time_breakdown": {
                 "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
             },
@@ -376,6 +377,7 @@ def _build_today_data(conn, today_str: str) -> dict:
         })
 
     return {
+        "cost": round(row["cost"] or 0.0, 2),
         "model_breakdown": today_mb,
         "time_breakdown": time_breakdown,
         "tools": tools,
