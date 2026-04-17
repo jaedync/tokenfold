@@ -17,3 +17,33 @@ class IngestResponse(BaseModel):
     accepted: int
     duplicates: int
     cursor: CursorState
+
+
+class DesktopSessionUpsert(BaseModel):
+    cli_session_id: str
+    desktop_session_id: str | None = None
+    title: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    permission_mode: str | None = None
+    completed_turns: int | None = None
+    is_archived: bool | None = None
+    cwd: str | None = None
+    origin_cwd: str | None = None
+    created_at_ms: int | None = None
+    last_activity_at_ms: int | None = None
+    enabled_mcp_tools: dict | None = None
+    remote_mcp_servers: list | None = None
+    chrome_permission_mode: str | None = None
+    chrome_allowed_domains: list[str] | None = None
+
+
+class DesktopMetadataRequest(BaseModel):
+    machine: str
+    sessions: list[DesktopSessionUpsert]
+
+
+class DesktopMetadataResponse(BaseModel):
+    inserted: int
+    updated: int
+    ignored_stale: int
