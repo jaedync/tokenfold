@@ -119,5 +119,23 @@ class FindDesktopSessionsTest(unittest.TestCase):
         self.assertEqual(rows, [])
 
 
+class DesktopCursorTest(unittest.TestCase):
+    def test_cursor_key_constant(self):
+        self.assertEqual(MOD.DESKTOP_CURSOR_KEY, "__desktop_last_activity_ms")
+
+    def test_read_missing_returns_zero(self):
+        self.assertEqual(MOD.read_desktop_cursor({}), 0)
+
+    def test_read_existing(self):
+        cursors = {MOD.DESKTOP_CURSOR_KEY: 4242}
+        self.assertEqual(MOD.read_desktop_cursor(cursors), 4242)
+
+    def test_write_updates_in_place(self):
+        cursors = {"some/path.jsonl": {"line": 10}}
+        MOD.write_desktop_cursor(cursors, 9999)
+        self.assertEqual(cursors[MOD.DESKTOP_CURSOR_KEY], 9999)
+        self.assertEqual(cursors["some/path.jsonl"], {"line": 10})
+
+
 if __name__ == "__main__":
     unittest.main()

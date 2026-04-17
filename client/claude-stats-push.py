@@ -25,6 +25,20 @@ CURSOR_FILE = Path(os.environ.get(
 ))
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 DESKTOP_DIR = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+DESKTOP_CURSOR_KEY = "__desktop_last_activity_ms"
+
+
+def read_desktop_cursor(cursors: dict) -> int:
+    val = cursors.get(DESKTOP_CURSOR_KEY, 0)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
+
+def write_desktop_cursor(cursors: dict, value: int) -> None:
+    cursors[DESKTOP_CURSOR_KEY] = int(value)
+
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
@@ -488,6 +502,17 @@ def main():
         else:
             # All batches succeeded - update cursor
             cursors[cursor_key] = len(all_lines)
+
+    # Desktop session metadata (macOS-only, no-op otherwise).
+    root = desktop_dir()
+    if root is not None:
+        desktop_cursor = read_desktop_cursor(cursors)
+        desktop_sessions = find_desktop_sessions(root, desktop_cursor)
+        if desktop_sessions:
+            log(f"desktop: pushing {len(desktop_sessions)} updated sessions")
+            new_cursor = push_desktop_sessions(desktop_sessions)
+            if new_cursor is not None:
+                write_desktop_cursor(cursors, new_cursor)
 
     save_cursors(cursors)
     if total_accepted or total_dupes:
