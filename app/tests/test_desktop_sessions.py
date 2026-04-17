@@ -83,5 +83,107 @@ class DesktopModelTest(unittest.TestCase):
         self.assertEqual(len(req.sessions), 2)
 
 
+
+
+class UpsertDesktopSessionsTest(unittest.TestCase):
+    def _fresh_conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+        return conn
+
+    def test_insert_new_session(self):
+        from app.desktop_sessions import upsert_desktop_sessions
+
+        conn = self._fresh_conn()
+        result = upsert_desktop_sessions(conn, "host1", [{
+            "cli_session_id": "s1",
+            "title": "First",
+            "last_activity_at_ms": 1000,
+        }])
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["updated"], 0)
+
+        row = conn.execute(
+            "SELECT title, source_machine FROM desktop_sessions WHERE cli_session_id='s1'"
+        ).fetchone()
+        self.assertEqual(row["title"], "First")
+        self.assertEqual(row["source_machine"], "host1")
+
+    def test_update_overwrites_when_newer(self):
+        from app.desktop_sessions import upsert_desktop_sessions
+
+        conn = self._fresh_conn()
+        upsert_desktop_sessions(conn, "host1", [
+            {"cli_session_id": "s1", "title": "old", "last_activity_at_ms": 1000},
+        ])
+        result = upsert_desktop_sessions(conn, "host1", [
+            {"cli_session_id": "s1", "title": "new", "last_activity_at_ms": 2000},
+        ])
+        self.assertEqual(result["inserted"], 0)
+        self.assertEqual(result["updated"], 1)
+
+        title = conn.execute(
+            "SELECT title FROM desktop_sessions WHERE cli_session_id='s1'"
+        ).fetchone()["title"]
+        self.assertEqual(title, "new")
+
+    def test_stale_push_ignored(self):
+        from app.desktop_sessions import upsert_desktop_sessions
+
+        conn = self._fresh_conn()
+        upsert_desktop_sessions(conn, "host1", [
+            {"cli_session_id": "s1", "title": "current", "last_activity_at_ms": 2000},
+        ])
+        result = upsert_desktop_sessions(conn, "host1", [
+            {"cli_session_id": "s1", "title": "stale", "last_activity_at_ms": 1000},
+        ])
+        self.assertEqual(result["ignored_stale"], 1)
+
+        title = conn.execute(
+            "SELECT title FROM desktop_sessions WHERE cli_session_id='s1'"
+        ).fetchone()["title"]
+        self.assertEqual(title, "current")
+
+    def test_partial_update_preserves_existing_fields(self):
+        from app.desktop_sessions import upsert_desktop_sessions
+
+        conn = self._fresh_conn()
+        upsert_desktop_sessions(conn, "host1", [{
+            "cli_session_id": "s1",
+            "title": "keep-me",
+            "model": "claude-opus-4-6",
+            "last_activity_at_ms": 1000,
+        }])
+        upsert_desktop_sessions(conn, "host1", [{
+            "cli_session_id": "s1",
+            "last_activity_at_ms": 2000,
+        }])
+        row = conn.execute(
+            "SELECT title, model FROM desktop_sessions WHERE cli_session_id='s1'"
+        ).fetchone()
+        self.assertEqual(row["title"], "keep-me")
+        self.assertEqual(row["model"], "claude-opus-4-6")
+
+    def test_dict_and_list_fields_serialized_as_json(self):
+        from app.desktop_sessions import upsert_desktop_sessions
+
+        conn = self._fresh_conn()
+        upsert_desktop_sessions(conn, "host1", [{
+            "cli_session_id": "s1",
+            "enabled_mcp_tools": {"local:x:y": True, "local:a:b": False},
+            "remote_mcp_servers": [{"name": "srv1"}],
+            "chrome_allowed_domains": ["example.com"],
+            "last_activity_at_ms": 1000,
+        }])
+        row = conn.execute(
+            "SELECT enabled_mcp_tools, remote_mcp_servers, chrome_allowed_domains "
+            "FROM desktop_sessions WHERE cli_session_id='s1'"
+        ).fetchone()
+        import json as _json
+        self.assertEqual(_json.loads(row["enabled_mcp_tools"])["local:x:y"], True)
+        self.assertEqual(_json.loads(row["remote_mcp_servers"])[0]["name"], "srv1")
+        self.assertEqual(_json.loads(row["chrome_allowed_domains"]), ["example.com"])
+
 if __name__ == "__main__":
     unittest.main()
