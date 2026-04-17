@@ -216,10 +216,10 @@ def push_desktop_sessions(sessions: list[dict]) -> int | None:
         with urllib.request.urlopen(req, timeout=30) as resp:
             json.loads(resp.read())  # drain
     except urllib.error.HTTPError as e:
-        log(f"desktop metadata HTTP {e.code}: {e.read().decode()[:200]}")
+        err(f"desktop metadata HTTP {e.code}: {e.read().decode()[:200]}")
         return None
     except Exception as e:  # noqa: BLE001
-        log(f"desktop metadata error: {e}")
+        err(f"desktop metadata error: {e}")
         return None
 
     return max(s.get("last_activity_at_ms") or 0 for s in sessions)
