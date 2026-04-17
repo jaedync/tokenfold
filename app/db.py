@@ -134,6 +134,32 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     gen_json          TEXT DEFAULT '{}',
     updated_at        TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS desktop_sessions (
+    cli_session_id         TEXT PRIMARY KEY,
+    desktop_session_id     TEXT,
+    source_machine         TEXT NOT NULL,
+    title                  TEXT,
+    model                  TEXT,
+    effort                 TEXT,
+    permission_mode        TEXT,
+    completed_turns        INTEGER,
+    is_archived            INTEGER DEFAULT 0,
+    cwd                    TEXT,
+    origin_cwd             TEXT,
+    created_at_ms          INTEGER,
+    last_activity_at_ms    INTEGER,
+    enabled_mcp_tools      TEXT,
+    remote_mcp_servers     TEXT,
+    chrome_permission_mode TEXT,
+    chrome_allowed_domains TEXT,
+    updated_at_ms          INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_desktop_last_activity
+    ON desktop_sessions(last_activity_at_ms);
+CREATE INDEX IF NOT EXISTS idx_desktop_source
+    ON desktop_sessions(source_machine);
 """
 
 
