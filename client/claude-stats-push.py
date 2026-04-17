@@ -24,6 +24,7 @@ CURSOR_FILE = Path(os.environ.get(
     os.environ.get("CLAUDE_STATS_CURSOR", str(Path.home() / ".tokenfold-cursor.json")),
 ))
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
+DESKTOP_DIR = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
@@ -132,6 +133,97 @@ def find_session_files() -> list[tuple[str, Path]]:
             project_dir = "unknown"
         results.append((project_dir, jsonl_path))
     return results
+
+
+
+def desktop_dir():
+    """Return the Claude Desktop metadata root, or None if not on macOS or not present."""
+    if sys.platform != "darwin":
+        return None
+    if not DESKTOP_DIR.exists():
+        return None
+    return DESKTOP_DIR
+
+
+def extract_desktop_session(path):
+    """Read one local_*.json file and normalize to the server schema.
+
+    Returns None on read error, parse error, or missing cliSessionId.
+    """
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    cli_id = raw.get("cliSessionId")
+    if not cli_id:
+        return None
+
+    return {
+        "cli_session_id": cli_id,
+        "desktop_session_id": raw.get("sessionId"),
+        "title": raw.get("title"),
+        "model": raw.get("model"),
+        "effort": raw.get("effort"),
+        "permission_mode": raw.get("permissionMode"),
+        "completed_turns": raw.get("completedTurns"),
+        "is_archived": raw.get("isArchived"),
+        "cwd": raw.get("cwd"),
+        "origin_cwd": raw.get("originCwd"),
+        "created_at_ms": raw.get("createdAt"),
+        "last_activity_at_ms": raw.get("lastActivityAt"),
+        "enabled_mcp_tools": raw.get("enabledMcpTools"),
+        "remote_mcp_servers": raw.get("remoteMcpServersConfig"),
+        "chrome_permission_mode": raw.get("chromePermissionMode"),
+        "chrome_allowed_domains": raw.get("chromeAllowedDomains"),
+    }
+
+
+def find_desktop_sessions(root, cursor_ms):
+    """Scan `root` for local_*.json files updated after `cursor_ms`."""
+    if not root or not root.exists():
+        return []
+    rows = []
+    for path in root.rglob("local_*.json"):
+        row = extract_desktop_session(path)
+        if row is None:
+            continue
+        last = row.get("last_activity_at_ms") or 0
+        if last > cursor_ms:
+            rows.append(row)
+    return rows
+
+
+def push_desktop_sessions(sessions):
+    """POST sessions to /api/desktop-metadata. Returns the new cursor value
+    (max last_activity_at_ms across pushed sessions), or None on failure."""
+    if not sessions:
+        return None
+    payload = json.dumps({
+        "machine": MACHINE_NAME,
+        "sessions": sessions,
+    }).encode()
+    req = urllib.request.Request(
+        f"{SERVER_URL}/api/desktop-metadata",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": API_KEY,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            json.loads(resp.read())  # drain
+    except urllib.error.HTTPError as e:
+        log(f"desktop metadata HTTP {e.code}: {e.read().decode()[:200]}")
+        return None
+    except Exception as e:  # noqa: BLE001
+        log(f"desktop metadata error: {e}")
+        return None
+
+    return max(s.get("last_activity_at_ms") or 0 for s in sessions)
 
 
 def push_batch(project_dir: str, session_file: str, cursor_line: int,
