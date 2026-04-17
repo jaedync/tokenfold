@@ -88,6 +88,9 @@ def upsert_desktop_sessions(
         new_last = data.get("last_activity_at_ms") or 0
         prior_last = (prior[0] if prior else None) or 0
 
+        # Invariant: this Python check (`<`, skip) and the SQL WHERE guard
+        # (`>=`, proceed) must stay logical complements. If you change one,
+        # change both.
         if prior and new_last < prior_last:
             stale += 1
             continue

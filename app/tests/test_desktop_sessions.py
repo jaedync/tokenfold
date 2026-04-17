@@ -90,6 +90,7 @@ class UpsertDesktopSessionsTest(unittest.TestCase):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        self.addCleanup(conn.close)
         return conn
 
     def test_insert_new_session(self):
