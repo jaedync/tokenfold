@@ -65,6 +65,7 @@ from .dashboard import router as dashboard_router
 from .notify import router as notify_router
 from .light import router as light_router
 from .ha import router as ha_router
+from .desktop_sessions import router as desktop_sessions_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
@@ -72,6 +73,7 @@ app.include_router(dashboard_router)
 app.include_router(notify_router)
 app.include_router(light_router)
 app.include_router(ha_router)
+app.include_router(desktop_sessions_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():

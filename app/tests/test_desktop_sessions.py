@@ -186,5 +186,58 @@ class UpsertDesktopSessionsTest(unittest.TestCase):
         self.assertEqual(_json.loads(row["remote_mcp_servers"])[0]["name"], "srv1")
         self.assertEqual(_json.loads(row["chrome_allowed_domains"]), ["example.com"])
 
+
+
+class DesktopRouteTest(unittest.TestCase):
+    def _client(self, api_key: str = "test-key"):
+        import os
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        os.environ["DB_PATH"] = tmp.name
+        os.environ["STATS_API_KEY"] = api_key
+
+        import importlib
+        import app.config
+        import app.db
+        importlib.reload(app.config)
+        importlib.reload(app.db)
+
+        from fastapi.testclient import TestClient
+        from app.main import app as fastapi_app
+        return TestClient(fastapi_app), tmp.name
+
+    def test_route_requires_api_key(self):
+        client, _ = self._client()
+        r = client.post(
+            "/api/desktop-metadata",
+            json={"machine": "h", "sessions": []},
+            headers={"X-API-Key": "wrong"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_route_happy_path(self):
+        client, _ = self._client(api_key="kk")
+        r = client.post(
+            "/api/desktop-metadata",
+            json={
+                "machine": "host1",
+                "sessions": [
+                    {
+                        "cli_session_id": "aaaa-1",
+                        "title": "T",
+                        "last_activity_at_ms": 1000,
+                    }
+                ],
+            },
+            headers={"X-API-Key": "kk"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["inserted"], 1)
+        self.assertEqual(body["updated"], 0)
+        self.assertEqual(body["ignored_stale"], 0)
+
 if __name__ == "__main__":
     unittest.main()
