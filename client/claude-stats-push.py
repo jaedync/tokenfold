@@ -26,19 +26,6 @@ CURSOR_FILE = Path(os.environ.get(
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 DESKTOP_DIR = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
 DESKTOP_CURSOR_KEY = "__desktop_last_activity_ms"
-
-
-def read_desktop_cursor(cursors: dict) -> int:
-    val = cursors.get(DESKTOP_CURSOR_KEY, 0)
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return 0
-
-
-def write_desktop_cursor(cursors: dict, value: int) -> None:
-    cursors[DESKTOP_CURSOR_KEY] = int(value)
-
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
@@ -53,6 +40,18 @@ def log(msg):
 def err(msg):
     """Always print to stderr — not gated on VERBOSE."""
     print(f"[tokenfold] {msg}", file=sys.stderr)
+
+
+def read_desktop_cursor(cursors: dict) -> int:
+    val = cursors.get(DESKTOP_CURSOR_KEY, 0)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
+
+def write_desktop_cursor(cursors: dict, value: int) -> None:
+    cursors[DESKTOP_CURSOR_KEY] = int(value)
 
 
 def load_cursors() -> dict:
@@ -513,6 +512,7 @@ def main():
             new_cursor = push_desktop_sessions(desktop_sessions)
             if new_cursor is not None:
                 write_desktop_cursor(cursors, new_cursor)
+                log(f"desktop: cursor advanced to {new_cursor}")
 
     save_cursors(cursors)
     if total_accepted or total_dupes:
