@@ -135,8 +135,7 @@ def find_session_files() -> list[tuple[str, Path]]:
     return results
 
 
-
-def desktop_dir():
+def desktop_dir() -> Path | None:
     """Return the Claude Desktop metadata root, or None if not on macOS or not present."""
     if sys.platform != "darwin":
         return None
@@ -145,7 +144,7 @@ def desktop_dir():
     return DESKTOP_DIR
 
 
-def extract_desktop_session(path):
+def extract_desktop_session(path: Path) -> dict | None:
     """Read one local_*.json file and normalize to the server schema.
 
     Returns None on read error, parse error, or missing cliSessionId.
@@ -180,7 +179,7 @@ def extract_desktop_session(path):
     }
 
 
-def find_desktop_sessions(root, cursor_ms):
+def find_desktop_sessions(root: Path, cursor_ms: int) -> list[dict]:
     """Scan `root` for local_*.json files updated after `cursor_ms`."""
     if not root or not root.exists():
         return []
@@ -195,7 +194,7 @@ def find_desktop_sessions(root, cursor_ms):
     return rows
 
 
-def push_desktop_sessions(sessions):
+def push_desktop_sessions(sessions: list[dict]) -> int | None:
     """POST sessions to /api/desktop-metadata. Returns the new cursor value
     (max last_activity_at_ms across pushed sessions), or None on failure."""
     if not sessions:
