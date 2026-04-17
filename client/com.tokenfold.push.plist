@@ -6,7 +6,8 @@
     <string>com.tokenfold.push</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
         <string>/usr/local/bin/tokenfold-push.py</string>
     </array>
     <key>EnvironmentVariables</key>

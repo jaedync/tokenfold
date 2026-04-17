@@ -89,8 +89,13 @@ Indexes on: `session_id+type+ts_epoch`, `day`, `request_id`, `model`, `source_ma
 
 ## Client (claude-stats-push.py)
 
-Standalone stdlib-only Python script. Runs via cron (Linux) or launchd (macOS). Scans `~/.claude/projects/**/*.jsonl`, tracks cursor in `~/.tokenfold-cursor.json`, strips content, POSTs batches to server. Config via `TOKENFOLD_URL`, `TOKENFOLD_API_KEY`, `TOKENFOLD_MACHINE` env vars. Legacy `CLAUDE_STATS_*` vars are supported as fallbacks.
+Standalone stdlib-only Python script. Runs via launchd on macOS or cron on Linux. Scans `~/.claude/projects/**/*.jsonl` for event JSONL, tracks cursor in `~/.tokenfold-cursor.json`, strips content, POSTs batches to `/api/ingest`. On macOS also scans `~/Library/Application Support/Claude/claude-code-sessions/*/*/local_*.json` for Claude Desktop session metadata (titles, MCP toggles, lifecycle timestamps) and POSTs to `/api/desktop-metadata`. Uses `from __future__ import annotations` for Python 3.9 compatibility (stock macOS Python). Config via `TOKENFOLD_URL`, `TOKENFOLD_API_KEY`, `TOKENFOLD_MACHINE` env vars. Legacy `CLAUDE_STATS_*` vars are supported as fallbacks.
 
-## No Test Suite
+## Test Suite
 
-There are currently no automated tests. The service runs on port 5000 internally. Manual testing via curl or browser.
+Tests live under `app/tests/` (server) and `client/test_desktop_metadata.py` (client). Both use stdlib `unittest` — no pytest, no new dependencies. Run:
+
+- Server: `.venv/bin/python -m unittest app.tests.test_desktop_sessions -v`
+- Client: `.venv/bin/python client/test_desktop_metadata.py -v`
+
+The service runs on port 5000 internally. Manual testing via curl or browser for anything not covered by the unit tests.

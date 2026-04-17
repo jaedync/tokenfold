@@ -9,6 +9,7 @@ A lightweight client runs on each machine (via cron or launchd), pushing session
 ## Features
 
 - Aggregate token data from every device into one dashboard
+- Captures Claude Desktop session titles, MCP toggle state, and lifecycle metadata (macOS only)
 - Per-model, per-day, per-project cost breakdown with live LiteLLM pricing
 - Active time tracking: thinking time, tool execution, main sessions, subagents
 - Per-machine stats for prompts, tokens, and costs
@@ -45,18 +46,23 @@ cp client/claude-stats-push.py ~/tokenfold-push.py
 (crontab -l 2>/dev/null; echo "*/5 * * * * TOKENFOLD_URL=https://your-server.example.com TOKENFOLD_API_KEY=your-secret python3 ~/tokenfold-push.py") | crontab -
 ```
 
-**macOS (launchd):**
+**macOS (launchd — recommended):**
+
+> macOS note: always use launchd, not cron. macOS `cron` runs with a minimal PATH that resolves `python3` to Apple’s stock `/usr/bin/python3`, which is Python 3.9 on current macOS versions. The script is written for Python 3.9+ via `from __future__ import annotations`, so stock Python works fine — but launchd is the conventional macOS user-agent runner and survives reboots cleanly.
 
 ```bash
 # Copy the script
 cp client/claude-stats-push.py /usr/local/bin/tokenfold-push.py
 
-# Edit the plist - set TOKENFOLD_URL and TOKENFOLD_API_KEY
+# Copy and edit the plist
 cp client/com.tokenfold.push.plist ~/Library/LaunchAgents/
-# Edit ~/Library/LaunchAgents/com.tokenfold.push.plist with your server URL and API key
+# Edit ~/Library/LaunchAgents/com.tokenfold.push.plist: set TOKENFOLD_URL and TOKENFOLD_API_KEY
 
-# Load
+# Load (starts immediately since RunAtLoad=true)
 launchctl load ~/Library/LaunchAgents/com.tokenfold.push.plist
+
+# Tail the log to verify
+tail -f /tmp/tokenfold-push.log
 ```
 
 ### Client Environment Variables
@@ -165,6 +171,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `GET` | `/api/stats` | No | Full stats JSON |
 | `GET` | `/api/stats/version` | No | Cache version (for polling) |
 | `POST` | `/api/ingest` | `X-API-Key` | Ingest session events |
+| `POST` | `/api/desktop-metadata` | `X-API-Key` | Ingest Claude Desktop session metadata (macOS) |
 | `POST` | `/api/usage` | `X-API-Key` | Push OAuth usage data |
 | `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |

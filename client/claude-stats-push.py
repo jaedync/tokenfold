@@ -5,6 +5,8 @@ Zero external dependencies - stdlib only.
 Designed to run every 5 minutes via cron (Linux) or launchd (macOS).
 """
 
+from __future__ import annotations
+
 import json
 import os
 import random
