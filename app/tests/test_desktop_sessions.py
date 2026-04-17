@@ -189,16 +189,44 @@ class UpsertDesktopSessionsTest(unittest.TestCase):
 
 
 class DesktopRouteTest(unittest.TestCase):
+    def setUp(self):
+        import os
+
+        # Snapshot env so mutations do not leak to other test modules
+        self._env_snapshot = {
+            k: os.environ.get(k) for k in ("DB_PATH", "STATS_API_KEY")
+        }
+
+    def tearDown(self):
+        import importlib
+        import os
+
+        import app.config
+        import app.db
+
+        # Restore env
+        for k, v in self._env_snapshot.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+        # Reload config and db modules so cached values reflect restored env
+        importlib.reload(app.config)
+        importlib.reload(app.db)
+
     def _client(self, api_key: str = "test-key"):
+        import importlib
         import os
         import tempfile
 
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+
         os.environ["DB_PATH"] = tmp.name
         os.environ["STATS_API_KEY"] = api_key
 
-        import importlib
         import app.config
         import app.db
         importlib.reload(app.config)
@@ -210,29 +238,32 @@ class DesktopRouteTest(unittest.TestCase):
 
     def test_route_requires_api_key(self):
         client, _ = self._client()
-        r = client.post(
-            "/api/desktop-metadata",
-            json={"machine": "h", "sessions": []},
-            headers={"X-API-Key": "wrong"},
-        )
+        with client:
+            r = client.post(
+                "/api/desktop-metadata",
+                json={"machine": "h", "sessions": []},
+                headers={"X-API-Key": "wrong"},
+            )
         self.assertEqual(r.status_code, 401)
+        self.assertIn("detail", r.json())
 
     def test_route_happy_path(self):
         client, _ = self._client(api_key="kk")
-        r = client.post(
-            "/api/desktop-metadata",
-            json={
-                "machine": "host1",
-                "sessions": [
-                    {
-                        "cli_session_id": "aaaa-1",
-                        "title": "T",
-                        "last_activity_at_ms": 1000,
-                    }
-                ],
-            },
-            headers={"X-API-Key": "kk"},
-        )
+        with client:
+            r = client.post(
+                "/api/desktop-metadata",
+                json={
+                    "machine": "host1",
+                    "sessions": [
+                        {
+                            "cli_session_id": "aaaa-1",
+                            "title": "T",
+                            "last_activity_at_ms": 1000,
+                        }
+                    ],
+                },
+                headers={"X-API-Key": "kk"},
+            )
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual(body["inserted"], 1)
