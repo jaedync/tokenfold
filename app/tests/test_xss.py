@@ -12,6 +12,11 @@ from app.tests._support import TempDBTestCase
 
 EVIL_MACHINE = 'mEvil</script><script>window.__pwned=1</script>'
 EVIL_PROJECT = 'proj</script><img src=x onerror=alert(1)>'
+# Comment-trick vector: contains NO '</' so a '</'-only replace can't neutralize
+# it. '<!--' followed by '<script' flips the HTML script-data tokenizer into the
+# "double escaped" state, where the page's own legitimate </script> no longer
+# closes the block. The robust fix encodes every '<' as <.
+EVIL_COMMENT_MACHINE = 'mEvil2<!--<script>window.__x=1//'
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent.parent / "templates" / "dashboard.html"
 
@@ -31,8 +36,9 @@ def _ins(conn, uuid, req, machine, project, model="claude-opus-4-8",
 
 
 class ScriptBreakoutTest(TempDBTestCase):
-    """Hole 1: </script> in embedded data_json must not break out of the
-    <script> block. Fix: json.dumps(data).replace('</', '<\\/') in dashboard.py."""
+    """Hole 1: hostile strings in embedded data_json must not break out of the
+    <script> block via any token (</script>, <!--, <script). Fix: encode every
+    '<' as \\u003c in json.dumps(data) in dashboard.py."""
 
     def setUp(self):
         super().setUp()
@@ -77,6 +83,60 @@ class ScriptBreakoutTest(TempDBTestCase):
             html,
             "Machine name 'mEvil' prefix is missing — escaping dropped the value",
         )
+
+    def test_comment_trick_breakout_absent_in_html(self):
+        """Comment-trick vector: '<!--<script>' contains NO '</', so the old
+        '</'->'<\\/' replace left it intact. The robust '<'->'\\u003c' encoding
+        must ensure the literal '<!--<script>' never appears in the served page."""
+        _ins(self.conn, "e1", "r1", EVIL_COMMENT_MACHINE, "proj")
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+
+        c = self.client()
+        resp = c.get("/")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.text
+
+        self.assertNotIn(
+            "<!--<script>",
+            html,
+            "Raw '<!--<script>' tokenizer breakout found in HTML — comment-trick "
+            "vector not fixed (encode '<' as \\u003c)",
+        )
+        # The payload must not have been dropped — prefix still present (escaped)
+        self.assertIn(
+            "mEvil2",
+            html,
+            "Machine name 'mEvil2' prefix missing — escaping dropped the value",
+        )
+
+    def test_no_raw_lt_breakout_tokens_in_html(self):
+        """General invariant across BOTH vectors: when both an evil </script>
+        machine and an evil <!--<script> machine are present, neither raw breakout
+        token may appear in the served page, and both payloads must survive
+        (escaped) — proving the fix encodes rather than drops."""
+        _ins(self.conn, "e1", "r1", EVIL_MACHINE, EVIL_PROJECT)
+        _ins(self.conn, "e2", "r2", EVIL_COMMENT_MACHINE, "proj2",
+             ts=1781000100.0)
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+
+        c = self.client()
+        html = c.get("/").text
+
+        self.assertNotIn("</script><script>", html,
+                         "raw </script><script> breakout token present")
+        self.assertNotIn("<!--<script>", html,
+                         "raw <!--<script> breakout token present")
+        # Both payloads survive (escaped, not dropped)
+        self.assertIn("mEvil", html, "</script> payload dropped")
+        self.assertIn("mEvil2", html, "<!--<script> payload dropped")
 
     def test_api_stats_roundtrips_raw_string_unmodified(self):
         """Hole 1 fix must only affect HTML embedding; /api/stats JSON must return

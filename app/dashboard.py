@@ -115,11 +115,12 @@ async def dashboard(request: Request):
         machines_pills = '<span class="machine-pill" style="color:var(--gray-dim)">no machines</span>'
 
     return templates.TemplateResponse(request, "dashboard.html", {
-        # Replace '</' with '<\/' so that any user-supplied string (machine,
-        # model, project) containing '</script>' cannot break out of the
-        # surrounding <script> block.  '<\/' is valid JSON content and is
-        # inert in HTML — the standard minimal fix for script-embedded JSON.
-        "data_json": json.dumps(data).replace("</", "<\\/"),
+        # Encode every '<' as its JSON unicode escape so no '</script', '<!--',
+        # or '<script' token can form inside the embedded <script> block. A bare
+        # '</'->'<\/' replace is insufficient: '<!--<script>' has no '</' and
+        # flips the HTML script-data tokenizer into the "double escaped" state.
+        # '<' is valid JSON string content and JSON.parse restores it to '<'.
+        "data_json": json.dumps(data).replace("<", "\\u003c"),
         "cards_html": cards_html,
         "table_rows": table_rows,
         "gen_time": data["generation_time"],
