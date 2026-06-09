@@ -233,24 +233,25 @@ def _build_hourly(conn) -> list[dict]:
             hourly_list[idx]["tool_calls"] = r["cnt"]
 
     for r in conn.execute(
-        "SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, "
+        "SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr "
         "FROM ("
-        "  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
+        "  SELECT MIN(ts_epoch) as first_ts, model, request_id, speed, inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, request_id"
-        ") GROUP BY bucket, model",
+        ") GROUP BY bucket, model, speed, inference_geo",
         (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
         if idx is not None:
             dm = display_model(r["model"])
             hourly_list[idx]["cost"] += compute_cost(
-                dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0)
+                dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
+                r["speed"], r["inference_geo"])
 
     for hl in hourly_list:
         hl["cost"] = round(hl["cost"], 2)
