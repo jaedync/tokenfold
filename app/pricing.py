@@ -8,6 +8,8 @@ from .config import LITELLM_URL, PRICING_CACHE_TTL
 from .db import get_conn
 
 MODEL_DISPLAY = {
+    "claude-opus-4-8": "Opus 4.8",
+    "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-5-20251101": "Opus 4.5",
     "claude-sonnet-4-6": "Sonnet 4.6",
@@ -20,6 +22,8 @@ MODEL_DISPLAY = {
 
 # Pricing per MTok: (input, output, cache_write_5m, cache_read)
 MODEL_PRICING = {
+    "Opus 4.8":  (5.00, 25.00, 6.25, 0.50),
+    "Opus 4.7":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.6":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.5":  (5.00, 25.00, 6.25, 0.50),
     "Sonnet 4.6": (3.00, 15.00, 3.75, 0.30),
@@ -30,6 +34,15 @@ MODEL_PRICING = {
     "Haiku 3.5":  (0.80, 4.00, 1.00, 0.08),
 }
 FALLBACK_PRICING = (3.00, 15.00, 3.75, 0.30)
+
+# Fast-mode Opus base (input, output) per MTok; cache rates re-derived from base.
+# Keyed by display name — only Opus has a fast tier.
+FAST_OPUS_BASE = {
+    "Opus 4.8": (10.0, 50.0),
+    "Opus 4.7": (30.0, 150.0),
+    "Opus 4.6": (30.0, 150.0),
+}
+GEO_US_MULT = 1.1
 
 # Canonical model sort order: Opus > Sonnet > Haiku, then version descending
 MODEL_ORDER = list(MODEL_PRICING.keys())
@@ -139,6 +152,15 @@ def get_pricing(model_name: str) -> tuple:
     return MODEL_PRICING.get(model_name, FALLBACK_PRICING)
 
 
-def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int) -> float:
-    p = get_pricing(model_name)
-    return (inp * p[0] + out * p[1] + cw * p[2] + cr * p[3]) / 1_000_000
+def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
+                 speed: str | None = None, inference_geo: str | None = None) -> float:
+    """List-price cost. Optional speed='fast' (Opus only) and inference_geo='us'
+    modifiers layer on the LiteLLM-or-static base rate; defaults reproduce prior
+    pricing exactly. Mirrors claude-usage-telemetry's effective_rates()."""
+    base_in, out_p, cw_p, cr_p = get_pricing(model_name)
+    if (speed or "").lower() == "fast" and model_name in FAST_OPUS_BASE:
+        b_in, b_out = FAST_OPUS_BASE[model_name]
+        base_in, out_p, cw_p, cr_p = b_in, b_out, b_in * 1.25, b_in * 0.1
+    if (inference_geo or "").lower() == "us":
+        base_in, out_p, cw_p, cr_p = (x * GEO_US_MULT for x in (base_in, out_p, cw_p, cr_p))
+    return (inp * base_in + out * out_p + cw * cw_p + cr * cr_p) / 1_000_000
