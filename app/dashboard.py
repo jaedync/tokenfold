@@ -122,4 +122,5 @@ async def dashboard(request: Request):
         "data_range": data["data_range"],
         "machines_pills": machines_pills,
         "owner": STATS_OWNER,
+        "org_badge": data.get("org_name", ""),
     })

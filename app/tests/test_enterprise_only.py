@@ -76,7 +76,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self.conn.commit()
 
     def test_routes_exclude_consumer_spend(self):
-        # Events in the CURRENT week window (rate-limits/ha look back from resets_at).
+        # Events in the CURRENT week window (rolling-7d window; no oauth row needed).
         now = time.time()
         # enterprise: 1M input Opus 4.8 = $5
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
@@ -84,7 +84,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # consumer: 2M input = $10 — must NOT appear in any route's spend
         ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
             "personal-mbp", "secret", "sC", inp=2_000_000, ts=now - 1800)
-        # Window resets ~1h ahead so both events fall inside the 5h + 7d windows.
+        # oauth row still needed for /api/ha (ha.py reads it directly)
         self._seed_oauth_usage(now + 3600)
         self.conn.commit()
         import app.aggregator as agg
@@ -97,3 +97,86 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # five_hour + weekly spend must be enterprise-only too
         self.assertAlmostEqual(ha["weekly"]["spend_usd"], 5.0, places=2)
         self.assertAlmostEqual(ha["five_hour"]["spend_usd"], 5.0, places=2)
+
+    def test_rate_limits_works_without_oauth_row(self):
+        """Decoupling: /api/rate-limits must return enterprise week_cost
+        even when no oauth_usage meta row exists at all."""
+        now = time.time()
+        ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
+            "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "secret", "sC", inp=2_000_000, ts=now - 1800)
+        # No _seed_oauth_usage here — that's the whole point
+        self.conn.commit()
+        import app.aggregator as agg
+        agg._cached_data = None
+        c = self.client()
+        rl = c.get("/api/rate-limits").json()["weekly_budget"]
+        self.assertIsNotNone(rl, "weekly_budget should not be None when no oauth row")
+        self.assertAlmostEqual(rl["week_cost"], 5.0, places=2)
+
+    def test_rate_limits_no_personal_gauge_fields(self):
+        """Response must contain NONE of the personal-Max gauge keys."""
+        now = time.time()
+        ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
+            "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
+        self.conn.commit()
+        c = self.client()
+        body = c.get("/api/rate-limits").json()
+        wb = body.get("weekly_budget", {})
+        for forbidden in ("weekly_pct", "five_hour_pct", "weekly_resets_at",
+                          "five_hour_resets_at", "opus_pct", "sonnet_pct",
+                          "extra_usage"):
+            self.assertNotIn(forbidden, wb,
+                             f"personal gauge field '{forbidden}' must not appear in response")
+
+    def test_aggregator_exposes_org_name_and_plan_scope(self):
+        """_build_dashboard_data_inner must include org_name and plan_scope."""
+        ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
+            "acme-hpc1", "acme-portal", "sE", inp=1_000_000)
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "secret-side-project", "sC", inp=2_000_000,
+            ts=1781000100.0)
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+        d = agg.build_dashboard_data()
+        self.assertEqual(d["org_name"], "Acme")
+        self.assertEqual(d["plan_scope"], "enterprise")
+
+    def test_aggregator_org_name_empty_when_consumer_only(self):
+        """When only consumer data exists, org_name must be empty string."""
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "proj", "sC", inp=1_000_000)
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+        d = agg.build_dashboard_data()
+        self.assertEqual(d["org_name"], "")
+        self.assertEqual(d["plan_scope"], "enterprise")
+
+    def test_dashboard_html_enterprise_badge_no_consumer_strings(self):
+        """Dashboard HTML must show ENTERPRISE + org name; no consumer strings;
+        no personal-gauge JS field names."""
+        now = time.time()
+        ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
+            "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "secret-side-project", "sC", inp=2_000_000,
+            ts=now - 1800)
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+        c = self.client()
+        html = c.get("/").text
+        self.assertIn("ENTERPRISE", html)
+        self.assertIn("Acme", html)
+        self.assertNotIn("me@gmail.com", html)
+        self.assertNotIn("personal-mbp", html)
+        self.assertNotIn("secret-side-project", html)
+        # personal-gauge field names must not appear in served JS
+        self.assertNotIn("weekly_pct", html)
+        self.assertNotIn("opus_pct", html)

@@ -185,6 +185,8 @@ def _empty_dashboard(cutoff_date: str) -> dict:
         "today": {"cost": 0.0, "model_breakdown": [], "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
         }, "tools": {}, "projects": [], "machine_summary": []},
+        "org_name": "",
+        "plan_scope": "enterprise",
     }
 
 
@@ -453,6 +455,9 @@ def _build_dashboard_data_inner() -> dict:
 
     if not rows:
         return _empty_dashboard(cutoff_date)
+
+    # ── Collect distinct enterprise orgs ──
+    orgs = sorted({row["org_name"] for row in rows if row["org_name"]})
 
     # ── Accumulators ──
     model_stats = defaultdict(lambda: {
@@ -849,6 +854,8 @@ def _build_dashboard_data_inner() -> dict:
         "last_active_ts": last_active_ts,
         "version": get_cache_version(),
         "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d")),
+        "org_name": " · ".join(orgs),
+        "plan_scope": "enterprise",
     }
 
 

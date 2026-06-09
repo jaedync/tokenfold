@@ -112,6 +112,22 @@ body {
   color: var(--bg);
 }
 
+.header-enterprise-band {
+  background: var(--blue);
+  display: inline-block;
+  padding: 0.35rem 1.2rem;
+  margin-top: 0.4rem;
+  align-self: flex-start;
+}
+
+.header-enterprise-band span {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bg);
+}
+
 .header-geo {
   display: flex;
   align-items: stretch;
@@ -1540,6 +1556,7 @@ th[data-info]:hover::after { opacity: 1; }
 /* Header: title sweeps right, subtitle sweeps right, geo blocks drop in */
 .header-title { animation: clipRight 0.7s cubic-bezier(0.77,0,0.175,1) both; }
 .header-subtitle-band { animation: clipRight 0.45s 0.25s cubic-bezier(0.77,0,0.175,1) both; }
+.header-enterprise-band { animation: clipRight 0.45s 0.38s cubic-bezier(0.77,0,0.175,1) both; }
 .header-geo-block { animation: clipDown 0.4s cubic-bezier(0.77,0,0.175,1) both; }
 .header-geo-block.red-block { animation-delay: 0.3s; }
 .header-geo-block.yellow-block { animation-delay: 0.38s; }
@@ -1586,7 +1603,7 @@ th[data-info]:hover::after { opacity: 1; }
 .footer.in-view { clip-path: inset(0 0 0 0); }
 
 @media (prefers-reduced-motion: reduce) {
-  .header-title, .header-subtitle-band, .header-geo-block,
+  .header-title, .header-subtitle-band, .header-enterprise-band, .header-geo-block,
   .date-bar, .stat-card, .cost-hero-label, .cost-hero-value,
   .cost-hero-period, .env-bar { animation: none !important; }
   .env-equiv-text { transition: none !important; }
@@ -1625,6 +1642,7 @@ th[data-info]:hover::after { opacity: 1; }
   .header-inner { grid-template-columns: 1fr; min-height: auto; }
   .header-title-area { padding: 1.2rem; }
   .header-subtitle-band span { font-size: 0.95rem; }
+  .header-enterprise-band span { font-size: 0.8rem; }
 
   /* Stats grid stays 2-col - compact tiles work well on mobile */
   .stat-card { min-height: 100px; padding: 1.2rem; }
@@ -1670,6 +1688,8 @@ th[data-info]:hover::after { opacity: 1; }
   .header-title-area { padding: 1rem 0.8rem; }
   .header-subtitle-band { padding: 0.2rem 0.7rem; margin-top: 0.4rem; }
   .header-subtitle-band span { font-size: 0.8rem; letter-spacing: 0.1em; }
+  .header-enterprise-band { padding: 0.2rem 0.7rem; margin-top: 0.3rem; }
+  .header-enterprise-band span { font-size: 0.7rem; letter-spacing: 0.12em; }
 
   .stat-card { padding: 0.9rem; min-height: 85px; }
   .stat-value { font-size: 1.8rem; }
@@ -1739,6 +1759,11 @@ th[data-info]:hover::after { opacity: 1; }
       <div class="header-subtitle-band">
         <span>Usage Dashboard</span>
       </div>
+      {% if org_badge %}
+      <div class="header-enterprise-band">
+        <span>ENTERPRISE · {{ org_badge|e }}</span>
+      </div>
+      {% endif %}
     </div>
     <div class="header-geo">
       <div class="header-geo-block red-block">
@@ -1873,12 +1898,12 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 
-<!-- ======== RATE LIMITS ======== -->
+<!-- ======== ENTERPRISE WEEK PANEL ======== -->
 <div id="rateLimitsSection" class="rate-limits" style="display:none">
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
-    <h2>Rate Limits</h2>
-    <span id="rateLimitsUpdated" class="rate-limits-updated"></span>
+    <h2>Enterprise Week</h2>
+    <span id="rateLimitsUpdated" class="rate-limits-updated">rolling 7 days</span>
   </div>
   <div id="rateLimitsGrid" class="rate-limits-grid"></div>
 </div>
@@ -2826,186 +2851,14 @@ function renderMode(mode) {
     grid.innerHTML = '<div style="color:var(--gray-dim);font-size:0.9rem;padding:1rem">Loading rate limits...</div>';
 
     function renderAllRateLimits(wb) {
-    if(!wb || wb.source !== 'oauth') { section.style.display = 'none'; return; }
+    if(!wb) { section.style.display = 'none'; return; }
 
     section.style.display = '';
 
-    function barColor(pct, expectedPct) {
-      // Color based on pace, not absolute percentage
-      if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
-        var ratio = pct / expectedPct;
-        if(ratio <= 1.1) return 'var(--blue)';    // on pace or under
-        if(ratio <= 1.35) return 'var(--yellow)';  // moderately over
-        return 'var(--red)';                        // significantly over
-      }
-      // Fallback when no expected data (e.g. stale)
-      if(pct < 50) return 'var(--blue)';
-      if(pct < 80) return 'var(--yellow)';
-      return 'var(--red)';
-    }
-    function fmtReset(iso) {
-      if(!iso) return '';
-      try {
-        var d = new Date(iso);
-        var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-        var h = d.getHours(), m = d.getMinutes();
-        var ampm = h >= 12 ? 'p' : 'a';
-        h = h % 12 || 12;
-        return 'resets ' + days[d.getDay()] + ' ' + h + (m > 0 ? ':' + String(m).padStart(2,'0') : '') + ampm;
-      } catch(e) { return ''; }
-    }
-
-    // Calculate progress marker: how far through the period we are
-    function calcExpectedPct(resetIso, periodMs) {
-      if(!resetIso) return null;
-      try {
-        var resetTime = new Date(resetIso).getTime();
-        var now = Date.now();
-        var elapsed = periodMs - (resetTime - now);
-        if(elapsed < 0) elapsed = 0;
-        if(elapsed > periodMs) elapsed = periodMs;
-        return (elapsed / periodMs) * 100;
-      } catch(e) { return null; }
-    }
-
-    var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
     var DAY_MS = 24 * 60 * 60 * 1000;
-    var FIVE_HR_MS = 5 * 60 * 60 * 1000;
     var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-    function buildGauge(label, pct, resetLabel, expectedPct, opts) {
-      opts = opts || {};
-      var clamp = Math.min(pct, 100);
-      var color = barColor(pct, expectedPct);
-      var innerHtml = '';
-
-      // Day boundary lines (weekly only)
-      if(opts.dayLines) {
-        for(var i = 0; i < opts.dayLines.length; i++) {
-          var dl = opts.dayLines[i];
-          innerHtml += '<div class="rate-gauge-dayline" style="left:' + dl.pct.toFixed(2) + '%">'
-            + '<span class="rate-gauge-dayline-label">' + dl.label + '</span>'
-            + '</div>';
-        }
-      }
-
-      // Progress marker
-      if(expectedPct !== null && expectedPct >= 0 && expectedPct <= 100) {
-        innerHtml += '<div class="rate-gauge-marker" style="left:' + expectedPct.toFixed(1) + '%">'
-          + '<span class="rate-gauge-marker-label">expected</span>'
-          + '</div>';
-      }
-
-      // Projection text
-      var projHtml = '';
-      if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
-        var projRound = Math.round(opts.projectedPct);
-        var projClass = projRound > 100 ? 'proj-warn' : '';
-        projHtml = '<div class="rate-gauge-projection">'
-          + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
-          + '</div>';
-      }
-
-      // Stats row (compact key-value cells)
-      var statsHtml = '';
-      if(opts.stats && opts.stats.length) {
-        statsHtml = '<div class="rate-gauge-stats">';
-        for(var si = 0; si < opts.stats.length; si++) {
-          var st = opts.stats[si];
-          var valStyle = st.color ? ' style="color:' + st.color + '"' : '';
-          statsHtml += '<div class="rate-gauge-stat">'
-            + '<div class="rate-gauge-stat-value"' + valStyle + '>' + st.value + '</div>'
-            + '<div class="rate-gauge-stat-label">' + st.label + '</div>'
-            + '</div>';
-        }
-        statsHtml += '</div>';
-      }
-
-      // Build fill segments: base + delta (over in red, under in blue)
-      var fillHtml = '';
-      if(expectedPct !== null && expectedPct > 0 && expectedPct <= 100 && clamp > 0) {
-        if(clamp > expectedPct) {
-          // Over pace: base to expected, then red overshoot
-          fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
-            + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
-        } else {
-          // Under pace: fill to actual, then blue gap to expected
-          fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
-            + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
-        }
-      } else {
-        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
-      }
-
-      var chartBtnHtml = '';
-      if(opts.chartBtn) {
-        chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View usage pace chart">'
-          + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
-          + '</button>';
-      }
-
-      return '<div class="rate-gauge">'
-        + '<div class="rate-gauge-head">'
-        + '<span class="rate-gauge-label">' + label + chartBtnHtml + '</span>'
-        + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
-        + '</div>'
-        + '<div class="rate-gauge-track" style="' + (opts.dayLines ? 'margin-bottom:10px' : '') + '">'
-        + fillHtml
-        + innerHtml
-        + '</div>'
-        + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:' + color + '">' + Math.round(pct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
-        + '</div>'
-        + projHtml
-        + statsHtml
-        + '</div>';
-    }
-
-    var wPct = wb.weekly_pct || 0;
-    var hPct = wb.five_hour_pct || 0;
-    var wExpected = calcExpectedPct(wb.weekly_resets_at, WEEK_MS);
-    var hExpected = calcExpectedPct(wb.five_hour_resets_at, FIVE_HR_MS);
-
-    // Build day boundary lines at actual midnight CST within the weekly window
-    var weeklyDayLines = [];
-    if(wb.weekly_resets_at) {
-      try {
-        var resetTime = new Date(wb.weekly_resets_at).getTime();
-        var weekStart = resetTime - WEEK_MS;
-        // Find first midnight CST on or after weekStart.
-        // CST = UTC-6. Build a Date in CST by formatting, then walk midnights.
-        var cstOff = -6 * 60; // CST offset in minutes
-        var startLocal = new Date(weekStart + cstOff * 60000);
-        // Floor to midnight in CST: zero out h/m/s/ms, then advance one day
-        var firstMidnight = new Date(Date.UTC(
-          startLocal.getUTCFullYear(), startLocal.getUTCMonth(), startLocal.getUTCDate()
-        ));
-        // Convert back: this UTC midnight represents CST midnight, so actual UTC = midnight + 6h
-        var firstBoundaryUTC = firstMidnight.getTime() - cstOff * 60000;
-        if(firstBoundaryUTC <= weekStart) firstBoundaryUTC += DAY_MS;
-        for(var bt = firstBoundaryUTC; bt < resetTime; bt += DAY_MS) {
-          var pct = ((bt - weekStart) / WEEK_MS) * 100;
-          if(pct > 0.5 && pct < 99.5) {
-            // Label = the day that is STARTING at this midnight
-            var cstDate = new Date(bt + cstOff * 60000);
-            weeklyDayLines.push({
-              pct: pct,
-              label: DAY_NAMES[cstDate.getUTCDay()]
-            });
-          }
-        }
-      } catch(e) {}
-    }
-
-    // Project usage at reset: linear extrapolation from current rate
-    var weeklyProjected = null;
-    if(wExpected > 2 && wPct > 0) {
-      weeklyProjected = (wPct / wExpected) * 100;
-    }
-
-    // ── Weekly stats: cost, active time, over/under, projected remaining ──
-    // Use precise values computed server-side from exact epoch window
+    // ── Enterprise weekly spend panel ──
     var weekCost = wb.week_cost || 0;
     var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
 
@@ -3015,92 +2868,34 @@ function renderMode(mode) {
       return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
     }
 
-    var weeklyStats = [];
+    var statsHtml = '<div class="rate-gauge-stats">'
+      + '<div class="rate-gauge-stat">'
+      + '<div class="rate-gauge-stat-value">$' + weekCost.toFixed(2) + '</div>'
+      + '<div class="rate-gauge-stat-label">spend · 7d</div>'
+      + '</div>'
+      + '<div class="rate-gauge-stat">'
+      + '<div class="rate-gauge-stat-value">' + fmtHM(weekActiveMin) + '</div>'
+      + '<div class="rate-gauge-stat-label">active · 7d</div>'
+      + '</div>'
+      + '</div>';
 
-    // Over/under pace (from utilization vs expected position)
-    if(wExpected !== null && wExpected > 2) {
-      var diffPct = wPct - wExpected;
-      var diffH = Math.abs(diffPct / 100 * 7 * 24);
-      var overUnder = diffPct >= 0;
-      weeklyStats.push({
-        value: (overUnder ? '+' : '\u2212') + fmtHM(diffH * 60),
-        label: overUnder ? 'over pace' : 'under pace',
-        color: overUnder ? 'var(--red)' : 'var(--blue)'
-      });
-    }
+    var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View pace chart">'
+      + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+      + '</button>';
 
-    // Cost this week
-    weeklyStats.push({
-      value: '$' + weekCost.toFixed(2),
-      label: 'spent this week'
-    });
+    var panelHtml = '<div class="rate-gauge">'
+      + '<div class="rate-gauge-head">'
+      + '<span class="rate-gauge-label">Weekly Spend' + chartBtnHtml + '</span>'
+      + '<span class="rate-gauge-reset">rolling 7 days</span>'
+      + '</div>'
+      + statsHtml
+      + '</div>';
 
-    // Active time this week
-    weeklyStats.push({
-      value: fmtHM(weekActiveMin),
-      label: 'active this week'
-    });
-
-    // Budget remaining: 100% - wPct = remaining % of limit.
-    // Map that to cost/time: if wPct% cost us $X / Ymin, then each 1% ≈ $X/wPct.
-    var remainPct = 100 - wPct;
-    if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
-      var parts = [];
-      if(weekCost > 0) {
-        var remCost = (weekCost / wPct) * remainPct;
-        parts.push('~$' + remCost.toFixed(2));
-      }
-      if(weekActiveMin > 0) {
-        var remMin = (weekActiveMin / wPct) * remainPct;
-        parts.push('~' + fmtHM(remMin));
-      }
-      var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow)' : null;
-      weeklyStats.push({
-        value: parts.join(' · '),
-        label: Math.round(remainPct) + '% budget left',
-        color: remColor
-      });
-    }
-
-    var html = '';
-    html += buildGauge('Weekly Limit', wPct, fmtReset(wb.weekly_resets_at), wExpected, {
-      dayLines: weeklyDayLines,
-      projectedPct: weeklyProjected,
-      stats: weeklyStats,
-      chartBtn: true
-    });
-    html += buildGauge('5-Hour Window', hPct, fmtReset(wb.five_hour_resets_at), hExpected);
-
-    grid.innerHTML = html;
-
-  /* ── Rate limits staleness indicator ── */
-  (function(){
-    var el = document.getElementById('rateLimitsUpdated');
-    if(!el || !wb || wb.source !== 'oauth') return;
-    var STALE_S = 3600; // 1 hour — usage windows are 5h/7d so minor staleness is fine
-    function update() {
-      var epoch = wb.updated_at_epoch;
-      if(!epoch) { el.textContent = ''; return; }
-      var ageSec = (Date.now() / 1000) - epoch;
-      var text;
-      if(ageSec < 60) text = 'updated just now';
-      else if(ageSec < 3600) text = 'updated ' + Math.floor(ageSec / 60) + 'm ago';
-      else if(ageSec < 86400) {
-        var h = Math.floor(ageSec / 3600);
-        var m = Math.floor((ageSec % 3600) / 60);
-        text = 'updated ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '') + ' ago';
-      } else text = 'updated ' + Math.floor(ageSec / 86400) + 'd ago';
-      var stale = ageSec > STALE_S;
-      el.textContent = stale ? '\u26a0 ' + text : text;
-      el.classList.toggle('rate-limits-updated--stale', stale);
-    }
-    update();
-    setInterval(update, 30000);
-  })();
+    grid.innerHTML = panelHtml;
 
   /* ── Weekly usage pace chart (modal popup) ── */
   (function(){
-    if(!wb || !wb.hourly_costs || !wb.weekly_resets_at) return;
+    if(!wb || !wb.hourly_costs) return;
 
     var overlay = document.getElementById('usageChartOverlay');
     var trigger = document.getElementById('usageChartTrigger');
@@ -3115,10 +2910,8 @@ function renderMode(mode) {
       var canvas = document.getElementById('usageChartCanvas');
       if(!canvas) return;
 
-      var WEEK_MS = 7 * 24 * 3600 * 1000;
-      var resetTime = new Date(wb.weekly_resets_at).getTime();
-      var weekStart = resetTime - WEEK_MS;
-      var weekStartEpoch = wb.week_start_epoch || (weekStart / 1000);
+      // Rolling window: server anchor is updated_at_epoch (≈ now), window is 7d back
+      var weekStartEpoch = (wb.updated_at_epoch || (Date.now() / 1000)) - 7 * 24 * 3600;
       var nowExact = (Date.now() / 1000 - weekStartEpoch) / 3600;
       var nowH = Math.floor(nowExact);
       var totalHours = 168; // 7 * 24
@@ -3129,14 +2922,11 @@ function renderMode(mode) {
         costByHour[wb.hourly_costs[i].h] = wb.hourly_costs[i].c;
       }
 
-      // Build cumulative actual and expected arrays
+      // Build cumulative cost arrays — raw $ (no synthetic budget %)
       var labels = [];
       var actualData = [];
-      var expectedData = [];
-      var totalCost = wb.week_cost || 0;
-      // Estimate budget: if we have wPct and week_cost, budget = week_cost / (wPct/100)
-      var wPct = wb.weekly_pct || 0;
-      var estimatedBudget = (wPct > 1 && totalCost > 0) ? (totalCost / wPct * 100) : null;
+
+      function round2(v) { return Math.round(v * 100) / 100; }
 
       var cumCost = 0;
       var maxH = Math.min(nowH + 1, totalHours);
@@ -3172,51 +2962,13 @@ function renderMode(mode) {
 
         if(h <= maxH) {
           cumCost += (costByHour[h] || 0);
-          // Express as percentage of estimated budget
-          if(estimatedBudget) {
-            actualData.push(Math.round((cumCost / estimatedBudget) * 10000) / 100);
-          } else {
-            actualData.push(round2(cumCost));
-          }
+          actualData.push(round2(cumCost));
         } else {
           actualData.push(null);
         }
-
-        // Expected: linear from 0% to 100% (or 0 to estimatedBudget)
-        if(estimatedBudget) {
-          expectedData.push(Math.round((h / totalHours) * 10000) / 100);
-        } else {
-          expectedData.push(null);
-        }
       }
 
-      function round2(v) { return Math.round(v * 100) / 100; }
-
-      // 100% limit line (flat) — only where actual data exists
-      var limitData = [];
-      if(estimatedBudget) {
-        for(var h = 0; h <= totalHours; h++) {
-          limitData.push(actualData[h] !== null ? 100 : null);
-        }
-      }
-
-      var yLabel = estimatedBudget ? 'Usage (% of limit)' : 'Cumulative cost ($)';
-
-      // Compute nice cost step for y2 axis
-      // costNiceMax rounds up to a clean number; pctMax scales y to match
-      var costStep = 100, costNiceMax = null, pctMax = 100;
-      if(estimatedBudget) {
-        var steps = [10, 25, 50, 100, 200, 250, 500, 1000];
-        var ideal = estimatedBudget / 5;
-        costStep = steps[0];
-        for(var si = 0; si < steps.length; si++) {
-          if(steps[si] >= ideal) { costStep = steps[si]; break; }
-          costStep = steps[si];
-        }
-        costNiceMax = Math.ceil(estimatedBudget / costStep) * costStep;
-        pctMax = (costNiceMax / estimatedBudget) * 100;
-      }
-      var tooltipSuffix = estimatedBudget ? '%' : '';
+      var yLabel = 'Cumulative cost ($)';
 
       // Precompute working-hours bands (8am–5pm CT) as hour-index ranges
       var workBands = [];
@@ -3291,51 +3043,14 @@ function renderMode(mode) {
             },
             {
               label: 'Expected pace',
-              data: expectedData,
+              data: [],
               borderColor: '#6b6860',
-              borderWidth: 1.5,
-              borderDash: [6, 4],
+              borderWidth: 0,
               fill: false,
               pointRadius: 0,
               pointHitRadius: 0,
               tension: 0,
               order: 3
-            },
-            {
-              label: '_gap_to_expected',
-              data: estimatedBudget ? actualData : [],
-              borderColor: 'transparent',
-              borderWidth: 0,
-              fill: {target: '-1', above: 'rgba(245, 197, 24, 0.18)', below: 'rgba(245, 197, 24, 0.18)'},
-              pointRadius: 0,
-              pointHitRadius: 0,
-              tension: 0.15,
-              spanGaps: false,
-              order: 2
-            },
-            {
-              label: 'Usage limit',
-              data: estimatedBudget ? limitData : [],
-              borderColor: 'rgba(230, 51, 41, 0.4)',
-              borderWidth: 1,
-              borderDash: [4, 4],
-              fill: false,
-              pointRadius: 0,
-              pointHitRadius: 0,
-              tension: 0,
-              order: 4
-            },
-            {
-              label: '_over_limit',
-              data: estimatedBudget ? actualData : [],
-              borderColor: 'transparent',
-              borderWidth: 0,
-              fill: {target: '-1', above: 'rgba(230, 51, 41, 0.25)', below: 'transparent'},
-              pointRadius: 0,
-              pointHitRadius: 0,
-              tension: 0.15,
-              spanGaps: false,
-              order: 1
             }
           ]
         },
@@ -3370,17 +3085,7 @@ function renderMode(mode) {
                 },
                 label: function(ctx) {
                   if(ctx.raw === null) return '';
-                  // Hide ghost datasets and limit line from tooltip
-                  if(ctx.dataset.label.charAt(0) === '_') return '';
-                  if(ctx.dataset.label === 'Usage limit') return '';
-                  var v = ctx.raw;
-                  if(estimatedBudget) {
-                    return ctx.dataset.label + ': ' + v.toFixed(1) + '%';
-                  }
-                  return ctx.dataset.label + ': $' + v.toFixed(2);
-                },
-                filter: function(item) {
-                  return item.dataset.label.charAt(0) !== '_' && item.dataset.label !== 'Usage limit';
+                  return ctx.dataset.label + ': $' + ctx.raw.toFixed(2);
                 }
               }
             }
@@ -3401,7 +3106,6 @@ function renderMode(mode) {
             },
             y: {
               beginAtZero: true,
-              max: estimatedBudget ? pctMax : undefined,
               grid: { color: 'rgba(216,212,204,0.4)' },
               border: { color: '#1a1a1a', width: 3 },
               title: {
@@ -3413,33 +3117,9 @@ function renderMode(mode) {
               ticks: {
                 font: { family: '"DM Sans"', size: 10 },
                 color: '#6b6860',
-                callback: function(v) {
-                  if(estimatedBudget && v > 100) return '';
-                  return estimatedBudget ? v + '%' : '$' + v;
-                }
+                callback: function(v) { return '$' + v; }
               }
-            },
-            y2: estimatedBudget ? {
-              position: 'right',
-              beginAtZero: true,
-              max: costNiceMax,
-              grid: { drawOnChartArea: false },
-              border: { color: '#1a1a1a', width: 3 },
-              title: {
-                display: true,
-                text: 'Estimated cost ($)',
-                font: { family: '"DM Sans"', size: 10, weight: '700' },
-                color: '#6b6860'
-              },
-              ticks: {
-                stepSize: costStep,
-                font: { family: '"DM Sans"', size: 10 },
-                color: '#6b6860',
-                callback: function(v) {
-                  return '$' + v;
-                }
-              }
-            } : undefined
+            }
           }
         },
         plugins: [chartPlugins]
