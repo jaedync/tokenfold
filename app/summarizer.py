@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import IDLE_THRESHOLD_S, TZ_NAME
-from .db import get_conn, _DAILY_SUMMARY_DDL
+from .db import get_conn
 from .pricing import compute_cost, display_model, load_pricing
 
 TZ = ZoneInfo(TZ_NAME)

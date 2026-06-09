@@ -12,7 +12,6 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from .config import STATS_API_KEY, TZ_NAME
 from .db import get_conn
 from .models import CursorState, IngestRequest, IngestResponse
-from .pricing import display_model
 
 router = APIRouter()
 TZ = ZoneInfo(TZ_NAME)

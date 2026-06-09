@@ -8,10 +8,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-import app.config as _config
-
 from .aggregator import build_dashboard_data, get_cache_version
-from .config import DEFAULT_SCOPE, IDLE_THRESHOLD_S
+from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import compute_cost, display_model
