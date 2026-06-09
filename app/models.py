@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CursorState(BaseModel):
@@ -11,10 +11,10 @@ class IngestRequest(BaseModel):
     session_file: str
     cursor: CursorState = CursorState()
     events: list[dict]
-    account_email: str | None = None
-    org_name: str | None = None
-    plan: str | None = None
-    rate_limit_tier: str | None = None
+    account_email: str | None = Field(None, max_length=320)
+    org_name: str | None = Field(None, max_length=256)
+    plan: str | None = Field(None, max_length=64)
+    rate_limit_tier: str | None = Field(None, max_length=64)
 
 
 class IngestResponse(BaseModel):

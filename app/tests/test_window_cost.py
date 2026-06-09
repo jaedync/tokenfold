@@ -5,10 +5,14 @@ from app.tests.test_summarizer_pricing import insert_assistant
 def _tag_enterprise(conn):
     """Bring seeded events in-scope for the enterprise-only window cost filter.
 
-    insert_assistant() leaves plan/org NULL; compute_window_cost is now
-    fail-closed to verified-enterprise usage, so seed data must be tagged.
+    insert_assistant() leaves plan/org/account NULL; compute_window_cost is now
+    fail-closed to verified-enterprise usage (plan, org_name, AND account_email
+    must all be set), so seed data must be fully tagged.
     """
-    conn.execute("UPDATE events SET plan='enterprise', org_name='Acme'")
+    conn.execute(
+        "UPDATE events SET plan='enterprise', org_name='Acme', "
+        "account_email='test@acme.io'"
+    )
     conn.commit()
 
 

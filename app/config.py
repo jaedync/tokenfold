@@ -7,9 +7,14 @@ STATS_OWNER = os.environ.get("STATS_OWNER", "")
 IDLE_THRESHOLD_S = 300
 RECENCY_DAYS = 14
 
-# Verified-enterprise scope. Plan is the signal; org presence is defense-in-depth.
-# Errs toward EXCLUDING — zero consumer bleedover is the priority.
-ENTERPRISE_PRED = "plan = 'enterprise' AND org_name IS NOT NULL AND org_name != ''"
+# Verified-enterprise scope. Plan is the signal; org presence and a real attributed
+# account_email are defense-in-depth.  Errs toward EXCLUDING — zero consumer bleedover
+# and zero unattributed-row bleedover are both priorities.
+# Works against both events (account_email IS NULL for unattributed) and daily_summary
+# (account_email = 'unknown' for rows derived from NULL-email events).
+ENTERPRISE_PRED = ("plan = 'enterprise' AND org_name IS NOT NULL AND org_name != '' "
+                   "AND account_email IS NOT NULL AND account_email != '' "
+                   "AND account_email != 'unknown'")
 LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 PRICING_CACHE_TTL = 86400  # 24 hours
 

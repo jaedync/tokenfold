@@ -388,14 +388,23 @@ def summarize_days(days: list[str] | None = None):
 
     placeholders = ",".join("?" for _ in days)
 
-    # Discover all accounts present in the target days (and their plan/org)
-    acct_rows = conn.execute(
-        f"SELECT COALESCE(account_email,'unknown') AS acct, "
+    # Discover all (day, account) pairs with their per-day plan/org.
+    # Using MAX(plan) per (day, acct) instead of across all days prevents a
+    # cross-day lexicographic-MAX from poisoning earlier/later days' plan stamp.
+    acct_day_rows = conn.execute(
+        f"SELECT day, COALESCE(account_email,'unknown') AS acct, "
         f"MAX(plan) AS plan, MAX(org_name) AS org "
-        f"FROM events WHERE day IN ({placeholders}) GROUP BY acct",
+        f"FROM events WHERE day IN ({placeholders}) GROUP BY day, acct",
         days,
     ).fetchall()
-    accounts = [(r["acct"], r["plan"], r["org"]) for r in acct_rows]
+
+    # Build (day, acct) -> (plan, org) lookup and unique account set
+    day_acct_meta: dict[tuple, tuple] = {}
+    accounts_set: set[str] = set()
+    for r in acct_day_rows:
+        day_acct_meta[(r["day"], r["acct"])] = (r["plan"], r["org"])
+        accounts_set.add(r["acct"])
+    accounts = list(accounts_set)
 
     if not accounts:
         return
@@ -405,7 +414,7 @@ def summarize_days(days: list[str] | None = None):
     now = datetime.now(TZ).isoformat()
     rows = []
 
-    for account, plan, org in accounts:
+    for account in accounts:
         day_data = _accumulate(conn, days, placeholders, account)
         for d in days:
             dd = day_data.get(d)
@@ -415,6 +424,8 @@ def summarize_days(days: list[str] | None = None):
             if (dd["cost"] == 0 and dd["sessions"] == 0 and dd["human_prompts"] == 0
                     and dd["tool_calls"] == 0 and dd["active_s"] == 0):
                 continue
+            # Use per-day plan/org (not cross-day MAX)
+            plan, org = day_acct_meta.get((d, account), (None, None))
             rows.append((
                 d, account, plan, org,
                 dd["sessions"], dd["human_prompts"],

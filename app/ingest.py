@@ -135,8 +135,10 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
             row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
             row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
             row["service_tier"] = usage.get("service_tier")
-            row["speed"] = usage.get("speed")
-            row["inference_geo"] = usage.get("inference_geo")
+            _spd = usage.get("speed")
+            row["speed"] = (_spd[:32] if isinstance(_spd, str) else None)
+            _geo = usage.get("inference_geo")
+            row["inference_geo"] = (_geo[:32] if isinstance(_geo, str) else None)
 
         content = msg.get("content", [])
         if isinstance(content, list):

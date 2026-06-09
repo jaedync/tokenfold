@@ -183,3 +183,134 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # personal-gauge field names must not appear in served JS
         self.assertNotIn("weekly_pct", html)
         self.assertNotIn("opus_pct", html)
+
+
+class EnterprisePredicateUnattributedTest(TempDBTestCase):
+    """Fix 3: unattributed rows (account_email=NULL) must be excluded even if
+    plan='enterprise' and org_name is set."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_null_account_excluded_from_dashboard_and_rate_limits(self):
+        """Seed event with account_email=NULL, plan='enterprise', org_name='Spoof'.
+        After summarize, it must appear in NEITHER build_dashboard_data() totals
+        NOR /api/rate-limits week_cost.
+        """
+        # Unattributed spoof row
+        now = time.time()
+        self.conn.execute(
+            "INSERT INTO events("
+            "uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+            "source_machine,project_dir,model,is_sidechain,agent_id,"
+            "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
+            "account_email,plan,org_name"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("spoof1", "assistant", "2026-06-09T12:00:00Z", now - 3600, "2026-06-09",
+             "sSP", "rSP", "spoof-machine", "proj", "claude-opus-4-8", 0, None,
+             1_000_000, 0, 0, 0, None, "enterprise", "Spoof"),
+        )
+        self.conn.commit()
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+
+        # dashboard totals must be 0 (spoof row excluded)
+        d = agg.build_dashboard_data()
+        self.assertAlmostEqual(
+            d["total_cost"], 0.0, places=2,
+            msg=f"spoof row must not contribute to total_cost, got {d['total_cost']}")
+
+        # /api/rate-limits week_cost must also be 0
+        c = self.client()
+        rl = c.get("/api/rate-limits").json()["weekly_budget"]
+        self.assertAlmostEqual(
+            rl["week_cost"], 0.0, places=2,
+            msg=f"spoof row must not contribute to week_cost, got {rl['week_cost']}")
+
+
+class MultiEnterpriseAccountSameDayTest(TempDBTestCase):
+    """Fix 5: two enterprise accounts on the same day must accumulate, not last-write-wins."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_two_enterprise_accounts_same_day(self):
+        """Account A ($5 Opus 4.8) + Account B ($3 Sonnet 4.6) same day = $8 total.
+        Also verifies _merge_summary_rows deep-merge via today panel.
+        """
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.config import TZ_NAME
+
+        today_str = datetime.now(ZoneInfo(TZ_NAME)).strftime("%Y-%m-%d")
+        now = time.time()
+
+        # Account A: Opus 4.8, 1M input = $5
+        ins(self.conn, "eA", "rA", "a@x.io", "enterprise", "OrgA",
+            "mA", "acme-portal", "sA",
+            model="claude-opus-4-8", day=today_str, ts=now - 7200, inp=1_000_000)
+        # Account B: Sonnet 4.6, 1M input = $3
+        ins(self.conn, "eB", "rB", "b@y.io", "enterprise", "OrgB",
+            "mB", "acme-portal", "sB",
+            model="claude-sonnet-4-6", day=today_str, ts=now - 3600, inp=1_000_000)
+        # Consumer event (must be excluded)
+        ins(self.conn, "cC", "rC", "me@gmail.com", "max", None,
+            "personal-mbp", "secret", "sC",
+            model="claude-opus-4-8", day=today_str, ts=now - 1800, inp=1_000_000)
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data = None
+
+        # 1. Two enterprise rows in daily_summary for today
+        rows = self.conn.execute(
+            "SELECT account_email FROM daily_summary "
+            "WHERE day=? AND plan='enterprise'", (today_str,)
+        ).fetchall()
+        accounts_in_summary = {r["account_email"] for r in rows}
+        self.assertEqual(
+            accounts_in_summary, {"a@x.io", "b@y.io"},
+            f"expected 2 enterprise rows, got {accounts_in_summary}")
+
+        d = agg.build_dashboard_data()
+
+        # 2. total_cost accumulates both ($5 + $3 = $8)
+        self.assertAlmostEqual(
+            d["total_cost"], 8.0, places=2,
+            msg=f"total_cost must be 8.0, got {d['total_cost']}")
+
+        # 3. daily entry for today has cost 8.0
+        today_daily = next((x for x in d["daily"] if x["date"] == today_str), None)
+        self.assertIsNotNone(today_daily, "today must appear in daily list")
+        self.assertAlmostEqual(
+            today_daily["cost"], 8.0, places=2,
+            msg=f"today daily cost must be 8.0, got {today_daily['cost']}")
+
+        # 4. model_breakdown has both Opus 4.8 ($5) and Sonnet 4.6 ($3)
+        mb_models = {m["model"]: m["cost"] for m in d["model_breakdown"]}
+        self.assertIn("Opus 4.8", mb_models, "Opus 4.8 must appear in model_breakdown")
+        self.assertIn("Sonnet 4.6", mb_models, "Sonnet 4.6 must appear in model_breakdown")
+        self.assertAlmostEqual(mb_models["Opus 4.8"], 5.0, places=2)
+        self.assertAlmostEqual(mb_models["Sonnet 4.6"], 3.0, places=2)
+
+        # 5. machine_summary includes both mA and mB
+        ms_machines = {m["machine"] for m in d["machine_summary"]}
+        self.assertIn("mA", ms_machines, "mA must appear in machine_summary")
+        self.assertIn("mB", ms_machines, "mB must appear in machine_summary")
+
+        # 6. today panel: cost 8.0 and both models present (_merge_summary_rows path)
+        today_panel = d["today"]
+        self.assertAlmostEqual(
+            today_panel["cost"], 8.0, places=2,
+            msg=f"today panel cost must be 8.0, got {today_panel['cost']}")
+        today_mb_models = {m["model"] for m in today_panel["model_breakdown"]}
+        self.assertIn("Opus 4.8", today_mb_models,
+                      "today panel must include Opus 4.8")
+        self.assertIn("Sonnet 4.6", today_mb_models,
+                      "today panel must include Sonnet 4.6")

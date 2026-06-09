@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .aggregator import build_dashboard_data, get_cache_version
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S
+from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import compute_cost, display_model
 
@@ -40,27 +41,9 @@ async def rate_limits():
     week_start_epoch = now - 7 * 24 * 3600
     window_end = now
 
-    # Cost: deduplicate by request_id, filter by rolling epoch window
-    week_cost = 0.0
-    for r in conn.execute(
-        "SELECT model, SUM(inp) as inp, SUM(out) as out, "
-        "SUM(cc) as cc, SUM(cr) as cr "
-        "FROM ("
-        "  SELECT model, request_id, "
-        "  MAX(input_tokens) as inp, MAX(output_tokens) as out, "
-        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
-        "  FROM events WHERE type='assistant' AND model IS NOT NULL "
-        "  AND model != '<synthetic>' AND request_id IS NOT NULL "
-        f"  AND {ENTERPRISE_PRED} "
-        "  AND ts_epoch>=? AND ts_epoch<? "
-        "  GROUP BY model, request_id"
-        ") GROUP BY model",
-        (week_start_epoch, window_end),
-    ):
-        dm = display_model(r["model"])
-        week_cost += compute_cost(
-            dm, r["inp"] or 0, r["out"] or 0,
-            r["cc"] or 0, r["cr"] or 0)
+    # Cost: delegate to compute_window_cost which deduplicates by request_id
+    # and correctly applies fast/geo pricing modifiers (speed, inference_geo).
+    week_cost = compute_window_cost(conn, week_start_epoch, window_end)
 
     # Active time: sum gaps within rolling window
     week_active_s = 0.0
@@ -82,28 +65,32 @@ async def rate_limits():
                 week_active_s += gap
         prev_evt = e
 
-    # Hourly cost breakdown for pace chart
+    # Hourly cost breakdown for pace chart — mirrors aggregator._build_hourly's
+    # cost query with speed + inference_geo so fast/geo events are correctly priced.
     hourly_costs = []
     for r in conn.execute(
         "SELECT CAST((first_ts - ?) / 3600 AS INTEGER) as h, "
-        "model, SUM(inp) as inp, SUM(outp) as outp, "
+        "model, speed, inference_geo, "
+        "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr "
         "FROM ("
         "  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
-        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
+        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
+        "  MAX(speed) as speed, MAX(inference_geo) as inference_geo "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {ENTERPRISE_PRED} "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, request_id"
-        ") GROUP BY h, model",
+        ") GROUP BY h, model, speed, inference_geo",
         (week_start_epoch, week_start_epoch, window_end),
     ):
         dm = display_model(r["model"])
         c = compute_cost(
             dm, r["inp"] or 0, r["outp"] or 0,
-            r["cc"] or 0, r["cr"] or 0)
+            r["cc"] or 0, r["cr"] or 0,
+            r["speed"], r["inference_geo"])
         if c > 0:
             h_idx = r["h"]
             found = False

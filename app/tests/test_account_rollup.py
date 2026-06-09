@@ -75,3 +75,41 @@ class RollupPerAccountTest(TempDBTestCase):
             "WHERE day='2026-06-09' AND account_email='ent@x'").fetchone()
         # Only the legit e1->e2 gap (60s); the consumer's prev-day event must not leak in.
         self.assertAlmostEqual(row["active_s"], 60.0, delta=1.0)
+
+
+class PlanStampPerDayTest(TempDBTestCase):
+    """Fix 2: plan/org must be stamped per (day, account), not cross-day MAX()."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_per_day_plan_not_lexicographic_max(self):
+        """day1 → plan='max', day2 → plan='enterprise'/org='X'.
+        With the old MAX(plan) GROUP BY acct bug, day1 would also get 'max'
+        but day2's 'enterprise' would be overridden by 'max' (lexicographically
+        'max' > 'enterprise').  The fix stamps each day independently.
+        """
+        # day1: account with plan 'max', no org
+        ins(self.conn, "u1", "r1", "u@x.io", "max", None,
+            day="2026-06-08", ts=1780913600.0, inp=1, machine="m", session="s1")
+        # day2: same account but now plan 'enterprise', org='X'
+        ins(self.conn, "u2", "r2", "u@x.io", "enterprise", "X",
+            day="2026-06-09", ts=1781000000.0, inp=1, machine="m", session="s2")
+
+        from app.summarizer import summarize_days
+        summarize_days(None)  # full sweep
+
+        rows = {r["day"]: r for r in self.conn.execute(
+            "SELECT day, plan, org_name FROM daily_summary WHERE account_email='u@x.io'"
+        )}
+        self.assertIn("2026-06-08", rows, "day1 row must exist")
+        self.assertIn("2026-06-09", rows, "day2 row must exist")
+        self.assertEqual(rows["2026-06-08"]["plan"], "max",
+                         "day1 plan must be 'max'")
+        self.assertIsNone(rows["2026-06-08"]["org_name"],
+                          "day1 org must be NULL (not poisoned by day2)")
+        self.assertEqual(rows["2026-06-09"]["plan"], "enterprise",
+                         "day2 plan must be 'enterprise'")
+        self.assertEqual(rows["2026-06-09"]["org_name"], "X",
+                         "day2 org must be 'X'")
