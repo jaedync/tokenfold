@@ -67,7 +67,16 @@ def _backfill_if_needed():
     summarize_days(None)  # Backfill all days
 
 
-app = FastAPI(title="Tokenfold", lifespan=lifespan)
+# Disable the auto-generated API docs on this confidential dashboard: /docs,
+# /redoc, and /openapi.json otherwise expose route paths and the X-API-Key
+# header name to unauthenticated callers (info-disclosure, no data leak).
+app = FastAPI(
+    title="Tokenfold",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 # Defense-in-depth; the XSS fix itself is the </script>-encoding + esc() in dashboard.py/template.

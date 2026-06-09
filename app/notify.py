@@ -4,6 +4,7 @@ Codex support is basic: the hook only sends a bare stop event (no model/usage
 data), so notifications show "Response complete" without cost or model info.
 """
 
+import hmac
 import logging
 import secrets
 import sys
@@ -54,9 +55,11 @@ def _check_auth(authorization: str | None) -> bool:
     if not authorization or not authorization.startswith("Bearer "):
         return False
     token = authorization[7:]
-    if _notify_token and token == _notify_token:
+    # Constant-time compare; keep the fail-closed guards so an empty configured
+    # token can never match an empty/absent bearer token.
+    if _notify_token and hmac.compare_digest(token or "", _notify_token or ""):
         return True
-    if STATS_API_KEY and token == STATS_API_KEY:
+    if STATS_API_KEY and hmac.compare_digest(token or "", STATS_API_KEY or ""):
         return True
     return False
 

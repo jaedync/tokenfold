@@ -204,5 +204,89 @@ class HealthOpenTest(TempDBTestCase):
         self.assertEqual(r.status_code, 200)
 
 
+class EmptyApiKeyFailClosedTest(TempDBTestCase):
+    """Regression guard for require_api_key's `not expected` short-circuit.
+
+    When STATS_API_KEY is unset (""), machine routes must reject EVERY request —
+    including one sending an empty `X-API-Key: ""` header. Without the
+    `not expected or` guard, `compare_digest("", "")` returns True and the route
+    would silently open. This is the riskiest untested path: every other machine
+    test runs with STATS_API_KEY set, so a future "simplification" dropping the
+    guard would stay green without this test.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _minimal_ingest_body(self):
+        return {
+            "machine": "m",
+            "project_dir": "p",
+            "session_file": "s.jsonl",
+            "cursor": {"last_line_num": 0},
+            "events": [
+                {
+                    "uuid": "u1",
+                    "type": "assistant",
+                    "timestamp": "2026-06-09T12:00:00Z",
+                    "sessionId": "s1",
+                    "requestId": "r1",
+                    "message": {
+                        "model": "claude-opus-4-8",
+                        "id": "m1",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                }
+            ],
+        }
+
+    def test_ha_no_header_rejected_when_key_empty(self):
+        with patch.object(app.config, "STATS_API_KEY", ""):
+            c = self.client()
+            r = c.get("/api/ha")
+        self.assertEqual(r.status_code, 401)
+
+    def test_ha_empty_header_rejected_when_key_empty(self):
+        """The bypass that must NOT pass: empty key vs empty header."""
+        with patch.object(app.config, "STATS_API_KEY", ""):
+            c = self.client()
+            r = c.get("/api/ha", headers={"X-API-Key": ""})
+        self.assertEqual(r.status_code, 401)
+
+    def test_ingest_no_header_rejected_when_key_empty(self):
+        with patch.object(app.config, "STATS_API_KEY", ""):
+            c = self.client()
+            r = c.post("/api/ingest", json=self._minimal_ingest_body())
+        self.assertEqual(r.status_code, 401)
+
+    def test_ingest_empty_header_rejected_when_key_empty(self):
+        """The bypass that must NOT pass: empty key vs empty header."""
+        with patch.object(app.config, "STATS_API_KEY", ""):
+            c = self.client()
+            r = c.post("/api/ingest", json=self._minimal_ingest_body(),
+                       headers={"X-API-Key": ""})
+        self.assertEqual(r.status_code, 401)
+
+
+class DocsRoutesDisabledTest(TempDBTestCase):
+    """The auto-generated OpenAPI docs routes must be disabled (404)."""
+
+    def test_openapi_json_returns_404(self):
+        c = self.client()
+        r = c.get("/openapi.json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_docs_returns_404(self):
+        c = self.client()
+        r = c.get("/docs")
+        self.assertEqual(r.status_code, 404)
+
+    def test_redoc_returns_404(self):
+        c = self.client()
+        r = c.get("/redoc")
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
