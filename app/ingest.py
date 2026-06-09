@@ -89,6 +89,8 @@ def _extract_event(rec: dict, machine: str, project_dir: str) -> dict | None:
         "cache_ephemeral_5m": 0,
         "cache_ephemeral_1h": 0,
         "service_tier": None,
+        "speed": None,
+        "inference_geo": None,
         "has_text": 0,
         "has_thinking": 0,
         "has_tool_use": 0,
@@ -128,6 +130,8 @@ def _extract_event(rec: dict, machine: str, project_dir: str) -> dict | None:
             row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
             row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
             row["service_tier"] = usage.get("service_tier")
+            row["speed"] = usage.get("speed")
+            row["inference_geo"] = usage.get("inference_geo")
 
         content = msg.get("content", [])
         if isinstance(content, list):
@@ -234,7 +238,7 @@ EVENT_COLS = [
     "source_machine", "project_dir",
     "model", "message_id", "request_id", "stop_reason", "api_error", "is_api_error",
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
-    "cache_ephemeral_5m", "cache_ephemeral_1h", "service_tier",
+    "cache_ephemeral_5m", "cache_ephemeral_1h", "service_tier", "speed", "inference_geo",
     "has_text", "has_thinking", "has_tool_use", "has_tool_result", "has_image",
     "is_human_prompt", "text_length", "thinking_length",
     "level", "duration_ms", "error_status", "retry_attempt", "max_retries",
