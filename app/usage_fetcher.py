@@ -311,6 +311,13 @@ def _load_cached_credentials():
         log("Could not load cached credentials: %s", e)
 
 
+def should_run() -> bool:
+    """The fetcher refreshes the PERSONAL Max OAuth token; don't run it on an
+    enterprise-locked compliance instance (personal data is out of scope there)."""
+    import app.config as cfg
+    return cfg.LOCKED_SCOPE != "enterprise"
+
+
 def start():
     """Start the background usage fetch + token maintenance task."""
     global _task

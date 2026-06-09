@@ -23,7 +23,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     init_notify_token()
-    usage_fetcher.start()
+    if usage_fetcher.should_run():
+        usage_fetcher.start()
+    else:
+        print("[usage_fetcher] usage_fetcher disabled (instance locked to enterprise scope)", flush=True)
     await init_light()
     start_watchdog()
 

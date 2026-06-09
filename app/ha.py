@@ -10,6 +10,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+import app.config as config
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -53,13 +54,19 @@ def _window_block(
     pct_used: float | None,
     window_seconds: int,
     now_epoch: float,
+    scope: str = "personal",
 ) -> dict | None:
-    """Build a five_hour / weekly sub-object, or None if resets_at is missing."""
+    """Build a five_hour / weekly sub-object, or None if resets_at is missing.
+
+    These windows reflect the personal Max budget utilization reported by the
+    OAuth API, so spend must be PERSONAL-scoped for implied_limit arithmetic
+    to be coherent: implied_limit = personal_spend / (personal_pct / 100).
+    """
     resets_iso, resets_epoch = _truncate_to_minute(raw_resets_at)
     if resets_iso is None:
         return None
     start_epoch = resets_epoch - window_seconds
-    spend = round(compute_window_cost(conn, start_epoch, resets_epoch), 2)
+    spend = round(compute_window_cost(conn, start_epoch, resets_epoch, scope=scope), 2)
     return {
         "pct_used": pct_used if pct_used is not None else 0.0,
         "spend_usd": spend,
@@ -75,54 +82,67 @@ async def ha_metrics():
     conn = get_conn()
     now_epoch = time.time()
 
-    # Cost totals — always populated from the aggregator cache.
+    # Read the scope lock fresh so tests can monkeypatch app.config.LOCKED_SCOPE.
+    locked_scope = config.LOCKED_SCOPE
+
+    # Cost totals — enterprise-scoped (fail-closed default); always populated.
+    # NOTE: cost_today_usd and cost_total_usd are enterprise-scoped.
     dash = build_dashboard_data()
     cost_today = round((dash.get("today") or {}).get("cost", 0.0) or 0.0, 2)
     cost_total = round(dash.get("total_cost", 0.0) or 0.0, 2)
-
-    # OAuth usage — may be absent (e.g. fresh install, pre-fetch).
-    row = conn.execute(
-        "SELECT value FROM meta WHERE key='oauth_usage'"
-    ).fetchone()
 
     five_hour_block = None
     weekly_block = None
     updated_at_epoch = None
 
-    if row:
-        try:
-            stored = json.loads(row["value"])
-        except (ValueError, TypeError):
-            stored = None
+    if locked_scope != "enterprise":
+        # OAuth usage reflects the PERSONAL Max budget — only emit when not
+        # enterprise-locked so personal account activity can't surface on a
+        # compliance instance. Skip the meta read entirely so a stale row from
+        # before the lock can't leak through.
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'"
+        ).fetchone()
 
-        if stored:
-            usage = stored.get("data") or {}
-            fh = usage.get("five_hour") or {}
-            sd = usage.get("seven_day") or {}
+        if row:
+            try:
+                stored = json.loads(row["value"])
+            except (ValueError, TypeError):
+                stored = None
 
-            five_hour_block = _window_block(
-                conn,
-                fh.get("resets_at", ""),
-                fh.get("utilization"),
-                FIVE_HOURS_S,
-                now_epoch,
-            )
-            weekly_block = _window_block(
-                conn,
-                sd.get("resets_at", ""),
-                sd.get("utilization"),
-                SEVEN_DAYS_S,
-                now_epoch,
-            )
+            if stored:
+                usage = stored.get("data") or {}
+                fh = usage.get("five_hour") or {}
+                sd = usage.get("seven_day") or {}
 
-            updated_at_iso = stored.get("updated_at", "")
-            if updated_at_iso:
-                try:
-                    ua = datetime.fromisoformat(updated_at_iso).timestamp()
-                    # Round to nearest 10 seconds for symmetry with resets_at.
-                    updated_at_epoch = int(round(ua / 10.0) * 10)
-                except (ValueError, TypeError):
-                    pass
+                # Window spend is personal-scoped: these windows track the personal
+                # Max utilization, so spend must match (personal) for
+                # implied_limit = spend / (pct/100) to be coherent.
+                five_hour_block = _window_block(
+                    conn,
+                    fh.get("resets_at", ""),
+                    fh.get("utilization"),
+                    FIVE_HOURS_S,
+                    now_epoch,
+                    scope="personal",
+                )
+                weekly_block = _window_block(
+                    conn,
+                    sd.get("resets_at", ""),
+                    sd.get("utilization"),
+                    SEVEN_DAYS_S,
+                    now_epoch,
+                    scope="personal",
+                )
+
+                updated_at_iso = stored.get("updated_at", "")
+                if updated_at_iso:
+                    try:
+                        ua = datetime.fromisoformat(updated_at_iso).timestamp()
+                        # Round to nearest 10 seconds for symmetry with resets_at.
+                        updated_at_epoch = int(round(ua / 10.0) * 10)
+                    except (ValueError, TypeError):
+                        pass
 
     return JSONResponse(content={
         "cost_today_usd": cost_today,

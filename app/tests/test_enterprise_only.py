@@ -81,7 +81,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # enterprise: 1M input Opus 4.8 = $5
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
-        # consumer: 2M input = $10 — must NOT appear in any route's spend
+        # personal/consumer: 2M input Opus 4.8 = $10
         ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
             "personal-mbp", "secret", "sC", inp=2_000_000, ts=now - 1800)
         # oauth row still needed for /api/ha (ha.py reads it directly)
@@ -94,9 +94,10 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # week_cost must be enterprise-only $5, not blended $15
         self.assertAlmostEqual(rl["week_cost"], 5.0, places=2)
         ha = c.get("/api/ha").json()
-        # five_hour + weekly spend must be enterprise-only too
-        self.assertAlmostEqual(ha["weekly"]["spend_usd"], 5.0, places=2)
-        self.assertAlmostEqual(ha["five_hour"]["spend_usd"], 5.0, places=2)
+        # /api/ha windows are PERSONAL-scoped (they track Max personal budget utilization).
+        # Enterprise spend ($5) is excluded; only personal/consumer ($10) appears.
+        self.assertAlmostEqual(ha["weekly"]["spend_usd"], 10.0, places=2)
+        self.assertAlmostEqual(ha["five_hour"]["spend_usd"], 10.0, places=2)
 
     def test_rate_limits_works_without_oauth_row(self):
         """Decoupling: /api/rate-limits must return enterprise week_cost
