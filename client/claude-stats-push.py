@@ -241,7 +241,7 @@ def push_desktop_sessions(sessions: list[dict]) -> int | None:
 
 
 def push_batch(project_dir: str, session_file: str, cursor_line: int,
-               events: list[dict]) -> dict | None:
+               events: list[dict], account: dict) -> dict | None:
     """POST a batch to the server. Returns response dict or None on failure."""
     payload = json.dumps({
         "machine": MACHINE_NAME,
@@ -249,6 +249,7 @@ def push_batch(project_dir: str, session_file: str, cursor_line: int,
         "session_file": session_file,
         "cursor": {"last_line_num": cursor_line},
         "events": events,
+        **account,
     }).encode()
 
     req = urllib.request.Request(
@@ -271,6 +272,28 @@ def push_batch(project_dir: str, session_file: str, cursor_line: int,
         return None
 
 
+
+
+def read_account(claude_dir):
+    """Local read of account identity. Sends NO secrets — only email / org / plan /
+    rate-limit tier. Ported from claude-usage-telemetry's read_account()."""
+    acct = {"account_email": None, "org_name": None, "plan": None, "rate_limit_tier": None}
+    cj = Path.home() / ".claude.json"
+    try:
+        oa = (json.loads(cj.read_text()).get("oauthAccount") or {})
+        acct["account_email"] = oa.get("emailAddress")
+        acct["org_name"] = oa.get("organizationName")
+    except (OSError, json.JSONDecodeError):
+        pass
+    cred = claude_dir / ".credentials.json"
+    try:
+        blob = json.loads(cred.read_text())
+        o = blob.get("claudeAiOauth") or blob
+        acct["plan"] = o.get("subscriptionType")
+        acct["rate_limit_tier"] = o.get("rateLimitTier")
+    except (OSError, json.JSONDecodeError):
+        pass
+    return acct
 
 
 def _get_oauth_token() -> str | None:
@@ -453,6 +476,7 @@ def main():
         sys.exit(1)
 
     cursors = load_cursors()
+    account = read_account(Path.home() / ".claude")
     total_accepted = 0
     total_dupes = 0
 
@@ -492,7 +516,7 @@ def main():
         for batch_start in range(0, len(events), BATCH_SIZE):
             batch = events[batch_start:batch_start + BATCH_SIZE]
             batch_cursor = cursor_line + batch_start
-            result = push_batch(project_dir, session_file, batch_cursor, batch)
+            result = push_batch(project_dir, session_file, batch_cursor, batch, account)
             if result:
                 total_accepted += result.get("accepted", 0)
                 total_dupes += result.get("duplicates", 0)
