@@ -47,7 +47,8 @@ def _is_human_prompt(rec: dict) -> bool:
     return False
 
 
-def _extract_event(rec: dict, machine: str, project_dir: str) -> dict | None:
+def _extract_event(rec: dict, machine: str, project_dir: str,
+                   account: dict | None = None) -> dict | None:
     """Extract an events row from a raw JSONL record."""
     uuid = rec.get("uuid")
     rtype = rec.get("type", "")
@@ -76,6 +77,10 @@ def _extract_event(rec: dict, machine: str, project_dir: str) -> dict | None:
         "permission_mode": rec.get("permissionMode"),
         "source_machine": machine,
         "project_dir": project_dir,
+        "account_email": (account or {}).get("account_email"),
+        "org_name": (account or {}).get("org_name"),
+        "plan": (account or {}).get("plan"),
+        "rate_limit_tier": (account or {}).get("rate_limit_tier"),
         "model": None,
         "message_id": None,
         "request_id": rec.get("requestId"),
@@ -236,6 +241,7 @@ EVENT_COLS = [
     "session_id", "parent_uuid", "is_sidechain", "user_type",
     "cwd", "git_branch", "version", "slug", "agent_id", "permission_mode",
     "source_machine", "project_dir",
+    "account_email", "org_name", "plan", "rate_limit_tier",
     "model", "message_id", "request_id", "stop_reason", "api_error", "is_api_error",
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
     "cache_ephemeral_5m", "cache_ephemeral_1h", "service_tier", "speed", "inference_geo",
@@ -275,8 +281,10 @@ async def ingest(req: IngestRequest, x_api_key: str = Header(alias="X-API-Key"))
     event_rows = []
     tool_rows = []
 
+    account = {"account_email": req.account_email, "org_name": req.org_name,
+               "plan": req.plan, "rate_limit_tier": req.rate_limit_tier}
     for raw in req.events:
-        row = _extract_event(raw, req.machine, req.project_dir)
+        row = _extract_event(raw, req.machine, req.project_dir, account)
         if row is None:
             continue
         event_rows.append(tuple(row[c] for c in EVENT_COLS))

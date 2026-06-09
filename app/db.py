@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS events (
     service_tier          TEXT,
     speed             TEXT,
     inference_geo     TEXT,
+    account_email     TEXT,
+    org_name          TEXT,
+    plan              TEXT,
+    rate_limit_tier   TEXT,
 
     has_text          INTEGER DEFAULT 0,
     has_thinking      INTEGER DEFAULT 0,
@@ -134,6 +138,7 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     tool_json         TEXT DEFAULT '{}',
     prompt_model_json TEXT DEFAULT '{}',
     gen_json          TEXT DEFAULT '{}',
+    account_json      TEXT DEFAULT '{}',
     updated_at        TEXT NOT NULL
 );
 
@@ -164,20 +169,26 @@ CREATE INDEX IF NOT EXISTS idx_desktop_source
     ON desktop_sessions(source_machine);
 """
 
-# Columns added after the initial deploy. CREATE TABLE IF NOT EXISTS won't add
-# them to a pre-existing events table, so ALTER them in on connect. Phase 3 will
-# append the four account columns here too.
+# Columns added after initial deploy, per table. CREATE TABLE IF NOT EXISTS won't add
+# columns to a pre-existing table, so ALTER them in on connect. Each guarded by a check.
 _ADDED_COLUMNS = {
-    "speed": "TEXT",
-    "inference_geo": "TEXT",
+    "events": {
+        "speed": "TEXT", "inference_geo": "TEXT",
+        "account_email": "TEXT", "org_name": "TEXT",
+        "plan": "TEXT", "rate_limit_tier": "TEXT",
+    },
+    "daily_summary": {
+        "account_json": "TEXT DEFAULT '{}'",
+    },
 }
 
 
 def _migrate(conn) -> None:
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
-    for col, decl in _ADDED_COLUMNS.items():
-        if col not in existing:
-            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
+    for table, cols in _ADDED_COLUMNS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, decl in cols.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     conn.commit()
 
 

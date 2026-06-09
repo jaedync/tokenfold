@@ -11,6 +11,10 @@ class IngestRequest(BaseModel):
     session_file: str
     cursor: CursorState = CursorState()
     events: list[dict]
+    account_email: str | None = None
+    org_name: str | None = None
+    plan: str | None = None
+    rate_limit_tier: str | None = None
 
 
 class IngestResponse(BaseModel):

@@ -229,8 +229,13 @@ class DesktopRouteTest(unittest.TestCase):
 
         import app.config
         import app.db
+        import app.desktop_sessions
         importlib.reload(app.config)
         importlib.reload(app.db)
+        # desktop_sessions binds STATS_API_KEY via `from .config import` at import
+        # time; reload it so the route sees the just-set key even if another test
+        # module imported app.main (and thus desktop_sessions) earlier with no key.
+        importlib.reload(app.desktop_sessions)
 
         from fastapi.testclient import TestClient
         from app.main import app as fastapi_app
