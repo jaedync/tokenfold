@@ -62,6 +62,17 @@ def _backfill_if_needed():
 
 app = FastAPI(title="Tokenfold", lifespan=lifespan)
 
+
+# Defense-in-depth; the XSS fix itself is the </script>-encoding + esc() in dashboard.py/template.
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+
 from .ingest import router as ingest_router
 from .api import router as api_router
 from .dashboard import router as dashboard_router
