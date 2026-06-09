@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from .aggregator import build_dashboard_data, get_cache_version
-from .config import IDLE_THRESHOLD_S, TZ_NAME
+from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn
 from .pricing import compute_cost, display_model
 
@@ -117,6 +117,7 @@ async def rate_limits():
                 "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
                 "  FROM events WHERE type='assistant' AND model IS NOT NULL "
                 "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+                f"  AND {ENTERPRISE_PRED} "
                 "  AND ts_epoch>=? AND ts_epoch<? "
                 "  GROUP BY model, request_id"
                 ") GROUP BY model",
@@ -137,6 +138,7 @@ async def rate_limits():
                 "WHERE ts_epoch>=? AND ts_epoch<? "
                 "AND type IN ('user','assistant') "
                 "AND is_sidechain=0 AND agent_id IS NULL "
+                f"AND {ENTERPRISE_PRED} "
                 "ORDER BY session_id, ts_epoch",
                 (week_start_epoch, reset_epoch),
             ):
@@ -163,6 +165,7 @@ async def rate_limits():
                 "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
                 "  FROM events WHERE type='assistant' AND model IS NOT NULL "
                 "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+                f"  AND {ENTERPRISE_PRED} "
                 "  AND ts_epoch>=? AND ts_epoch<? "
                 "  GROUP BY model, request_id"
                 ") GROUP BY h, model",

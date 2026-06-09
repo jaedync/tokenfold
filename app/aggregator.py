@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .config import RECENCY_DAYS, TZ_NAME
+from .config import ENTERPRISE_PRED as _ENT_PRED, RECENCY_DAYS, TZ_NAME
 from .db import get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
@@ -24,9 +24,8 @@ from .water import compute_energy_wh, compute_water_ml
 
 TZ = ZoneInfo(TZ_NAME)
 
-# Verified-enterprise scope. Plan is the signal; org presence is defense-in-depth.
-# Errs toward EXCLUDING (zero consumer bleedover is the priority).
-_ENT_PRED = "plan = 'enterprise' AND org_name IS NOT NULL AND org_name != ''"
+# Enterprise scope predicate (_ENT_PRED) is imported from config — single source
+# of truth shared with api.py and cost_windows.py to prevent drift.
 
 # In-memory cache — rebuilt only after ingest or on first request
 _cache_lock = threading.Lock()
