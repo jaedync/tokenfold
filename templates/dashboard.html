@@ -2035,6 +2035,11 @@ function toggleMB(i){
   else{d.style.display='none';a.classList.remove('open')}
 }
 
+/* esc() — HTML-encode any user-supplied string before inserting into
+   innerHTML.  Prevents XSS when machine names, model names, tool names,
+   or project names contain characters like < > & " '. */
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
 const D = {{ data_json|safe }};
 const MODEL_ORDER = D.model_order || [];
 function modelSort(a,b){
@@ -2163,7 +2168,7 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
     const p = mPricing[name];
     const c = mColor(name);
     body.innerHTML += '<tr>'
-      +'<td><div class="model-name-cell"><span class="model-dot" style="background:'+c+'"></span>'+name+'</div></td>'
+      +'<td><div class="model-name-cell"><span class="model-dot" style="background:'+c+'"></span>'+esc(name)+'</div></td>'
       +'<td>'+fP(p.input)+'</td>'
       +'<td>'+fP(p.output)+'</td>'
       +'<td>'+fP(p.cache_write)+'</td>'
@@ -2455,11 +2460,11 @@ function renderMode(mode) {
       sub.textContent = '';
     } else if (i === 4) {
       // Tools (plain bg): most-used tool
-      sub.innerHTML = 'top: <span style="color:var(--blue)">' + topTool + '</span>';
+      sub.innerHTML = 'top: <span style="color:var(--blue)">' + esc(topTool) + '</span>';
     } else if (i === 5) {
       // Models (yellow bg): primary model
       sub.innerHTML = primaryModel
-        ? 'primary: <strong>' + primaryModel.model + '</strong>'
+        ? 'primary: <strong>' + esc(primaryModel.model) + '</strong>'
         : '';
     } else if (i === 6) {
       // Avg Prompts: today vs all-time average comparison
@@ -2583,7 +2588,7 @@ function renderMode(mode) {
     const parts=[];
     if(m[mcKey]>0) parts.push('orch '+fC(m[mcKey]));
     if(m[acKey]>0) parts.push('agent '+fC(m[acKey]));
-    return '<span>'+m.model+'</span> '+fC(m[cKey])+' ('+parts.join(', ')+')';
+    return '<span>'+esc(m.model)+'</span> '+fC(m[cKey])+' ('+parts.join(', ')+')';
   });
   document.getElementById('costMeta').innerHTML = costParts.join('<br>');
 
@@ -3208,7 +3213,7 @@ function renderMode(mode) {
   machineBody.innerHTML = '';
   mSummary.forEach(ms => {
     const costColor = ms.cost > 0 ? 'var(--red)' : 'var(--gray-dim)';
-    machineBody.innerHTML += '<tr><td>'+ms.machine+'</td>'
+    machineBody.innerHTML += '<tr><td>'+esc(ms.machine)+'</td>'
       +'<td>'+fN(ms.prompts)+'</td>'
       +'<td>'+fN(ms.api_calls)+'</td>'
       +'<td>'+fN(ms.tool_calls)+'</td>'
@@ -3235,7 +3240,7 @@ function renderMode(mode) {
     const row = document.createElement('tr');
     row.className = 'mb-row';
     row.onclick = function(){ toggleMB(i); };
-    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+m.model+'</div></td>'
+    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)+'</div></td>'
       +'<td>'+fN(m.api_calls)+'</td>'
       +'<td>'+fN(m[tokKey])+'</td>'
       +'<td>'+costStr+'</td>'

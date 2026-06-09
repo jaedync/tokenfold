@@ -115,7 +115,11 @@ async def dashboard(request: Request):
         machines_pills = '<span class="machine-pill" style="color:var(--gray-dim)">no machines</span>'
 
     return templates.TemplateResponse(request, "dashboard.html", {
-        "data_json": json.dumps(data),
+        # Replace '</' with '<\/' so that any user-supplied string (machine,
+        # model, project) containing '</script>' cannot break out of the
+        # surrounding <script> block.  '<\/' is valid JSON content and is
+        # inert in HTML — the standard minimal fix for script-embedded JSON.
+        "data_json": json.dumps(data).replace("</", "<\\/"),
         "cards_html": cards_html,
         "table_rows": table_rows,
         "gen_time": data["generation_time"],
