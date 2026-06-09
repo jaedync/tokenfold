@@ -231,7 +231,10 @@ def push_desktop_sessions(sessions: list[dict]) -> int | None:
         with urllib.request.urlopen(req, timeout=30) as resp:
             json.loads(resp.read())  # drain
     except urllib.error.HTTPError as e:
-        err(f"desktop metadata HTTP {e.code}: {e.read().decode()[:200]}")
+        if e.code in (401, 403):
+            err(f"auth rejected (HTTP {e.code}) — TOKENFOLD_API_KEY must match the server's STATS_API_KEY")
+        else:
+            err(f"desktop metadata HTTP {e.code}: {e.read().decode()[:200]}")
         return None
     except Exception as e:  # noqa: BLE001
         err(f"desktop metadata error: {e}")
@@ -265,7 +268,10 @@ def push_batch(project_dir: str, session_file: str, cursor_line: int,
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        log(f"HTTP {e.code}: {e.read().decode()[:200]}")
+        if e.code in (401, 403):
+            err(f"auth rejected (HTTP {e.code}) — TOKENFOLD_API_KEY must match the server's STATS_API_KEY")
+        else:
+            log(f"HTTP {e.code}: {e.read().decode()[:200]}")
         return None
     except Exception as e:
         log(f"Error: {e}")
@@ -280,18 +286,23 @@ def read_account(claude_dir):
     acct = {"account_email": None, "org_name": None, "plan": None, "rate_limit_tier": None}
     cj = Path.home() / ".claude.json"
     try:
-        oa = (json.loads(cj.read_text()).get("oauthAccount") or {})
-        acct["account_email"] = oa.get("emailAddress")
-        acct["org_name"] = oa.get("organizationName")
-    except (OSError, json.JSONDecodeError):
+        root = json.loads(cj.read_text())
+        oa = root.get("oauthAccount") if isinstance(root, dict) else None
+        if isinstance(oa, dict):
+            acct["account_email"] = oa.get("emailAddress")
+            acct["org_name"] = oa.get("organizationName")
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     cred = claude_dir / ".credentials.json"
     try:
         blob = json.loads(cred.read_text())
-        o = blob.get("claudeAiOauth") or blob
-        acct["plan"] = o.get("subscriptionType")
-        acct["rate_limit_tier"] = o.get("rateLimitTier")
-    except (OSError, json.JSONDecodeError):
+        o = blob.get("claudeAiOauth") if isinstance(blob, dict) else None
+        if not isinstance(o, dict):
+            o = blob if isinstance(blob, dict) else None
+        if isinstance(o, dict):
+            acct["plan"] = o.get("subscriptionType")
+            acct["rate_limit_tier"] = o.get("rateLimitTier")
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     return acct
 
@@ -443,7 +454,10 @@ def _fetch_and_push_usage():
         with urllib.request.urlopen(req, timeout=15) as resp:
             usage = json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        err(f"Usage fetch: HTTP {e.code}")
+        if e.code in (401, 403):
+            err(f"auth rejected (HTTP {e.code}) — TOKENFOLD_API_KEY must match the server's STATS_API_KEY")
+        else:
+            err(f"Usage fetch: HTTP {e.code}")
         if e.code == 429:
             _usage_backoff_on_429()
         return
