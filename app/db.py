@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS events (
     cache_ephemeral_5m    INTEGER DEFAULT 0,
     cache_ephemeral_1h    INTEGER DEFAULT 0,
     service_tier          TEXT,
+    speed             TEXT,
+    inference_geo     TEXT,
 
     has_text          INTEGER DEFAULT 0,
     has_thinking      INTEGER DEFAULT 0,
@@ -162,6 +164,22 @@ CREATE INDEX IF NOT EXISTS idx_desktop_source
     ON desktop_sessions(source_machine);
 """
 
+# Columns added after the initial deploy. CREATE TABLE IF NOT EXISTS won't add
+# them to a pre-existing events table, so ALTER them in on connect. Phase 3 will
+# append the four account columns here too.
+_ADDED_COLUMNS = {
+    "speed": "TEXT",
+    "inference_geo": "TEXT",
+}
+
+
+def _migrate(conn) -> None:
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+    for col, decl in _ADDED_COLUMNS.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
+    conn.commit()
+
 
 def get_conn() -> sqlite3.Connection:
     global _conn
@@ -173,6 +191,7 @@ def get_conn() -> sqlite3.Connection:
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
     return _conn
 
 
