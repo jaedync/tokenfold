@@ -2,6 +2,8 @@ import os
 
 STATS_API_KEY = os.environ.get("STATS_API_KEY", "")
 DB_PATH = os.environ.get("DB_PATH", "/app/data/tokenfold.db")
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")  # unset => dashboard auth disabled (open)
 TZ_NAME = os.environ.get("TZ", "America/Chicago")
 STATS_OWNER = os.environ.get("STATS_OWNER", "")
 IDLE_THRESHOLD_S = 300

@@ -14,20 +14,21 @@ class TempDBTestCase(unittest.TestCase):
     api_key = "test-key"
 
     def setUp(self):
+        import app.config as _config
         import app.db as _db
-        import app.ingest as _ingest
         self._db = _db
-        self._ingest = _ingest
+        self._config = _config
         self._saved_db_path = _db.DB_PATH
         self._saved_conn = _db._conn
-        self._saved_key = _ingest.STATS_API_KEY
+        self._saved_config_key = _config.STATS_API_KEY
 
         _db.close_conn()
         fd, self.db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         _db.DB_PATH = self.db_path
         _db._conn = None
-        _ingest.STATS_API_KEY = self.api_key
+        # Patch app.config so the shared require_api_key dependency sees the key.
+        _config.STATS_API_KEY = self.api_key
         self.conn = _db.get_conn()
         # Reset scope-keyed aggregator cache so tests don't leak scope state
         import app.aggregator as _agg
@@ -38,7 +39,7 @@ class TempDBTestCase(unittest.TestCase):
         self._db.close_conn()
         self._db.DB_PATH = self._saved_db_path
         self._db._conn = self._saved_conn
-        self._ingest.STATS_API_KEY = self._saved_key
+        self._config.STATS_API_KEY = self._saved_config_key
         # Clear scope cache so this test's data can't leak into subsequent tests
         import app.aggregator as _agg
         _agg._cached_data.clear()

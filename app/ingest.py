@@ -7,9 +7,10 @@ import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
-from .config import STATS_API_KEY, TZ_NAME
+from .auth import require_api_key
+from .config import TZ_NAME
 from .db import get_conn
 from .models import CursorState, IngestRequest, IngestResponse
 
@@ -274,10 +275,9 @@ _TOOL_SQL = (
 )
 
 
-@router.post("/api/ingest", response_model=IngestResponse)
-async def ingest(req: IngestRequest, x_api_key: str = Header(alias="X-API-Key")):
-    if not STATS_API_KEY or x_api_key != STATS_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+@router.post("/api/ingest", response_model=IngestResponse,
+             dependencies=[Depends(require_api_key)])
+async def ingest(req: IngestRequest):
 
     conn = get_conn()
     accepted = 0
@@ -356,11 +356,9 @@ async def ingest(req: IngestRequest, x_api_key: str = Header(alias="X-API-Key"))
     )
 
 
-@router.post("/api/usage")
-async def store_usage(request: Request, x_api_key: str = Header(alias="X-API-Key")):
+@router.post("/api/usage", dependencies=[Depends(require_api_key)])
+async def store_usage(request: Request):
     """Store OAuth usage data pushed by the client."""
-    if not STATS_API_KEY or x_api_key != STATS_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
 
     body = await request.json()
     usage = body.get("usage")

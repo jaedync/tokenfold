@@ -93,7 +93,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         rl = c.get("/api/rate-limits").json()["weekly_budget"]
         # week_cost must be enterprise-only $5, not blended $15
         self.assertAlmostEqual(rl["week_cost"], 5.0, places=2)
-        ha = c.get("/api/ha").json()
+        ha = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
         # /api/ha windows are PERSONAL-scoped (they track Max personal budget utilization).
         # Enterprise spend ($5) is excluded; only personal/consumer ($10) appears.
         self.assertAlmostEqual(ha["weekly"]["spend_usd"], 10.0, places=2)

@@ -4,9 +4,9 @@ import json
 import sqlite3
 import time
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends
 
-from .config import STATS_API_KEY
+from .auth import require_api_key
 from .db import get_conn
 from .models import (
     DesktopMetadataRequest,
@@ -106,13 +106,9 @@ def upsert_desktop_sessions(
     return {"inserted": inserted, "updated": updated, "ignored_stale": stale}
 
 
-@router.post("/api/desktop-metadata", response_model=DesktopMetadataResponse)
-async def ingest_desktop_metadata(
-    req: DesktopMetadataRequest,
-    x_api_key: str = Header(alias="X-API-Key"),
-):
-    if not STATS_API_KEY or x_api_key != STATS_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+@router.post("/api/desktop-metadata", response_model=DesktopMetadataResponse,
+             dependencies=[Depends(require_api_key)])
+async def ingest_desktop_metadata(req: DesktopMetadataRequest):
 
     conn = get_conn()
     result = upsert_desktop_sessions(

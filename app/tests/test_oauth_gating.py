@@ -118,7 +118,7 @@ class HALockedEnterpriseSuppressionTest(TempDBTestCase):
 
         with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
             c = self.client()
-            resp = c.get("/api/ha")
+            resp = c.get("/api/ha", headers={"X-API-Key": self.api_key})
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
 
@@ -147,7 +147,7 @@ class HALockedEnterpriseSuppressionTest(TempDBTestCase):
         """Cost total keys survive the lock (personal-scoped, likely ~0 there)."""
         with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
             c = self.client()
-            body = c.get("/api/ha").json()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
         self.assertIsNotNone(body.get("cost_today_usd"))
         self.assertIsNotNone(body.get("cost_total_usd"))
 
@@ -166,7 +166,7 @@ class HALockedEnterpriseSuppressionTest(TempDBTestCase):
 
         with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
             c = self.client()
-            body = c.get("/api/ha").json()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
 
         self.assertAlmostEqual(
             body["cost_today_usd"], 0.0, places=2,
@@ -230,7 +230,7 @@ class HAUnlockedPersonalScopeTest(TempDBTestCase):
 
         with patch.object(app.config, 'LOCKED_SCOPE', None):
             c = self.client()
-            body = c.get("/api/ha").json()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
 
         P = 5.0  # personal-only cost (enterprise=$1, blended=$6)
         self.assertAlmostEqual(
@@ -268,7 +268,7 @@ class HAUnlockedPersonalScopeTest(TempDBTestCase):
 
         with patch.object(app.config, 'LOCKED_SCOPE', None):
             c = self.client()
-            body = c.get("/api/ha").json()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
 
         weekly = body.get("weekly")
         self.assertIsNotNone(weekly, "weekly block must be present when not locked")
@@ -310,7 +310,7 @@ class HAUnlockedPersonalScopeTest(TempDBTestCase):
 
         with patch.object(app.config, 'LOCKED_SCOPE', None):
             c = self.client()
-            body = c.get("/api/ha").json()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
 
         five_hour = body.get("five_hour")
         self.assertIsNotNone(five_hour)

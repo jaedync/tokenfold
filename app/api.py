@@ -5,10 +5,11 @@ GET /api/rate-limits — returns scope-filtered weekly spend (rolling 7-day wind
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from .aggregator import build_dashboard_data, get_cache_version
+from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
@@ -37,19 +38,19 @@ def _resolve_scope(requested):
 router = APIRouter()
 
 
-@router.get("/api/stats/version")
+@router.get("/api/stats/version", dependencies=[Depends(require_dashboard_auth)])
 async def stats_version():
     return {"version": get_cache_version()}
 
 
-@router.get("/api/stats")
+@router.get("/api/stats", dependencies=[Depends(require_dashboard_auth)])
 async def stats(scope: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     data = build_dashboard_data(effective)
     return JSONResponse(content=data)
 
 
-@router.get("/api/rate-limits")
+@router.get("/api/rate-limits", dependencies=[Depends(require_dashboard_auth)])
 async def rate_limits(scope: Optional[str] = Query(default=None)):
     """Return scope-filtered weekly spend over a rolling 7-day window.
 

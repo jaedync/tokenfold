@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import config
 from .db import close_conn, get_conn
 from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
@@ -22,6 +23,12 @@ async def lifespan(app: FastAPI):
         load_pricing()
     except Exception:
         pass
+    if not config.DASHBOARD_PASSWORD:
+        print(
+            "[auth] WARNING: DASHBOARD_PASSWORD unset — dashboard is OPEN (no login). "
+            "Set DASHBOARD_USER/DASHBOARD_PASSWORD to lock it down.",
+            flush=True,
+        )
     init_notify_token()
     if usage_fetcher.should_run():
         usage_fetcher.start()

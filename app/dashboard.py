@@ -5,12 +5,13 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .aggregator import build_dashboard_data
 from . import config
+from .auth import require_dashboard_auth
 from .config import DEFAULT_SCOPE, STATS_OWNER, VALID_SCOPES
 
 router = APIRouter()
@@ -47,7 +48,7 @@ def _fmt_cost(c):
     return f"${c:.3f}"
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 async def dashboard(request: Request, scope: Optional[str] = None):
     # Soft-fail: a bookmarked bad/forbidden ?scope= shouldn't 403 the whole page;
     # it just serves the allowed scope. API routes do hard-fail (400/403).
