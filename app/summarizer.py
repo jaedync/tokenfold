@@ -48,6 +48,7 @@ def summarize_days(days: list[str] | None = None):
     requests = conn.execute(
         f"SELECT request_id, COALESCE(project_dir,'unknown') as project_dir, "
         f"source_machine, session_id, day, model, is_sidechain, agent_id, "
+        f"speed, inference_geo, "
         f"MAX(input_tokens) as inp, MAX(output_tokens) as out, "
         f"MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         f"MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
@@ -70,6 +71,7 @@ def summarize_days(days: list[str] | None = None):
             "model": defaultdict(lambda: {
                 "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
                 "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
+                "cost": 0.0,
                 "main_prompts": 0, "agent_invocations": 0,
                 "active_s": 0.0, "gen_s": 0.0, "gen_out": 0,
             }),
@@ -99,7 +101,7 @@ def summarize_days(days: list[str] | None = None):
         dd["cache_creation_tokens"] += cc
         dd["cache_read_tokens"] += cr
 
-        req_cost = compute_cost(dm, inp, out, cc, cr)
+        req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"], r["inference_geo"])
         dd["cost"] += req_cost
         dd["project"][r["project_dir"]]["cost"] += req_cost
 
@@ -109,6 +111,7 @@ def summarize_days(days: list[str] | None = None):
         ms["cache_write"] += cc
         ms["cache_read"] += cr
         ms["api_calls"] += 1
+        ms["cost"] += req_cost
         if not r["is_sidechain"]:
             ms["main_api_calls"] += 1
             ms["main_cost"] += req_cost

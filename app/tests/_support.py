@@ -41,6 +41,21 @@ class TempDBTestCase(unittest.TestCase):
         except OSError:
             pass
 
+    def freeze_pricing(self):
+        """Deterministic + offline pricing for summarizer/aggregator tests: clear any
+        LiteLLM-fetched rates (fall back to static MODEL_PRICING) and stub load_pricing
+        so summarize_days() never hits the network. Restored on teardown."""
+        import app.pricing as _p
+        import app.summarizer as _s
+        saved = (_p._dynamic_pricing, _p.load_pricing, _s.load_pricing)
+        _p._dynamic_pricing = {}
+        _p.load_pricing = lambda: None
+        _s.load_pricing = lambda: None
+
+        def _restore():
+            _p._dynamic_pricing, _p.load_pricing, _s.load_pricing = saved
+        self.addCleanup(_restore)
+
     def client(self):
         """FastAPI TestClient bound to the temp DB. Use as `with self.client() as c:`
         so startup/shutdown fire (matches existing DesktopRouteTest)."""
