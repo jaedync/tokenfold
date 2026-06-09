@@ -29,6 +29,9 @@ class TempDBTestCase(unittest.TestCase):
         _db._conn = None
         _ingest.STATS_API_KEY = self.api_key
         self.conn = _db.get_conn()
+        # Reset scope-keyed aggregator cache so tests don't leak scope state
+        import app.aggregator as _agg
+        _agg._cached_data.clear()
         self.addCleanup(self._restore)
 
     def _restore(self):
@@ -36,6 +39,9 @@ class TempDBTestCase(unittest.TestCase):
         self._db.DB_PATH = self._saved_db_path
         self._db._conn = self._saved_conn
         self._ingest.STATS_API_KEY = self._saved_key
+        # Clear scope cache so this test's data can't leak into subsequent tests
+        import app.aggregator as _agg
+        _agg._cached_data.clear()
         try:
             os.unlink(self.db_path)
         except OSError:

@@ -51,7 +51,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         c = self.client()
         resp = c.get("/")
@@ -72,7 +72,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         c = self.client()
         html = c.get("/").text
@@ -93,7 +93,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         c = self.client()
         resp = c.get("/")
@@ -125,7 +125,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         c = self.client()
         html = c.get("/").text
@@ -146,7 +146,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         c = self.client()
         data = c.get("/api/stats").json()

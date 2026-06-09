@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .config import ENTERPRISE_PRED as _ENT_PRED, RECENCY_DAYS, TZ_NAME
+from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .db import get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
@@ -24,12 +24,13 @@ from .water import compute_energy_wh, compute_water_ml
 
 TZ = ZoneInfo(TZ_NAME)
 
-# Enterprise scope predicate (_ENT_PRED) is imported from config — single source
-# of truth shared with api.py and cost_windows.py to prevent drift.
+# scope_predicate(scope) is imported from config — single source of truth for
+# SQL predicates shared with api.py and cost_windows.py to prevent drift.
 
-# In-memory cache — rebuilt only after ingest or on first request
+# In-memory cache — rebuilt only after ingest or on first request.
+# Keyed by scope string ("enterprise" / "personal") so each scope slot is independent.
 _cache_lock = threading.Lock()
-_cached_data: dict | None = None
+_cached_data: dict[str, dict] = {}
 _cache_version: int = 0
 
 
@@ -110,20 +111,25 @@ def invalidate_cache():
 
 
 def trigger_eager_rebuild():
-    """Rebuild cache in background thread. Serves previous cache during rebuild."""
+    """Rebuild cache in background thread. Serves previous cache during rebuild.
+
+    Clears the entire scope-keyed cache on invalidation, then pre-warms the
+    DEFAULT_SCOPE slot so the common path stays warm.
+    """
     global _rebuilding
     with _cache_lock:
         if _rebuilding:
             return  # rebuild already in progress
         _rebuilding = True
         _cache_version_bump()
+        _cached_data.clear()  # invalidate all scopes immediately
 
     def _rebuild():
-        global _cached_data, _rebuilding
+        global _rebuilding
         try:
-            data = _build_dashboard_data_inner()
+            data = _build_dashboard_data_inner(DEFAULT_SCOPE)
             with _cache_lock:
-                _cached_data = data
+                _cached_data[DEFAULT_SCOPE] = data
         finally:
             with _cache_lock:
                 _rebuilding = False
@@ -143,20 +149,20 @@ def get_cache_version() -> int:
         return _cache_version
 
 
-def build_dashboard_data() -> dict:
-    """Return cached dashboard data, rebuilding if invalidated."""
-    global _cached_data
+def build_dashboard_data(scope: str = DEFAULT_SCOPE) -> dict:
+    """Return cached dashboard data for the given scope, rebuilding if missing."""
     with _cache_lock:
-        if _cached_data is not None:
-            return _cached_data
+        cached = _cached_data.get(scope)
+        if cached is not None:
+            return cached
     # Build outside the lock to avoid blocking concurrent readers
-    data = _build_dashboard_data_inner()
+    data = _build_dashboard_data_inner(scope)
     with _cache_lock:
-        _cached_data = data
+        _cached_data[scope] = data
     return data
 
 
-def _empty_dashboard(cutoff_date: str) -> dict:
+def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
     """Return the dashboard structure with no data (used when no summaries exist)."""
     now = datetime.now(TZ)
     return {
@@ -185,8 +191,7 @@ def _empty_dashboard(cutoff_date: str) -> dict:
         "today": {"cost": 0.0, "model_breakdown": [], "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
         }, "tools": {}, "projects": [], "machine_summary": []},
-        "org_name": "",
-        "plan_scope": "enterprise",
+        "scope": scope,
     }
 
 
@@ -230,7 +235,7 @@ def _merge_summary_rows(rows) -> dict:
     return merged
 
 
-def _build_hourly(conn) -> list[dict]:
+def _build_hourly(conn, pred: str) -> list[dict]:
     """Build the 24-slot hourly activity grid from live event data (48h window)."""
     now_h = datetime.now(TZ)
     current_hour_num = now_h.hour
@@ -261,7 +266,7 @@ def _build_hourly(conn) -> list[dict]:
 
     for r in conn.execute(
         f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
-        f"FROM events WHERE is_human_prompt=1 AND {_ENT_PRED} AND ts_epoch>=? AND ts_epoch<? "
+        f"FROM events WHERE is_human_prompt=1 AND {pred} AND ts_epoch>=? AND ts_epoch<? "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -271,7 +276,7 @@ def _build_hourly(conn) -> list[dict]:
     for r in conn.execute(
         f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
         f"FROM tool_uses WHERE ts_epoch>=? AND ts_epoch<? "
-        f"AND session_id IN (SELECT session_id FROM events WHERE {_ENT_PRED}) "
+        f"AND session_id IN (SELECT session_id FROM events WHERE {pred}) "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -288,7 +293,7 @@ def _build_hourly(conn) -> list[dict]:
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
         f"  FROM events WHERE type='assistant' AND model IS NOT NULL "
         f"  AND model != '<synthetic>' AND request_id IS NOT NULL "
-        f"  AND {_ENT_PRED} "
+        f"  AND {pred} "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, request_id"
         ") GROUP BY bucket, model, speed, inference_geo",
@@ -308,14 +313,14 @@ def _build_hourly(conn) -> list[dict]:
     return hourly_list
 
 
-def _build_today_data(conn, today_str: str) -> dict:
+def _build_today_data(conn, today_str: str, pred: str) -> dict:
     """Build the 'today' sub-object from today's daily_summary row.
 
     Returns model_breakdown, time_breakdown, tools, projects, and
     machine_summary scoped to just today.
     """
     ent_rows = conn.execute(
-        f"SELECT * FROM daily_summary WHERE day = ? AND {_ENT_PRED}", (today_str,)
+        f"SELECT * FROM daily_summary WHERE day = ? AND {pred}", (today_str,)
     ).fetchall()
 
     if not ent_rows:
@@ -443,22 +448,22 @@ def _build_today_data(conn, today_str: str) -> dict:
     }
 
 
-def _build_dashboard_data_inner() -> dict:
-    """Read daily_summary rows and produce the full dashboard JSON blob."""
+def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
+    """Read daily_summary rows and produce the full dashboard JSON blob for the given scope."""
     load_pricing()
     conn = get_conn()
     cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
+    pred = scope_predicate(scope)
 
-    # ── Read verified-enterprise summary rows only ──
+    # ── Read summary rows for the requested scope ──
     rows = conn.execute(
-        f"SELECT * FROM daily_summary WHERE {_ENT_PRED} ORDER BY day"
+        f"SELECT * FROM daily_summary WHERE {pred} ORDER BY day"
     ).fetchall()
 
     if not rows:
-        return _empty_dashboard(cutoff_date)
+        return _empty_dashboard(cutoff_date, scope)
 
-    # ── Collect distinct enterprise orgs ──
-    orgs = sorted({row["org_name"] for row in rows if row["org_name"]})
+    # (org values are not served; server-side predicate uses org as filter only)
 
     # ── Accumulators ──
     model_stats = defaultdict(lambda: {
@@ -779,7 +784,7 @@ def _build_dashboard_data_inner() -> dict:
     last_active_ts = None
     for r in conn.execute(
         f"SELECT source_machine, MAX(ts_epoch) as ts FROM events "
-        f"WHERE {_ENT_PRED} "
+        f"WHERE {pred} "
         "GROUP BY source_machine"
     ):
         if r["ts"]:
@@ -793,7 +798,7 @@ def _build_dashboard_data_inner() -> dict:
     sessions_count = tot["sessions"]
 
     # ── Hourly (live query) ──
-    hourly_list = _build_hourly(conn)
+    hourly_list = _build_hourly(conn, pred)
 
     # ── Project display names ──
     _top_project_dirs = sorted(project_cost, key=lambda x: -project_cost[x])[:15]
@@ -854,9 +859,8 @@ def _build_dashboard_data_inner() -> dict:
         "hourly": hourly_list,
         "last_active_ts": last_active_ts,
         "version": get_cache_version(),
-        "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d")),
-        "org_name": " · ".join(orgs),
-        "plan_scope": "enterprise",
+        "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d"), pred),
+        "scope": scope,
     }
 
 

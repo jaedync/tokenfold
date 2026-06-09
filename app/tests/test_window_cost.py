@@ -84,7 +84,7 @@ class StreamedChunksMixedSpeedDedupTest(TempDBTestCase):
     def test_rate_limits_week_cost_prices_mixed_chunks_as_fast(self):
         self._seed_streamed_fast_request()
         import app.aggregator as agg
-        agg._cached_data = None
+        agg._cached_data.clear()
         c = self.client()
         rl = c.get("/api/rate-limits").json()["weekly_budget"]
         self.assertAlmostEqual(
@@ -93,8 +93,9 @@ class StreamedChunksMixedSpeedDedupTest(TempDBTestCase):
 
     def test_aggregator_hourly_prices_mixed_chunks_as_fast(self):
         from app.aggregator import _build_hourly
+        from app.config import ENTERPRISE_PRED
         self._seed_streamed_fast_request()
-        hourly = _build_hourly(self.conn)
+        hourly = _build_hourly(self.conn, ENTERPRISE_PRED)
         total = sum(h["cost"] for h in hourly)
         self.assertAlmostEqual(
             total, 10.0, places=2,

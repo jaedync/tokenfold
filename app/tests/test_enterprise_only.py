@@ -34,7 +34,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
         d = agg.build_dashboard_data()
         blob = json.dumps(d)
         # ZERO consumer bleedover: none of these strings anywhere in the payload
@@ -53,7 +53,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
         d = agg.build_dashboard_data()  # only consumer data -> enterprise view empty, no crash
         self.assertAlmostEqual(sum(x["cost"] for x in d["daily"]), 0.0, places=2)
         self.assertNotIn("me@gmail.com", json.dumps(d))
@@ -88,7 +88,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self._seed_oauth_usage(now + 3600)
         self.conn.commit()
         import app.aggregator as agg
-        agg._cached_data = None
+        agg._cached_data.clear()
         c = self.client()  # NOTE: NO `with` — lifespan triggers usage_fetcher network/segfault
         rl = c.get("/api/rate-limits").json()["weekly_budget"]
         # week_cost must be enterprise-only $5, not blended $15
@@ -109,7 +109,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # No _seed_oauth_usage here — that's the whole point
         self.conn.commit()
         import app.aggregator as agg
-        agg._cached_data = None
+        agg._cached_data.clear()
         c = self.client()
         rl = c.get("/api/rate-limits").json()["weekly_budget"]
         self.assertIsNotNone(rl, "weekly_budget should not be None when no oauth row")
@@ -130,8 +130,8 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
             self.assertNotIn(forbidden, wb,
                              f"personal gauge field '{forbidden}' must not appear in response")
 
-    def test_aggregator_exposes_org_name_and_plan_scope(self):
-        """_build_dashboard_data_inner must include org_name and plan_scope."""
+    def test_aggregator_exposes_scope_not_org_name(self):
+        """build_dashboard_data must expose 'scope', NOT org_name or plan_scope."""
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000)
         ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
@@ -140,26 +140,28 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
-        d = agg.build_dashboard_data()
-        self.assertEqual(d["org_name"], "Acme")
-        self.assertEqual(d["plan_scope"], "enterprise")
+        agg._cached_data.clear()
+        d = agg.build_dashboard_data("enterprise")
+        self.assertEqual(d["scope"], "enterprise")
+        self.assertNotIn("org_name", d, "org_name must not be served (no org value on site)")
+        self.assertNotIn("plan_scope", d, "plan_scope superseded by scope")
 
-    def test_aggregator_org_name_empty_when_consumer_only(self):
-        """When only consumer data exists, org_name must be empty string."""
+    def test_aggregator_personal_scope_no_org_name(self):
+        """Personal scope payload must not include org_name."""
         ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
             "personal-mbp", "proj", "sC", inp=1_000_000)
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
-        d = agg.build_dashboard_data()
-        self.assertEqual(d["org_name"], "")
-        self.assertEqual(d["plan_scope"], "enterprise")
+        agg._cached_data.clear()
+        d = agg.build_dashboard_data("personal")
+        self.assertEqual(d["scope"], "personal")
+        self.assertNotIn("org_name", d, "org_name must not be in payload")
+        self.assertNotIn("plan_scope", d, "plan_scope superseded by scope")
 
     def test_dashboard_html_enterprise_badge_no_consumer_strings(self):
-        """Dashboard HTML must show ENTERPRISE + org name; no consumer strings;
-        no personal-gauge JS field names."""
+        """Dashboard HTML must show ENTERPRISE scope label; must NOT show Acme org name;
+        no consumer strings; no personal-gauge JS field names."""
         now = time.time()
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
@@ -169,14 +171,14 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
         c = self.client()
         html = c.get("/").text
-        # Load-bearing badge assertions: the band markup and its rendered text.
-        # Plain "ENTERPRISE"/"Acme" substrings could be satisfied by an HTML
-        # comment or the embedded data_json even if the badge broke.
+        # Scope label badge: band markup must be present and show "ENTERPRISE" scope.
+        # The org VALUE (Acme) must NOT appear — we serve scope label, not org name.
         self.assertIn("header-enterprise-band", html)
-        self.assertIn("ENTERPRISE · Acme", html)
+        self.assertIn("ENTERPRISE", html)
+        self.assertNotIn("Acme", html, "org name must not be rendered in page")
         self.assertNotIn("me@gmail.com", html)
         self.assertNotIn("personal-mbp", html)
         self.assertNotIn("secret-side-project", html)
@@ -216,7 +218,7 @@ class EnterprisePredicateUnattributedTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         # dashboard totals must be 0 (spoof row excluded)
         d = agg.build_dashboard_data()
@@ -266,7 +268,7 @@ class MultiEnterpriseAccountSameDayTest(TempDBTestCase):
         from app.summarizer import summarize_days
         import app.aggregator as agg
         summarize_days(None)
-        agg._cached_data = None
+        agg._cached_data.clear()
 
         # 1. Two enterprise rows in daily_summary for today
         rows = self.conn.execute(

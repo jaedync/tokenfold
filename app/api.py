@@ -1,17 +1,39 @@
 """GET /api/stats — returns dashboard JSON blob.
-GET /api/rate-limits — returns enterprise-only weekly spend (rolling 7-day window).
+GET /api/rate-limits — returns scope-filtered weekly spend (rolling 7-day window).
 """
 
 import time
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+import app.config as _config
+
 from .aggregator import build_dashboard_data, get_cache_version
-from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S
+from .config import DEFAULT_SCOPE, IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import compute_cost, display_model
+
+
+def _resolve_scope(requested):
+    """Resolve scope, reading exception classes fresh from app.config each call.
+
+    This guards against importlib.reload(app.config) invalidating the class
+    references captured at module import time — reload creates new class objects
+    so 'except InvalidScope' would fail to catch the freshly-raised exception.
+    By importing from sys.modules['app.config'] at call time we always compare
+    the same class objects that resolve_scope raises.
+    """
+    import sys
+    cfg = sys.modules["app.config"]
+    try:
+        return cfg.resolve_scope(requested)
+    except cfg.InvalidScope:
+        raise HTTPException(status_code=400, detail=f"invalid scope: {requested!r}")
+    except cfg.ScopeLocked:
+        raise HTTPException(status_code=403, detail=f"instance is locked to scope {cfg.LOCKED_SCOPE!r}")
 
 
 router = APIRouter()
@@ -23,19 +45,23 @@ async def stats_version():
 
 
 @router.get("/api/stats")
-async def stats():
-    data = build_dashboard_data()
+async def stats(scope: Optional[str] = Query(default=None)):
+    effective = _resolve_scope(scope)
+    data = build_dashboard_data(effective)
     return JSONResponse(content=data)
 
 
 @router.get("/api/rate-limits")
-async def rate_limits():
-    """Return enterprise-only weekly spend over a rolling 7-day window.
+async def rate_limits(scope: Optional[str] = Query(default=None)):
+    """Return scope-filtered weekly spend over a rolling 7-day window.
 
-    Completely decoupled from the personal Max account's OAuth usage row.
+    Defaults to enterprise scope. Pass ?scope=personal for personal view.
     Personal consumer-account gauge fields are intentionally absent —
-    this is a compliance-facing, enterprise-only view.
+    this is a compliance-facing view.
     """
+    effective = _resolve_scope(scope)
+    import sys
+    pred = sys.modules["app.config"].scope_predicate(effective)
     conn = get_conn()
     now = time.time()
     week_start_epoch = now - 7 * 24 * 3600
@@ -43,7 +69,7 @@ async def rate_limits():
 
     # Cost: delegate to compute_window_cost which deduplicates by request_id
     # and correctly applies fast/geo pricing modifiers (speed, inference_geo).
-    week_cost = compute_window_cost(conn, week_start_epoch, window_end)
+    week_cost = compute_window_cost(conn, week_start_epoch, window_end, scope=effective)
 
     # Active time: sum gaps within rolling window
     week_active_s = 0.0
@@ -55,7 +81,7 @@ async def rate_limits():
         "WHERE ts_epoch>=? AND ts_epoch<? "
         "AND type IN ('user','assistant') "
         "AND is_sidechain=0 AND agent_id IS NULL "
-        f"AND {ENTERPRISE_PRED} "
+        f"AND {pred} "
         "ORDER BY session_id, ts_epoch",
         (week_start_epoch, window_end),
     ):
@@ -80,7 +106,7 @@ async def rate_limits():
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
-        f"  AND {ENTERPRISE_PRED} "
+        f"  AND {pred} "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, request_id"
         ") GROUP BY h, model, speed, inference_geo",

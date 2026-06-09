@@ -23,7 +23,7 @@ class ReconcileTest(TempDBTestCase):
         # Directly clear the module-level cache so build_dashboard_data() does a
         # synchronous rebuild against the freshly-populated temp DB, rather than
         # returning stale data from a previous test run in the same process.
-        _agg._cached_data = None
+        _agg._cached_data.clear()
         d = _agg.build_dashboard_data()
         mb_total = sum(m["cost"] for m in d["model_breakdown"])
         daily_total = sum(x["cost"] for x in d["daily"])

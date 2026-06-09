@@ -6,7 +6,7 @@ then sums costs across models using pricing.compute_cost().
 
 import sqlite3
 
-from .config import ENTERPRISE_PRED
+from .config import DEFAULT_SCOPE, scope_predicate
 from .pricing import compute_cost, display_model
 
 
@@ -14,20 +14,21 @@ def compute_window_cost(
     conn: sqlite3.Connection,
     start_epoch: float,
     end_epoch: float,
+    scope: str = DEFAULT_SCOPE,
 ) -> float:
-    """Sum assistant-event cost over [start_epoch, end_epoch).
+    """Sum assistant-event cost over [start_epoch, end_epoch) for the given scope.
 
     Streaming API chunks repeat token counts on every message; we dedupe
     with MAX(tokens) per (model, request_id), then sum costs per model.
     Synthetic events and rows missing model/request_id are excluded.
 
-    Scope is fail-closed to verified-enterprise usage (config.ENTERPRISE_PRED)
-    with no opt-out: this feeds the user-facing /api/ha REST endpoint and must
-    never blend consumer-account spend.
+    Defaults to enterprise scope (fail-closed for /api/ha and HA integrations).
+    Pass scope='personal' for the personal usage view.
 
     Returns 0.0 if the window is empty. Does not round — callers round
     to their preferred precision.
     """
+    pred = scope_predicate(scope)
     total = 0.0
     for r in conn.execute(
         "SELECT model, speed, inference_geo, "
@@ -40,7 +41,7 @@ def compute_window_cost(
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
-        f"  AND {ENTERPRISE_PRED} "
+        f"  AND {pred} "
         "  AND ts_epoch >= ? AND ts_epoch < ? "
         "  GROUP BY model, request_id"
         ") GROUP BY model, speed, inference_geo",

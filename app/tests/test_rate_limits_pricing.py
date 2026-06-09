@@ -42,7 +42,7 @@ class RateLimitsFastPricingTest(TempDBTestCase):
             speed="fast",
         )
         import app.aggregator as agg
-        agg._cached_data = None
+        agg._cached_data.clear()
         c = self.client()
         rl = c.get("/api/rate-limits").json()["weekly_budget"]
         self.assertAlmostEqual(

@@ -7,14 +7,61 @@ STATS_OWNER = os.environ.get("STATS_OWNER", "")
 IDLE_THRESHOLD_S = 300
 RECENCY_DAYS = 14
 
-# Verified-enterprise scope. Plan is the signal; org presence and a real attributed
-# account_email are defense-in-depth.  Errs toward EXCLUDING — zero consumer bleedover
-# and zero unattributed-row bleedover are both priorities.
-# Works against both events (account_email IS NULL for unattributed) and daily_summary
-# (account_email = 'unknown' for rows derived from NULL-email events).
-ENTERPRISE_PRED = ("plan = 'enterprise' AND org_name IS NOT NULL AND org_name != '' "
-                   "AND account_email IS NOT NULL AND account_email != '' "
-                   "AND account_email != 'unknown'")
+# Verified-enterprise membership as a TOTAL boolean (never NULL under SQL 3-valued
+# logic), so PERSONAL_PRED = NOT(ENTERPRISE_PRED) is a true partition: every row is
+# in exactly one scope and the two scopes' totals sum to the blended total. NULL/empty
+# plan, org, or account => NOT enterprise => personal. (Plan is the signal; non-empty
+# org + a real account email are defense-in-depth — an unattributed 'enterprise' row
+# is personal.) Logically identical TRUE-set to the prior predicate (NULL and FALSE
+# both fail a WHERE), so existing enterprise results are unchanged.
+ENTERPRISE_PRED = (
+    "COALESCE(plan,'') = 'enterprise' "
+    "AND COALESCE(org_name,'') != '' "
+    "AND COALESCE(account_email,'') NOT IN ('', 'unknown')"
+)
+PERSONAL_PRED = "NOT (" + ENTERPRISE_PRED + ")"
+
+VALID_SCOPES = ("enterprise", "personal")
+DEFAULT_SCOPE = "enterprise"
+
+# Env lock: when set to a valid scope, the instance is LOCKED to it — the UI toggle is
+# hidden and the API refuses other scopes (fail-closed compliance posture).
+LOCKED_SCOPE = os.environ.get("TOKENFOLD_SCOPE") or None
+
+
+class InvalidScope(ValueError):
+    pass
+
+
+class ScopeLocked(Exception):
+    pass
+
+
+def scope_predicate(scope: str) -> str:
+    """Return the SQL predicate string for the given scope name."""
+    if scope == "enterprise":
+        return ENTERPRISE_PRED
+    if scope == "personal":
+        return PERSONAL_PRED
+    raise InvalidScope(f"invalid scope: {scope!r}")
+
+
+def resolve_scope(requested):
+    """Effective scope for an API request. Reads the module-level LOCKED_SCOPE FRESH
+    each call (so tests can monkeypatch app.config.LOCKED_SCOPE). Raises InvalidScope
+    (-> 400) for an unknown scope, ScopeLocked (-> 403) when a locked instance is asked
+    for a different scope. With no lock, falls back to DEFAULT_SCOPE."""
+    import app.config as cfg
+    locked = cfg.LOCKED_SCOPE
+    if requested is not None and requested not in VALID_SCOPES:
+        raise InvalidScope(f"invalid scope: {requested!r}")
+    if locked:
+        if locked not in VALID_SCOPES:
+            raise InvalidScope(f"invalid TOKENFOLD_SCOPE lock: {locked!r}")
+        if requested is not None and requested != locked:
+            raise ScopeLocked(f"instance is locked to scope {locked!r}")
+        return locked
+    return requested or DEFAULT_SCOPE
 LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 PRICING_CACHE_TTL = 86400  # 24 hours
 

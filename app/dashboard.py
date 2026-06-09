@@ -3,13 +3,15 @@
 import html
 import json
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .aggregator import build_dashboard_data
-from .config import STATS_OWNER
+from . import config
+from .config import DEFAULT_SCOPE, STATS_OWNER, VALID_SCOPES
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -46,8 +48,19 @@ def _fmt_cost(c):
 
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    data = build_dashboard_data()
+async def dashboard(request: Request, scope: Optional[str] = None):
+    # Soft-fail: a bookmarked bad/forbidden ?scope= shouldn't 403 the whole page;
+    # it just serves the allowed scope. API routes do hard-fail (400/403).
+    requested = scope
+    locked = config.LOCKED_SCOPE
+    if locked and locked in VALID_SCOPES:
+        effective = locked
+    elif requested in VALID_SCOPES:
+        effective = requested
+    else:
+        effective = DEFAULT_SCOPE
+
+    data = build_dashboard_data(effective)
     c = data["cards"]
 
     CARD_CLASSES = [
@@ -127,5 +140,7 @@ async def dashboard(request: Request):
         "data_range": data["data_range"],
         "machines_pills": machines_pills,
         "owner": STATS_OWNER,
-        "org_badge": data.get("org_name", ""),
+        "scope_label": effective.upper(),
+        "scope": effective,
+        "scope_locked": bool(config.LOCKED_SCOPE),
     })

@@ -1623,9 +1623,9 @@ th[data-info]:hover::after { opacity: 1; }
       <div class="header-subtitle-band">
         <span>Usage Dashboard</span>
       </div>
-      {% if org_badge %}
+      {% if scope_label %}
       <div class="header-enterprise-band">
-        <span>ENTERPRISE · {{ org_badge|e }}</span>
+        <span>{{ scope_label|e }}</span>
       </div>
       {% endif %}
     </div>
