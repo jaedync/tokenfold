@@ -37,7 +37,7 @@ echo "[ok] Saved relay config to ~/.config/"
 
 # 2. Copy hook scripts
 mkdir -p "$HOOKS_DIR"
-for script in relay-post.sh notify-relay.sh activity-light.sh codex-notify-relay.sh; do
+for script in relay-post.sh notify-relay.sh activity-light.sh codex-notify-relay.sh tokenfold-usage-push.sh; do
   if [ -f "$SCRIPT_DIR/$script" ]; then
     cp "$SCRIPT_DIR/$script" "$HOOKS_DIR/$script"
     chmod +x "$HOOKS_DIR/$script"
@@ -80,6 +80,26 @@ HOOKS_JSON=$(cat <<HOOKEOF
           "type": "command",
           "command": "$HOOKS_DIR/activity-light.sh",
           "timeout": 5
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "$HOOKS_DIR/tokenfold-usage-push.sh",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "$HOOKS_DIR/tokenfold-usage-push.sh",
+          "timeout": 10
         }
       ]
     }
@@ -125,6 +145,10 @@ jq --argjson hooks "$MERGED_HOOKS" '.hooks = $hooks' "$SETTINGS" > "$SETTINGS.tm
 mv "$SETTINGS.tmp" "$SETTINGS"
 echo "[ok] Updated $SETTINGS"
 
+echo "[note] If you already had Stop hooks before this install, the usage-push entry"
+echo "       was NOT merged into the existing Stop block (fill-missing-only). Add"
+echo "       $HOOKS_DIR/tokenfold-usage-push.sh to Stop manually, or re-run after"
+echo "       removing the old Stop block."
 echo ""
 echo "Done! Hooks installed. Restart Claude Code for changes to take effect."
 echo ""
