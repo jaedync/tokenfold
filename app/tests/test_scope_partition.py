@@ -54,8 +54,20 @@ class PartitionCompletenessTest(TempDBTestCase):
         super().tearDown()
 
     def test_partition_completeness_with_null_row(self):
-        """Seed A (enterprise $5), B (max plan $3), C (NULL plan $1).
-        Totals: ent=5, per=4, blended=9. C must land in personal (not lost).
+        """Seed A (enterprise $5), B (max plan $3), C (all-NULL $1), D (the TRUE
+        3-valued-logic trap: plan=NULL but valid org+account, $1).
+
+        Totals: ent=5, per=5 (B+C+D), blended=10.
+
+        Row D is the LOAD-BEARING row: under a non-total predicate
+        `org_name IS NOT NULL AND account_email IS NOT NULL` are both TRUE, so
+        the predicate evaluates to `NULL AND TRUE AND TRUE = NULL`, and
+        `NOT(NULL) = NULL` — D matches NEITHER scope and is silently lost,
+        breaking personal_total ($5 -> $4) and the partition invariant. With the
+        shipped COALESCE(plan,'') form the predicate is a total boolean (FALSE,
+        not NULL), so D correctly lands in personal. (Row C, all-NULL, does NOT
+        exercise the trap: its org/account conjuncts short-circuit FALSE, masking
+        the bug — that's why D is required.)
         """
         from app.summarizer import summarize_days
         import app.aggregator as agg
@@ -66,9 +78,14 @@ class PartitionCompletenessTest(TempDBTestCase):
         # B: max plan (personal), Sonnet 4.6, 1M input = $3
         ins(self.conn, "eB", "rB", "b@personal.io", "max", None,
             "mB", "proj-b", "sB", model="claude-sonnet-4-6", inp=1_000_000, ts=1781000100.0)
-        # C: NULL plan, NULL account, NULL org (the SQL 3-valued-logic trap)
+        # C: all-NULL (plan/account/org), Haiku 4.5, 1M input = $1
         ins_null_plan(self.conn, "eC", "rC", "mC", "proj-c", "sC",
                       model="claude-haiku-4-5", inp=1_000_000, ts=1781000200.0)
+        # D: THE 3-valued-logic trap — plan=NULL but org AND account BOTH valid.
+        #    Haiku 4.5, 1M input = $1. Lost under a non-total predicate.
+        ins(self.conn, "eD", "rD", "real@x.io", None, "SomeOrg",
+            "mD-trap", "proj-d", "sD", model="claude-haiku-4-5",
+            inp=1_000_000, ts=1781000300.0)
 
         summarize_days(None)
         agg._cached_data.clear()
@@ -83,16 +100,23 @@ class PartitionCompletenessTest(TempDBTestCase):
         # Partition correctness
         self.assertAlmostEqual(ent["total_cost"], 5.0, places=2,
                                msg=f"enterprise must be $5, got {ent['total_cost']}")
-        self.assertAlmostEqual(per["total_cost"], 4.0, places=2,
-                               msg=f"personal must be $4 (B $3 + C $1), got {per['total_cost']}")
-        self.assertAlmostEqual(blended, 9.0, places=2,
-                               msg=f"blended must be $9, got {blended}")
+        self.assertAlmostEqual(per["total_cost"], 5.0, places=2,
+                               msg=f"personal must be $5 (B $3 + C $1 + D $1), got {per['total_cost']}")
+        self.assertAlmostEqual(blended, 10.0, places=2,
+                               msg=f"blended must be $10, got {blended}")
         self.assertAlmostEqual(ent["total_cost"] + per["total_cost"], blended, places=2,
                                msg="ent + per must equal blended (partition completeness)")
 
-        # NULL row C must land in personal (not lost)
-        # C contributes $1 to personal; without C personal would be $3
-        # We've already checked per==4.0 which proves C landed in personal
+        # Row D (the trap) must land in PERSONAL, not enterprise — and not be lost.
+        ent_blob = json.dumps(ent)
+        per_blob = json.dumps(per)
+        self.assertIn("mD-trap", per_blob,
+                      "trap row D (plan=NULL, valid org+account) must appear in personal")
+        self.assertNotIn("mD-trap", ent_blob,
+                         "trap row D must NOT appear in enterprise (plan is NULL, not 'enterprise')")
+        # Row C (all-NULL) also lands in personal (not lost).
+        self.assertIn("mC", per_blob, "all-NULL row C must appear in personal")
+        self.assertNotIn("mC", ent_blob, "all-NULL row C must NOT appear in enterprise")
 
     def test_scope_key_in_payload(self):
         """Both scopes must include 'scope' key in their payload, no org_name key."""
