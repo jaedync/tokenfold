@@ -172,8 +172,11 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         agg._cached_data = None
         c = self.client()
         html = c.get("/").text
-        self.assertIn("ENTERPRISE", html)
-        self.assertIn("Acme", html)
+        # Load-bearing badge assertions: the band markup and its rendered text.
+        # Plain "ENTERPRISE"/"Acme" substrings could be satisfied by an HTML
+        # comment or the embedded data_json even if the badge broke.
+        self.assertIn("header-enterprise-band", html)
+        self.assertIn("ENTERPRISE · Acme", html)
         self.assertNotIn("me@gmail.com", html)
         self.assertNotIn("personal-mbp", html)
         self.assertNotIn("secret-side-project", html)

@@ -3,20 +3,17 @@ GET /api/rate-limits — returns enterprise-only weekly spend (rolling 7-day win
 """
 
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from .aggregator import build_dashboard_data, get_cache_version
-from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
+from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S
 from .db import get_conn
 from .pricing import compute_cost, display_model
 
 
 router = APIRouter()
-TZ = ZoneInfo(TZ_NAME)
 
 
 @router.get("/api/stats/version")

@@ -558,11 +558,6 @@ body {
   white-space: nowrap;
 }
 
-.rate-limits-updated--stale {
-  color: var(--red);
-  font-weight: 700;
-}
-
 .rate-limits-grid {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -603,108 +598,6 @@ body {
   color: var(--gray-dim);
 }
 
-.rate-gauge-track {
-  position: relative;
-  height: 22px;
-  background: var(--gray-light);
-  border: 3px solid var(--black);
-}
-
-.rate-gauge-fill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Progress marker - "where you should be" line */
-.rate-gauge-marker {
-  position: absolute;
-  top: -8px;
-  bottom: 0;
-  width: 0;
-  border-left: 2px solid var(--black);
-  opacity: 0.55;
-  z-index: 2;
-  pointer-events: none;
-  transition: left 0.6s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Triangle pointer at top of marker */
-.rate-gauge-marker::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -4px;
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 6px solid var(--black);
-}
-
-/* Small "expected" label above marker */
-.rate-gauge-marker-label {
-  position: absolute;
-  top: -18px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--font-body);
-  font-size: 0.5rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--gray-dim);
-  white-space: nowrap;
-}
-
-/* Day boundary lines inside weekly bar */
-.rate-gauge-dayline {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0;
-  border-left: 2px solid var(--black);
-  opacity: 0.15;
-  z-index: 1;
-  pointer-events: none;
-}
-
-.rate-gauge-dayline-label {
-  position: absolute;
-  bottom: -14px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--font-body);
-  font-size: 0.42rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--gray-dim);
-  opacity: 0.6;
-  white-space: nowrap;
-}
-
-/* Projected usage label */
-.rate-gauge-projection {
-  font-family: var(--font-body);
-  font-size: 0.62rem;
-  font-weight: 500;
-  color: var(--gray-dim);
-  margin-top: 0.15rem;
-  letter-spacing: 0.02em;
-}
-
-.rate-gauge-projection strong {
-  font-weight: 700;
-  color: var(--black);
-}
-
-.rate-gauge-projection .proj-warn {
-  color: var(--red);
-}
-
 /* Weekly stats row */
 .rate-gauge-stats {
   display: flex;
@@ -740,28 +633,6 @@ body {
   text-transform: uppercase;
   color: var(--gray-dim);
   margin-top: 0.2rem;
-}
-
-.rate-gauge-foot {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-top: 0.4rem;
-}
-
-.rate-gauge-pct {
-  font-family: var(--font-display);
-  font-size: 1.1rem;
-  line-height: 1;
-  letter-spacing: -0.01em;
-}
-
-.rate-gauge-remaining {
-  font-family: var(--font-body);
-  font-size: 0.6rem;
-  font-weight: 500;
-  color: var(--gray-dim);
-  letter-spacing: 0.02em;
 }
 
 /* Weekly usage chart modal */
@@ -849,13 +720,6 @@ body {
 .usage-chart-legend-swatch {
   width: 18px;
   height: 3px;
-}
-
-.usage-chart-legend-swatch--dashed {
-  background: repeating-linear-gradient(
-    90deg, var(--gray-dim) 0, var(--gray-dim) 5px, transparent 5px, transparent 9px
-  );
-  height: 2px;
 }
 
 /* Chart trigger button on gauge */
@@ -1923,18 +1787,6 @@ th[data-info]:hover::after { opacity: 1; }
         <div class="usage-chart-legend-item">
           <span class="usage-chart-legend-swatch" style="background:var(--blue)"></span>
           Actual usage
-        </div>
-        <div class="usage-chart-legend-item">
-          <span class="usage-chart-legend-swatch usage-chart-legend-swatch--dashed"></span>
-          Expected pace
-        </div>
-        <div class="usage-chart-legend-item">
-          <span class="usage-chart-legend-swatch" style="background:rgba(245,197,24,0.35)"></span>
-          Gap to expected
-        </div>
-        <div class="usage-chart-legend-item">
-          <span class="usage-chart-legend-swatch" style="background:rgba(230,51,41,0.35)"></span>
-          Over limit
         </div>
       </div>
     </div>
@@ -3040,17 +2892,6 @@ function renderMode(mode) {
               tension: 0.15,
               spanGaps: false,
               order: 2
-            },
-            {
-              label: 'Expected pace',
-              data: [],
-              borderColor: '#6b6860',
-              borderWidth: 0,
-              fill: false,
-              pointRadius: 0,
-              pointHitRadius: 0,
-              tension: 0,
-              order: 3
             }
           ]
         },
