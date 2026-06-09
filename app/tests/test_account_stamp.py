@@ -32,10 +32,12 @@ class ExtractStampsAccountTest(unittest.TestCase):
         self.assertIsNone(row["account_email"])
 
 
-class DailySummaryHasAccountJsonTest(TempDBTestCase):
-    def test_fresh_schema_has_account_json(self):
+class DailySummaryHasAccountEmailTest(TempDBTestCase):
+    def test_fresh_schema_has_account_email_and_plan(self):
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(daily_summary)")}
-        self.assertIn("account_json", cols)
+        # E1: account_json replaced by per-(day,account_email) PK + plan/org_name columns
+        self.assertTrue({"account_email", "plan", "org_name"} <= cols)
+        self.assertNotIn("account_json", cols)
 
 
 class MigrateAddsAccountColumnsTest(unittest.TestCase):
@@ -65,7 +67,10 @@ class MigrateAddsAccountColumnsTest(unittest.TestCase):
             self.assertTrue(
                 {"speed", "inference_geo", "account_email", "org_name",
                  "plan", "rate_limit_tier"} <= ecols, ecols)
-            self.assertIn("account_json", dcols)
+            # E1: legacy daily_summary (no account_email) is dropped + recreated
+            # with the new per-(day,account_email) composite PK shape.
+            self.assertTrue({"account_email", "plan", "org_name"} <= dcols, dcols)
+            self.assertNotIn("account_json", dcols)
         finally:
             db.close_conn()
             db.DB_PATH, db._conn = saved_path, saved_conn

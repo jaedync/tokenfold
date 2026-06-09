@@ -7,44 +7,42 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import IDLE_THRESHOLD_S, TZ_NAME
-from .db import get_conn
+from .db import get_conn, _DAILY_SUMMARY_DDL
 from .pricing import compute_cost, display_model, load_pricing
 
 TZ = ZoneInfo(TZ_NAME)
 
 
-def summarize_days(days: list[str] | None = None):
-    """Recompute daily_summary rows for the given days (or all days if None).
+def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
+    """Build per-day accumulators for a single account.
 
-    Each day gets a self-contained summary row derived from the events and
-    tool_uses tables, scoped to that day.  The result is written to the
-    daily_summary table via INSERT OR REPLACE.
+    Returns day_data: dict[str, dict] keyed by day string, with the same
+    structure as before (model/project/machine/tool/prompt_model/gen + scalars).
+    Every events query is scoped to the given account via
+    AND COALESCE(account_email,'unknown') = ?
+    tool_uses queries are scoped via the account's session_ids.
     """
-    load_pricing()
-    conn = get_conn()
+    acct_filter = "AND COALESCE(account_email,'unknown') = ?"
 
-    if days is None:
-        days = [r["day"] for r in conn.execute(
-            "SELECT DISTINCT day FROM events ORDER BY day"
-        )]
-
-    if not days:
-        return
-
-    placeholders = ",".join("?" for _ in days)
-
-    # ── Tool counts per day ──
+    # ── Tool counts per day — scoped to account's sessions ──
+    # tool_uses has no account_email; scope via session_id subquery.
+    session_subq = (
+        f"AND session_id IN ("
+        f"SELECT session_id FROM events "
+        f"WHERE COALESCE(account_email,'unknown') = ? AND day IN ({placeholders})"
+        f")"
+    )
     daily_tool_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     daily_tool_totals: dict[str, int] = defaultdict(int)
     for r in conn.execute(
         f"SELECT day, name, COUNT(*) as cnt FROM tool_uses "
-        f"WHERE day IN ({placeholders}) GROUP BY day, name",
-        days,
+        f"WHERE day IN ({placeholders}) {session_subq} GROUP BY day, name",
+        days + [account] + days,
     ):
         daily_tool_counts[r["day"]][r["name"]] = r["cnt"]
         daily_tool_totals[r["day"]] += r["cnt"]
 
-    # ── Q1: Token dedup per request_id, scoped to target days ──
+    # ── Q1: Token dedup per request_id, scoped to account + target days ──
     requests = conn.execute(
         f"SELECT request_id, COALESCE(project_dir,'unknown') as project_dir, "
         f"source_machine, session_id, day, model, is_sidechain, agent_id, "
@@ -54,9 +52,9 @@ def summarize_days(days: list[str] | None = None):
         f"MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
         f"FROM events "
         f"WHERE type='assistant' AND model IS NOT NULL AND model != '<synthetic>' "
-        f"AND request_id IS NOT NULL AND day IN ({placeholders}) "
+        f"AND request_id IS NOT NULL AND day IN ({placeholders}) {acct_filter} "
         f"GROUP BY request_id",
-        days,
+        days + [account],
     ).fetchall()
 
     # Per-day accumulators
@@ -127,8 +125,9 @@ def summarize_days(days: list[str] | None = None):
     # ── Q2: Sessions per day ──
     for r in conn.execute(
         f"SELECT day, COUNT(DISTINCT session_id) as cnt "
-        f"FROM events WHERE agent_id IS NULL AND day IN ({placeholders}) GROUP BY day",
-        days,
+        f"FROM events WHERE agent_id IS NULL AND day IN ({placeholders}) "
+        f"{acct_filter} GROUP BY day",
+        days + [account],
     ):
         if r["day"] in day_data:
             day_data[r["day"]]["sessions"] = r["cnt"]
@@ -136,8 +135,9 @@ def summarize_days(days: list[str] | None = None):
     # ── Q3: Human prompts per day ──
     for r in conn.execute(
         f"SELECT day, COUNT(*) as cnt "
-        f"FROM events WHERE is_human_prompt=1 AND is_sidechain=0 AND day IN ({placeholders}) GROUP BY day",
-        days,
+        f"FROM events WHERE is_human_prompt=1 AND is_sidechain=0 "
+        f"AND day IN ({placeholders}) {acct_filter} GROUP BY day",
+        days + [account],
     ):
         if r["day"] in day_data:
             day_data[r["day"]]["human_prompts"] = r["cnt"]
@@ -145,17 +145,19 @@ def summarize_days(days: list[str] | None = None):
     # ── Machine prompts per day ──
     for r in conn.execute(
         f"SELECT day, source_machine, COUNT(*) as cnt "
-        f"FROM events WHERE is_human_prompt=1 AND day IN ({placeholders}) GROUP BY day, source_machine",
-        days,
+        f"FROM events WHERE is_human_prompt=1 AND day IN ({placeholders}) "
+        f"{acct_filter} GROUP BY day, source_machine",
+        days + [account],
     ):
         if r["day"] in day_data:
             day_data[r["day"]]["machine"][r["source_machine"]]["prompts"] += r["cnt"]
 
-    # ── Machine tool calls per day ──
+    # ── Machine tool calls per day — scoped to account's sessions ──
     for r in conn.execute(
         f"SELECT day, source_machine, COUNT(*) as cnt "
-        f"FROM tool_uses WHERE day IN ({placeholders}) GROUP BY day, source_machine",
-        days,
+        f"FROM tool_uses WHERE day IN ({placeholders}) {session_subq} "
+        f"GROUP BY day, source_machine",
+        days + [account] + days,
     ):
         if r["day"] in day_data:
             day_data[r["day"]]["machine"][r["source_machine"]]["tool_calls"] += r["cnt"]
@@ -170,9 +172,9 @@ def summarize_days(days: list[str] | None = None):
         f"AND ("
         f"  (type='user' AND is_human_prompt=1) OR "
         f"  (type='assistant' AND model IS NOT NULL AND model != '<synthetic>')"
-        f") AND day IN ({placeholders}) "
+        f") AND day IN ({placeholders}) {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
-        days,
+        days + [account],
     ):
         if r["session_id"] != current_session:
             pending_prompts = 0
@@ -193,12 +195,12 @@ def summarize_days(days: list[str] | None = None):
     earliest_day = min(days)
     prev_day = (datetime.strptime(earliest_day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Get sessions that have events on target days
+    # Get sessions (for this account) that have events on target days
     target_sessions = conn.execute(
         f"SELECT DISTINCT session_id FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders})",
-        days,
+        f"AND day IN ({placeholders}) {acct_filter}",
+        days + [account],
     ).fetchall()
     target_session_ids = {r["session_id"] for r in target_sessions}
 
@@ -213,8 +215,9 @@ def summarize_days(days: list[str] | None = None):
             f"WHERE is_sidechain=0 AND agent_id IS NULL "
             f"AND type IN ('user','assistant') "
             f"AND day = ? AND session_id IN ({ctx_placeholders}) "
+            f"AND COALESCE(account_email,'unknown') = ? "
             f"ORDER BY session_id, ts_epoch",
-            [prev_day] + list(target_session_ids),
+            [prev_day] + list(target_session_ids) + [account],
         ):
             # Keep overwriting — last event per session on prev_day
             session_context[r["session_id"]] = dict(r)
@@ -226,9 +229,9 @@ def summarize_days(days: list[str] | None = None):
         f"FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL "
         f"AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders}) "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
-        days,
+        days + [account],
     ):
         if prev_main is None or prev_main["session_id"] != r["session_id"]:
             # Seed with context from previous day if available
@@ -272,9 +275,9 @@ def summarize_days(days: list[str] | None = None):
         f"SELECT agent_id, day, ts_epoch, type, model "
         f"FROM events "
         f"WHERE agent_id IS NOT NULL AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders}) "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"ORDER BY agent_id, ts_epoch",
-        days,
+        days + [account],
     ):
         if prev_sub and prev_sub["agent_id"] == r["agent_id"]:
             gap = r["ts_epoch"] - prev_sub["ts_epoch"]
@@ -306,9 +309,9 @@ def summarize_days(days: list[str] | None = None):
         f"SELECT day, agent_id, model FROM events "
         f"WHERE agent_id IS NOT NULL AND type='assistant' "
         f"AND model IS NOT NULL AND model != '<synthetic>' "
-        f"AND day IN ({placeholders}) "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"GROUP BY day, agent_id, model",
-        days,
+        days + [account],
     ):
         d = r["day"]
         if d in day_data:
@@ -320,9 +323,9 @@ def summarize_days(days: list[str] | None = None):
     for r in conn.execute(
         f"SELECT session_id, ts_epoch, day FROM events "
         f"WHERE type='user' AND is_sidechain=0 AND agent_id IS NULL "
-        f"AND day IN ({placeholders}) "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
-        days,
+        days + [account],
     ):
         main_user_ts[r["session_id"]].append((r["ts_epoch"], r["day"]))
 
@@ -330,9 +333,9 @@ def summarize_days(days: list[str] | None = None):
     for r in conn.execute(
         f"SELECT agent_id, ts_epoch, day FROM events "
         f"WHERE type='user' AND agent_id IS NOT NULL "
-        f"AND day IN ({placeholders}) "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"ORDER BY agent_id, ts_epoch",
-        days,
+        days + [account],
     ):
         agent_user_ts[r["agent_id"]].append((r["ts_epoch"], r["day"]))
 
@@ -362,36 +365,80 @@ def summarize_days(days: list[str] | None = None):
         day_data[d]["gen"][dm]["gen_s"] += gen_time
         day_data[d]["gen"][dm]["gen_out"] += out_tok
 
-    # ── Write summary rows ──
+    return day_data
+
+
+def summarize_days(days: list[str] | None = None):
+    """Recompute daily_summary rows for the given days (or all days if None).
+
+    Each (day, account_email) pair gets a self-contained summary row derived
+    from the events and tool_uses tables.  The result is written to the
+    daily_summary table via DELETE + INSERT.
+    """
+    load_pricing()
+    conn = get_conn()
+
+    if days is None:
+        days = [r["day"] for r in conn.execute(
+            "SELECT DISTINCT day FROM events ORDER BY day"
+        )]
+
+    if not days:
+        return
+
+    placeholders = ",".join("?" for _ in days)
+
+    # Discover all accounts present in the target days (and their plan/org)
+    acct_rows = conn.execute(
+        f"SELECT COALESCE(account_email,'unknown') AS acct, "
+        f"MAX(plan) AS plan, MAX(org_name) AS org "
+        f"FROM events WHERE day IN ({placeholders}) GROUP BY acct",
+        days,
+    ).fetchall()
+    accounts = [(r["acct"], r["plan"], r["org"]) for r in acct_rows]
+
+    if not accounts:
+        return
+
+    # Delete existing rows for target days, then rebuild per account
+    conn.execute(f"DELETE FROM daily_summary WHERE day IN ({placeholders})", days)
     now = datetime.now(TZ).isoformat()
     rows = []
-    for d in days:
-        dd = day_data.get(d)
-        if dd is None:
-            continue
-        rows.append((
-            d,
-            dd["sessions"], dd["human_prompts"], dd["tool_calls"],
-            dd["input_tokens"], dd["output_tokens"],
-            dd["cache_creation_tokens"], dd["cache_read_tokens"],
-            dd["active_s"], dd["thinking_s"], dd["tool_exec_s"],
-            dd["subagent_s"], dd["agent_runs"], dd["cost"],
-            json.dumps({k: dict(v) for k, v in dd["model"].items()}),
-            json.dumps({k: dict(v) for k, v in dd["project"].items()}),
-            json.dumps({k: dict(v) for k, v in dd["machine"].items()}),
-            json.dumps(dict(dd["tool"])),
-            json.dumps(dict(dd["prompt_model"])),
-            json.dumps({k: dict(v) for k, v in dd["gen"].items()}),
-            now,
-        ))
+
+    for account, plan, org in accounts:
+        day_data = _accumulate(conn, days, placeholders, account)
+        for d in days:
+            dd = day_data.get(d)
+            if dd is None:
+                continue
+            # Skip days with zero activity for this account
+            if (dd["cost"] == 0 and dd["sessions"] == 0 and dd["human_prompts"] == 0
+                    and dd["tool_calls"] == 0 and dd["active_s"] == 0):
+                continue
+            rows.append((
+                d, account, plan, org,
+                dd["sessions"], dd["human_prompts"],
+                dd["tool_calls"], dd["input_tokens"], dd["output_tokens"],
+                dd["cache_creation_tokens"], dd["cache_read_tokens"],
+                dd["active_s"], dd["thinking_s"], dd["tool_exec_s"],
+                dd["subagent_s"], dd["agent_runs"], dd["cost"],
+                json.dumps({k: dict(v) for k, v in dd["model"].items()}),
+                json.dumps({k: dict(v) for k, v in dd["project"].items()}),
+                json.dumps({k: dict(v) for k, v in dd["machine"].items()}),
+                json.dumps(dict(dd["tool"])),
+                json.dumps(dict(dd["prompt_model"])),
+                json.dumps({k: dict(v) for k, v in dd["gen"].items()}),
+                now,
+            ))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO daily_summary "
-        "(day, sessions, human_prompts, tool_calls, "
-        "input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, "
+        "INSERT INTO daily_summary "
+        "(day, account_email, plan, org_name, sessions, "
+        "human_prompts, tool_calls, input_tokens, output_tokens, "
+        "cache_creation_tokens, cache_read_tokens, "
         "active_s, thinking_s, tool_exec_s, subagent_s, agent_runs, cost, "
-        "model_json, project_json, machine_json, tool_json, prompt_model_json, gen_json, "
-        "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "model_json, project_json, machine_json, tool_json, prompt_model_json, "
+        "gen_json, updated_at) VALUES (" + ",".join("?" * 24) + ")",
         rows,
     )
     conn.commit()

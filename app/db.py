@@ -5,6 +5,36 @@ from .config import DB_PATH
 
 _conn: sqlite3.Connection | None = None
 
+_DAILY_SUMMARY_DDL = """
+CREATE TABLE IF NOT EXISTS daily_summary (
+    day               TEXT NOT NULL,
+    account_email     TEXT NOT NULL,
+    plan              TEXT,
+    org_name          TEXT,
+    sessions          INTEGER DEFAULT 0,
+    human_prompts     INTEGER DEFAULT 0,
+    tool_calls        INTEGER DEFAULT 0,
+    input_tokens      INTEGER DEFAULT 0,
+    output_tokens     INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    active_s          REAL DEFAULT 0,
+    thinking_s        REAL DEFAULT 0,
+    tool_exec_s       REAL DEFAULT 0,
+    subagent_s        REAL DEFAULT 0,
+    agent_runs        INTEGER DEFAULT 0,
+    cost              REAL DEFAULT 0,
+    model_json        TEXT DEFAULT '{}',
+    project_json      TEXT DEFAULT '{}',
+    machine_json      TEXT DEFAULT '{}',
+    tool_json         TEXT DEFAULT '{}',
+    prompt_model_json TEXT DEFAULT '{}',
+    gen_json          TEXT DEFAULT '{}',
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (day, account_email)
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     uuid              TEXT PRIMARY KEY,
@@ -117,31 +147,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS daily_summary (
-    day               TEXT PRIMARY KEY,
-    sessions          INTEGER DEFAULT 0,
-    human_prompts     INTEGER DEFAULT 0,
-    tool_calls        INTEGER DEFAULT 0,
-    input_tokens      INTEGER DEFAULT 0,
-    output_tokens     INTEGER DEFAULT 0,
-    cache_creation_tokens INTEGER DEFAULT 0,
-    cache_read_tokens INTEGER DEFAULT 0,
-    active_s          REAL DEFAULT 0,
-    thinking_s        REAL DEFAULT 0,
-    tool_exec_s       REAL DEFAULT 0,
-    subagent_s        REAL DEFAULT 0,
-    agent_runs        INTEGER DEFAULT 0,
-    cost              REAL DEFAULT 0,
-    model_json        TEXT DEFAULT '{}',
-    project_json      TEXT DEFAULT '{}',
-    machine_json      TEXT DEFAULT '{}',
-    tool_json         TEXT DEFAULT '{}',
-    prompt_model_json TEXT DEFAULT '{}',
-    gen_json          TEXT DEFAULT '{}',
-    account_json      TEXT DEFAULT '{}',
-    updated_at        TEXT NOT NULL
-);
-
+""" + _DAILY_SUMMARY_DDL + """
 CREATE TABLE IF NOT EXISTS desktop_sessions (
     cli_session_id         TEXT PRIMARY KEY,
     desktop_session_id     TEXT,
@@ -177,9 +183,6 @@ _ADDED_COLUMNS = {
         "account_email": "TEXT", "org_name": "TEXT",
         "plan": "TEXT", "rate_limit_tier": "TEXT",
     },
-    "daily_summary": {
-        "account_json": "TEXT DEFAULT '{}'",
-    },
 }
 
 
@@ -189,6 +192,14 @@ def _migrate(conn) -> None:
         for col, decl in cols.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+    # daily_summary is a derived rollup — if it exists in the old shape (no
+    # account_email column), drop and recreate it from _DAILY_SUMMARY_DDL.
+    ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)")}
+    if ds_cols and "account_email" not in ds_cols:
+        conn.execute("DROP TABLE daily_summary")   # derived rollup — rebuilt from events
+        conn.executescript(_DAILY_SUMMARY_DDL)
+
     conn.commit()
 
 
