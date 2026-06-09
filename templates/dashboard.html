@@ -2345,10 +2345,14 @@ function renderHeatmap(){
 
   const dmap={};
   D.daily.forEach(d=>{dmap[d.date]=d;});
-  const maxCost=Math.max(...D.daily.map(d=>d.cost||0),0.01);
+  const costs=D.daily.map(d=>d.cost||0);
+  const peakCost=Math.max(...costs,0);
+  const maxCost=Math.max(peakCost,0.01);
+  const PEAK='#1a4b8c';
 
   function hmColor(cost){
     if(!cost)return HM[0];
+    if(cost===peakCost)return PEAK;
     const p=cost/maxCost;
     return p<0.25?HM[1]:p<0.55?HM[2]:p<0.80?HM[3]:HM[4];
   }
@@ -2390,7 +2394,8 @@ function renderHeatmap(){
     week.forEach(function(dateStr,di){
       const d=dmap[dateStr];
       const cost=d?(d.cost||0):0;
-      const tip=dateStr+': '+fC(cost);
+      const isPeak=cost>0&&cost===peakCost;
+      const tip=dateStr+': '+fC(cost)+(isPeak?' · peak day':'');
       svg+='<rect x="'+(DLW+wi*STEP)+'" y="'+(MLH+di*STEP)+'" width="'+CS+'" height="'+CS+'" fill="'+hmColor(cost)+'" data-tip="'+tip+'" style="cursor:default"/>';
     });
   });
