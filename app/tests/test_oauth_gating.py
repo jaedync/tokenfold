@@ -139,17 +139,41 @@ class HALockedEnterpriseSuppressionTest(TempDBTestCase):
         self.assertNotIn("resets_at", raw,
                          "resets_at must not appear in enterprise-locked response")
 
-        # Enterprise cost totals must still be present.
+        # Cost total keys still present (personal-scoped — likely 0 on a locked box).
         self.assertIn("cost_today_usd", body)
         self.assertIn("cost_total_usd", body)
 
     def test_cost_totals_still_present_when_locked(self):
-        """Enterprise cost fields survive the lock — they're enterprise-scoped."""
+        """Cost total keys survive the lock (personal-scoped, likely ~0 there)."""
         with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
             c = self.client()
             body = c.get("/api/ha").json()
         self.assertIsNotNone(body.get("cost_today_usd"))
         self.assertIsNotNone(body.get("cost_total_usd"))
+
+    def test_cost_totals_exclude_enterprise_when_locked(self):
+        """Even on a locked-enterprise box, cost totals are PERSONAL-scoped.
+
+        Seed an enterprise event ($5) and NO personal events; cost totals must
+        be 0 (enterprise excluded), proving HA never emits enterprise usage.
+        """
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        now = time.time()
+        _insert_enterprise(self.conn, "eA", "rE", ts=now - 100, inp=1_000_000)  # $5 enterprise
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
+            c = self.client()
+            body = c.get("/api/ha").json()
+
+        self.assertAlmostEqual(
+            body["cost_today_usd"], 0.0, places=2,
+            msg=f"enterprise usage must NOT appear in HA cost_today_usd, got {body['cost_today_usd']}")
+        self.assertAlmostEqual(
+            body["cost_total_usd"], 0.0, places=2,
+            msg=f"enterprise usage must NOT appear in HA cost_total_usd, got {body['cost_total_usd']}")
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +194,53 @@ class HAUnlockedPersonalScopeTest(TempDBTestCase):
     def setUp(self):
         super().setUp()
         self.freeze_pricing()
+
+    def test_cost_totals_are_personal_not_blended(self):
+        """LOAD-BEARING gate: HA cost totals must be PERSONAL-scoped only.
+
+        Seed a personal event ($P) and an enterprise event ($E) on TODAY (so they
+        hit both the `today` panel and all-time total). cost_today_usd and
+        cost_total_usd must equal $P — NOT $P+E (blended) and NOT $E (enterprise).
+        This fails if cost totals were enterprise- or blended-scoped.
+        """
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.config import TZ_NAME
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+
+        today = datetime.now(ZoneInfo(TZ_NAME)).strftime("%Y-%m-%d")
+        now = time.time()
+
+        # Distinct costs so the three failure modes are distinguishable:
+        #   personal-only = $5, enterprise-only = $1, blended = $6.
+        # Personal: Opus 4.8, 1M = $5 ($P). Enterprise: Haiku, 1M = $1 ($E).
+        _insert_event(self.conn, "pT", "rpT",
+                      plan="max", org=None, account_email="me@personal.io",
+                      model="claude-opus-4-8", ts=now - 60, inp=1_000_000)
+        _insert_event(self.conn, "eT", "reT",
+                      plan="enterprise", org="Acme", account_email="test@acme.io",
+                      model="claude-haiku-4-5-20251001", ts=now - 60, inp=1_000_000)
+        # Stamp both onto today's day bucket so they hit the `today` panel.
+        self.conn.execute("UPDATE events SET day=?", (today,))
+        self.conn.commit()
+
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        with patch.object(app.config, 'LOCKED_SCOPE', None):
+            c = self.client()
+            body = c.get("/api/ha").json()
+
+        P = 5.0  # personal-only cost (enterprise=$1, blended=$6)
+        self.assertAlmostEqual(
+            body["cost_today_usd"], P, places=2,
+            msg=f"cost_today_usd must be personal ${P}, NOT blended $6 or enterprise $1. "
+                f"Got: {body['cost_today_usd']}")
+        self.assertAlmostEqual(
+            body["cost_total_usd"], P, places=2,
+            msg=f"cost_total_usd must be personal ${P}, NOT blended $6 or enterprise $1. "
+                f"Got: {body['cost_total_usd']}")
 
     def test_weekly_spend_is_personal_scoped(self):
         now = time.time()

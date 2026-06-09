@@ -85,9 +85,10 @@ async def ha_metrics():
     # Read the scope lock fresh so tests can monkeypatch app.config.LOCKED_SCOPE.
     locked_scope = config.LOCKED_SCOPE
 
-    # Cost totals — enterprise-scoped (fail-closed default); always populated.
-    # NOTE: cost_today_usd and cost_total_usd are enterprise-scoped.
-    dash = build_dashboard_data()
+    # The ENTIRE /api/ha feed is PERSONAL-scoped: Home Assistant is the personal
+    # home surface, so enterprise (work) usage must never flow to it. Cost totals
+    # are personal — enterprise excluded — matching the personal-scoped windows below.
+    dash = build_dashboard_data("personal")
     cost_today = round((dash.get("today") or {}).get("cost", 0.0) or 0.0, 2)
     cost_total = round(dash.get("total_cost", 0.0) or 0.0, 2)
 
