@@ -6,9 +6,9 @@ class CursorState(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    machine: str
-    project_dir: str
-    session_file: str
+    machine: str = Field(max_length=128)
+    project_dir: str = Field(max_length=1024)
+    session_file: str = Field(max_length=1024)
     cursor: CursorState = CursorState()
     events: list[dict]
     account_email: str | None = Field(None, max_length=320)

@@ -134,7 +134,12 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
             row["cache_read_tokens"] = usage.get("cache_read_input_tokens", 0)
             row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
             row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
-            row["service_tier"] = usage.get("service_tier")
+            # service_tier/speed/inference_geo come from untrusted transcript JSON:
+            # coerce non-strings to NULL (a dict/list would raise at sqlite bind
+            # and 500 the whole batch) and truncate to a sane length.
+            # Realistic values are short tokens ('standard', 'priority', 'fast', 'us').
+            _tier = usage.get("service_tier")
+            row["service_tier"] = (_tier[:32] if isinstance(_tier, str) else None)
             _spd = usage.get("speed")
             row["speed"] = (_spd[:32] if isinstance(_spd, str) else None)
             _geo = usage.get("inference_geo")

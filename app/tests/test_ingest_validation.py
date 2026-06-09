@@ -74,6 +74,66 @@ class IngestSpeedCoercionTest(TempDBTestCase):
             row["speed"],
             f"speed must be stored as NULL when coerced from int, got {row['speed']!r}")
 
+    def test_dict_service_tier_stored_as_null(self):
+        """POST with service_tier={'a': 1} (dict) must succeed (200) with
+        service_tier stored as NULL — not 500 the whole batch via a sqlite
+        bind InterfaceError (same defect class as the speed/geo bug)."""
+        body = {
+            "machine": "m",
+            "project_dir": "p",
+            "session_file": "s.jsonl",
+            "cursor": {"last_line_num": 0},
+            "events": [_arec(service_tier={"a": 1})],
+        }
+        c = self.client()
+        r = c.post("/api/ingest", json=body, headers={"X-API-Key": self.api_key})
+        self.assertEqual(
+            r.status_code, 200,
+            f"expected 200 for dict service_tier, got {r.status_code}: {r.text}")
+        row = self.conn.execute(
+            "SELECT service_tier FROM events WHERE uuid='ua'"
+        ).fetchone()
+        self.assertIsNotNone(row, "event row must have been stored")
+        self.assertIsNone(
+            row["service_tier"],
+            "service_tier must be stored as NULL when coerced from dict, "
+            f"got {row['service_tier']!r}")
+
+
+class IngestEnvelopeLengthBoundsTest(TempDBTestCase):
+    """machine/project_dir/session_file must also be length-bounded (422)."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _post(self, **overrides):
+        body = {
+            "machine": "m",
+            "project_dir": "p",
+            "session_file": "s.jsonl",
+            "cursor": {"last_line_num": 0},
+            "events": [_arec()],
+        }
+        body.update(overrides)
+        c = self.client()
+        return c.post("/api/ingest", json=body, headers={"X-API-Key": self.api_key})
+
+    def test_overlong_machine_returns_422(self):
+        r = self._post(machine="m" * 10_000)
+        self.assertEqual(r.status_code, 422,
+                         f"expected 422 for overlong machine, got {r.status_code}")
+
+    def test_overlong_project_dir_returns_422(self):
+        r = self._post(project_dir="p" * 10_000)
+        self.assertEqual(r.status_code, 422,
+                         f"expected 422 for overlong project_dir, got {r.status_code}")
+
+    def test_overlong_session_file_returns_422(self):
+        r = self._post(session_file="s" * 10_000)
+        self.assertEqual(r.status_code, 422,
+                         f"expected 422 for overlong session_file, got {r.status_code}")
+
 
 if __name__ == "__main__":
     unittest.main()
