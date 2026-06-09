@@ -24,6 +24,10 @@ from .water import compute_energy_wh, compute_water_ml
 
 TZ = ZoneInfo(TZ_NAME)
 
+# Verified-enterprise scope. Plan is the signal; org presence is defense-in-depth.
+# Errs toward EXCLUDING (zero consumer bleedover is the priority).
+_ENT_PRED = "plan = 'enterprise' AND org_name IS NOT NULL AND org_name != ''"
+
 # In-memory cache — rebuilt only after ingest or on first request
 _cache_lock = threading.Lock()
 _cached_data: dict | None = None
@@ -185,6 +189,46 @@ def _empty_dashboard(cutoff_date: str) -> dict:
     }
 
 
+def _merge_summary_rows(rows) -> dict:
+    """Merge multiple enterprise daily_summary rows into a single dict.
+
+    Scalar columns are summed. JSON blob columns are merged by deep-summing
+    numeric fields per top-level key.  The returned dict is indexable like a
+    sqlite3.Row for all fields consumed by _build_today_data.
+    """
+    scalar_cols = (
+        "sessions", "human_prompts", "tool_calls",
+        "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
+        "active_s", "thinking_s", "tool_exec_s", "subagent_s", "agent_runs", "cost",
+    )
+    blob_cols = (
+        "model_json", "project_json", "machine_json",
+        "tool_json", "prompt_model_json", "gen_json",
+    )
+
+    merged: dict = {}
+    # Sum scalars
+    for col in scalar_cols:
+        merged[col] = sum(r[col] or 0 for r in rows)
+
+    # Merge blob columns by deep-summing numeric leaf values
+    for col in blob_cols:
+        combined: dict = {}
+        for row in rows:
+            outer = json.loads(row[col] or "{}")
+            for key, val in outer.items():
+                if isinstance(val, dict):
+                    target = combined.setdefault(key, {})
+                    for inner_key, inner_val in val.items():
+                        target[inner_key] = target.get(inner_key, 0) + (inner_val or 0)
+                else:
+                    # tool_json and prompt_model_json: {name: int}
+                    combined[key] = combined.get(key, 0) + (val or 0)
+        merged[col] = json.dumps(combined)
+
+    return merged
+
+
 def _build_hourly(conn) -> list[dict]:
     """Build the 24-slot hourly activity grid from live event data (48h window)."""
     now_h = datetime.now(TZ)
@@ -215,8 +259,8 @@ def _build_hourly(conn) -> list[dict]:
     epoch_to_idx = {hl["_epoch"]: i for i, hl in enumerate(hourly_list)}
 
     for r in conn.execute(
-        "SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
-        "FROM events WHERE is_human_prompt=1 AND ts_epoch>=? AND ts_epoch<? "
+        f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
+        f"FROM events WHERE is_human_prompt=1 AND {_ENT_PRED} AND ts_epoch>=? AND ts_epoch<? "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -224,8 +268,9 @@ def _build_hourly(conn) -> list[dict]:
             hourly_list[idx]["prompts"] = r["cnt"]
 
     for r in conn.execute(
-        "SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
-        "FROM tool_uses WHERE ts_epoch>=? AND ts_epoch<? "
+        f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
+        f"FROM tool_uses WHERE ts_epoch>=? AND ts_epoch<? "
+        f"AND session_id IN (SELECT session_id FROM events WHERE {_ENT_PRED}) "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -233,14 +278,15 @@ def _build_hourly(conn) -> list[dict]:
             hourly_list[idx]["tool_calls"] = r["cnt"]
 
     for r in conn.execute(
-        "SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, speed, inference_geo, "
+        f"SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr "
         "FROM ("
-        "  SELECT MIN(ts_epoch) as first_ts, model, request_id, speed, inference_geo, "
+        f"  SELECT MIN(ts_epoch) as first_ts, model, request_id, speed, inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
-        "  FROM events WHERE type='assistant' AND model IS NOT NULL "
-        "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        f"  FROM events WHERE type='assistant' AND model IS NOT NULL "
+        f"  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        f"  AND {_ENT_PRED} "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, request_id"
         ") GROUP BY bucket, model, speed, inference_geo",
@@ -266,11 +312,11 @@ def _build_today_data(conn, today_str: str) -> dict:
     Returns model_breakdown, time_breakdown, tools, projects, and
     machine_summary scoped to just today.
     """
-    row = conn.execute(
-        "SELECT * FROM daily_summary WHERE day = ?", (today_str,)
-    ).fetchone()
+    ent_rows = conn.execute(
+        f"SELECT * FROM daily_summary WHERE day = ? AND {_ENT_PRED}", (today_str,)
+    ).fetchall()
 
-    if not row:
+    if not ent_rows:
         return {
             "cost": 0.0,
             "model_breakdown": [], "time_breakdown": {
@@ -278,6 +324,8 @@ def _build_today_data(conn, today_str: str) -> dict:
             },
             "tools": {}, "projects": [], "machine_summary": [],
         }
+
+    row = _merge_summary_rows(ent_rows)
 
     # Model breakdown for today
     model_data = json.loads(row["model_json"] or "{}")
@@ -399,9 +447,9 @@ def _build_dashboard_data_inner() -> dict:
     conn = get_conn()
     cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
 
-    # ── Read all summary rows ──
+    # ── Read verified-enterprise summary rows only ──
     rows = conn.execute(
-        "SELECT * FROM daily_summary ORDER BY day"
+        f"SELECT * FROM daily_summary WHERE {_ENT_PRED} ORDER BY day"
     ).fetchall()
 
     if not rows:
@@ -452,20 +500,23 @@ def _build_dashboard_data_inner() -> dict:
         day = row["day"]
         is_recent = day >= cutoff_date
 
-        # Scalar daily fields
-        daily_map[day] = {
-            "sessions": row["sessions"],
-            "human_prompts": row["human_prompts"],
-            "input_tokens": row["input_tokens"],
-            "output_tokens": row["output_tokens"],
-            "cache_creation_tokens": row["cache_creation_tokens"],
-            "cache_read_tokens": row["cache_read_tokens"],
-            "tool_calls": row["tool_calls"],
-            "active_s": row["active_s"],
-            "thinking_s": row["thinking_s"],
-            "tool_exec_s": row["tool_exec_s"],
-            "cost": row["cost"],
-        }
+        # Scalar daily fields — accumulate to support multiple enterprise accounts per day
+        dm = daily_map.setdefault(day, {
+            "sessions": 0, "human_prompts": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_tokens": 0, "cache_read_tokens": 0, "tool_calls": 0,
+            "active_s": 0.0, "thinking_s": 0.0, "tool_exec_s": 0.0, "cost": 0.0,
+        })
+        dm["sessions"] += row["sessions"]
+        dm["human_prompts"] += row["human_prompts"]
+        dm["input_tokens"] += row["input_tokens"]
+        dm["output_tokens"] += row["output_tokens"]
+        dm["cache_creation_tokens"] += row["cache_creation_tokens"]
+        dm["cache_read_tokens"] += row["cache_read_tokens"]
+        dm["tool_calls"] += row["tool_calls"]
+        dm["active_s"] += row["active_s"]
+        dm["thinking_s"] += row["thinking_s"]
+        dm["tool_exec_s"] += row["tool_exec_s"]
+        dm["cost"] += row["cost"]
 
         tot["sessions"] += row["sessions"]
         tot["human_prompts"] += row["human_prompts"]
@@ -722,7 +773,8 @@ def _build_dashboard_data_inner() -> dict:
     machine_last_active: dict[str, float] = {}
     last_active_ts = None
     for r in conn.execute(
-        "SELECT source_machine, MAX(ts_epoch) as ts FROM events "
+        f"SELECT source_machine, MAX(ts_epoch) as ts FROM events "
+        f"WHERE {_ENT_PRED} "
         "GROUP BY source_machine"
     ):
         if r["ts"]:
