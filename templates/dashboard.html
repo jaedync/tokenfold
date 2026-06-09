@@ -273,6 +273,37 @@ body {
   background: rgba(230, 51, 41, 0.08);
 }
 
+/* ---- SCOPE TOGGLE ---- */
+
+.scope-toggle {
+  display: inline-flex;
+  border: 3px solid var(--black);
+  overflow: hidden;
+}
+
+.scope-btn {
+  padding: 5px 14px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--gray-dim);
+  font-family: var(--font-body);
+  transition: background 0.15s, color 0.15s;
+}
+
+.scope-btn--active {
+  background: var(--black);
+  color: #fff;
+}
+
+.scope-btn:not(.scope-btn--active):hover {
+  background: rgba(26, 26, 26, 0.08);
+}
+
 /* ---- MACHINE PILLS ---- */
 
 .machine-pills {
@@ -1596,6 +1627,7 @@ th[data-info]:hover::after { opacity: 1; }
   .model-dot { width: 8px; height: 8px; margin-right: 0.35rem; }
 
   .mode-btn { padding: 4px 10px; font-size: 0.7rem; }
+  .scope-btn { padding: 4px 10px; font-size: 0.7rem; }
   .hourly-lbl { display: none; }
   .hourly-cell { gap: 0; }
   .hourly-grid { gap: 2px; }
@@ -1654,6 +1686,14 @@ th[data-info]:hover::after { opacity: 1; }
   <div class="date-bar-right">
     <div id="refreshIndicator" class="refresh-indicator">DATA UPDATED</div>
     <div class="machine-pills">{{ machines_pills|safe }}</div>
+    {% if not scope_locked %}
+    <div class="scope-toggle" role="group" aria-label="Usage scope">
+      <button class="scope-btn{% if scope == 'enterprise' %} scope-btn--active{% endif %}"
+              data-scope="enterprise" onclick="setScope('enterprise')">Enterprise</button>
+      <button class="scope-btn{% if scope == 'personal' %} scope-btn--active{% endif %}"
+              data-scope="personal" onclick="setScope('personal')">Personal</button>
+    </div>
+    {% endif %}
     <div class="mode-toggle">
       <button class="mode-btn" data-mode="today" onclick="setMode('today')">Today</button>
       <button class="mode-btn" data-mode="14d" onclick="setMode('14d')">14 Days</button>
@@ -2039,6 +2079,30 @@ function toggleMB(i){
    innerHTML.  Prevents XSS when machine names, model names, tool names,
    or project names contain characters like < > & " '. */
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+const TF_SCOPE = '{{ scope }}';
+const TF_LOCKED = {{ 'true' if scope_locked else 'false' }};
+
+/* ---- Scope restore: redirect once to saved scope on bare / visits ---- */
+(function(){
+  if (TF_LOCKED) return;                         // locked: server forces scope, ignore storage
+  var url = new URL(window.location.href);
+  if (url.searchParams.has('scope')) return;     // explicit ?scope= in URL wins; no redirect
+  var saved;
+  try { saved = localStorage.getItem('tf_scope'); } catch(e) {}
+  if (saved && (saved === 'enterprise' || saved === 'personal') && saved !== TF_SCOPE) {
+    url.searchParams.set('scope', saved);
+    window.location.replace(url.toString());     // replace (not assign) so Back isn't trapped
+  }
+})();
+
+/* ---- Scope Toggle ---- */
+function setScope(s) {
+  try { localStorage.setItem('tf_scope', s); } catch(e) {}
+  var u = new URL(window.location.href);
+  u.searchParams.set('scope', s);
+  window.location.assign(u.toString());
+}
 
 const D = {{ data_json|safe }};
 const MODEL_ORDER = D.model_order || [];
