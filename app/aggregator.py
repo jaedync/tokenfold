@@ -287,7 +287,7 @@ def _build_today_data(conn, today_str: str) -> dict:
         out = md.get("output", 0)
         cw = md.get("cache_write", 0)
         cr = md.get("cache_read", 0)
-        cost = compute_cost(mname, inp, out, cw, cr)
+        cost = md.get("cost", 0.0)
         p = get_pricing(mname)
         main_cost = md.get("main_cost", 0.0)
         agent_cost = round(cost - main_cost, 2)
@@ -415,6 +415,7 @@ def _build_dashboard_data_inner() -> dict:
         "recent_active_s": 0.0, "recent_gen_s": 0.0, "recent_gen_out": 0,
         "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
         "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
+        "cost": 0.0, "recent_cost": 0.0,
     })
     project_seconds: Counter = Counter()
     project_cost: Counter = Counter()
@@ -496,6 +497,7 @@ def _build_dashboard_data_inner() -> dict:
             ms["main_prompts"] += md.get("main_prompts", 0)
             ms["agent_invocations"] += md.get("agent_invocations", 0)
             ms["active_s"] += md.get("active_s", 0.0)
+            ms["cost"] += md.get("cost", 0.0)
             if day > ms["last_seen"]:
                 ms["last_seen"] = day
             if is_recent:
@@ -505,6 +507,7 @@ def _build_dashboard_data_inner() -> dict:
                 ms["recent_cache_read"] += md.get("cache_read", 0)
                 ms["recent_main_cost"] += md.get("main_cost", 0.0)
                 ms["recent_active_s"] += md.get("active_s", 0.0)
+                ms["recent_cost"] += md.get("cost", 0.0)
 
         # ── gen_json (generation time — stored separately from model_json) ──
         gen_data = json.loads(row["gen_json"] or "{}")
@@ -603,7 +606,7 @@ def _build_dashboard_data_inner() -> dict:
     for name in sorted(model_stats, key=lambda m: model_sort_key(m)):
         ms = model_stats[name]
         total_tok = ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
-        cost = compute_cost(name, ms["input"], ms["output"], ms["cache_write"], ms["cache_read"])
+        cost = ms["cost"]
         p = get_pricing(name)
         total_cost += cost
         main_cost = round(ms["main_cost"], 2)
@@ -613,8 +616,7 @@ def _build_dashboard_data_inner() -> dict:
         avg_cost_per_agent = (agent_cost / ms["agent_invocations"]
                               if ms["agent_invocations"] > 0 else None)
         active_hours = ms["active_s"] / 3600
-        recent_cost = compute_cost(name, ms["recent_input"], ms["recent_output"],
-                                   ms["recent_cache_write"], ms["recent_cache_read"])
+        recent_cost = ms["recent_cost"]
         recent_hours = ms["recent_active_s"] / 3600
         if recent_hours >= 0.5:
             cost_per_hour = recent_cost / recent_hours
