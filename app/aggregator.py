@@ -192,6 +192,8 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
         }, "tools": {}, "projects": [], "machine_summary": []},
         "scope": scope,
+        "month_cost": 0.0,
+        "month_label": now.strftime("%B %Y"),
     }
 
 
@@ -777,6 +779,12 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             series.append(round(mach_daily_cost.get(m_name, {}).get(d, 0.0), 2))
         machine_daily_series[m_name] = series
 
+    # ── Month-to-date cost (scope-aware, since daily_map is already scoped) ──
+    _cur_month = datetime.now(TZ).strftime("%Y-%m")
+    month_cost = round(sum(dm["cost"] for day, dm in daily_map.items()
+                           if day[:7] == _cur_month), 2)
+    month_label = datetime.now(TZ).strftime("%B %Y")
+
     # ── Last active timestamp (global + per machine) ──
     # daily_summary can't answer "active in last 15 minutes" — needs minute-grain
     # timestamps from raw events. Indexed on source_machine, cheap.
@@ -861,6 +869,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "version": get_cache_version(),
         "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d"), pred),
         "scope": scope,
+        "month_cost": month_cost,
+        "month_label": month_label,
     }
 
 

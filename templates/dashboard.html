@@ -787,6 +787,57 @@ body {
   .usage-chart-body { padding: 0.5rem 0.8rem 1rem; }
 }
 
+/* ---- MONTH COUNTER ---- */
+
+.month-counter {
+  padding: 1.6rem 2rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 140px;
+}
+
+.month-counter-value {
+  font-family: var(--font-display);
+  font-size: 4.5rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--black);
+  font-variant-numeric: tabular-nums;
+}
+
+.month-counter-label {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  margin-top: 0.55rem;
+}
+
+.month-counter-note {
+  font-family: var(--font-body);
+  font-size: 0.55rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  opacity: 0.7;
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 900px) {
+  .month-counter-value { font-size: 3rem; }
+  .month-counter { min-height: 100px; padding: 1.2rem 1.4rem 1rem; }
+}
+
+@media (max-width: 480px) {
+  .month-counter-value { font-size: 2.2rem; }
+  .month-counter { min-height: 80px; padding: 1rem; }
+}
+
 /* ---- COST META BAR ---- */
 
 .cost-meta-bar {
@@ -1802,14 +1853,25 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 
-<!-- ======== ENTERPRISE WEEK PANEL ======== -->
+<!-- ======== MONTH-TO-DATE COST PANEL ======== -->
 <div id="rateLimitsSection" class="rate-limits" style="display:none">
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
-    <h2>Enterprise Week</h2>
-    <span id="rateLimitsUpdated" class="rate-limits-updated">rolling 7 days</span>
+    <h2>Monthly Cost</h2>
+    <span id="rateLimitsUpdated" class="rate-limits-updated">month to date</span>
   </div>
-  <div id="rateLimitsGrid" class="rate-limits-grid"></div>
+  <div id="rateLimitsGrid" class="rate-limits-grid">
+    <!-- Hero: month counter — rendered immediately from embedded D on load -->
+    <div class="rate-gauge month-counter-panel">
+      <div class="month-counter">
+        <div id="monthCostValue" class="month-counter-value">$0.00</div>
+        <div id="monthCostLabel" class="month-counter-label">MONTH TO DATE</div>
+        <div class="month-counter-note">raw API pricing</div>
+      </div>
+    </div>
+    <!-- Secondary: 7-day pace stats + chart trigger (populated by fetch) -->
+    <div id="weekPacePanel" class="rate-gauge"></div>
+  </div>
 </div>
 
 <!-- Weekly usage chart modal -->
@@ -2761,26 +2823,71 @@ function renderMode(mode) {
     }
   })();
 
-  /* ── Rate limits section (async from /api/rate-limits) ── */
+  /* ── Month-to-date counter (from embedded D — no fetch dependency) ── */
   (function(){
     var section = document.getElementById('rateLimitsSection');
-    var grid = document.getElementById('rateLimitsGrid');
-    if(!section || !grid) return;
+    if(!section) return;
 
-    // Show section with loading state
+    // Render month hero immediately from embedded payload — hero is decoupled from fetch
+    var monthCostEl = document.getElementById('monthCostValue');
+    var monthLabelEl = document.getElementById('monthCostLabel');
+
+    var rawMonthCost = (D && typeof D.month_cost === 'number' && !isNaN(D.month_cost))
+      ? D.month_cost : 0;
+    var monthLabelText = (D && D.month_label) ? D.month_label : '';
+
+    // Update the static label with scope-specific month label from payload
+    if(monthLabelEl && monthLabelText) {
+      monthLabelEl.textContent = 'MONTH TO DATE · ' + monthLabelText;
+    }
+
+    // Animate counter 0 → rawMonthCost with ease-out (~900ms)
+    if(monthCostEl) {
+      // Respect prefers-reduced-motion: skip animation, set final value immediately
+      if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        monthCostEl.textContent = fC(rawMonthCost);
+      } else {
+        var DURATION = 900; // ms
+        var start = null;
+        function animateCost(ts) {
+          if(!start) start = ts;
+          var elapsed = ts - start;
+          var progress = Math.min(elapsed / DURATION, 1);
+          // ease-out cubic: 1 - (1-t)^3
+          var eased = 1 - Math.pow(1 - progress, 3);
+          var current = rawMonthCost * eased;
+          monthCostEl.textContent = fC(current);
+          if(progress < 1) {
+            requestAnimationFrame(animateCost);
+          } else {
+            monthCostEl.textContent = fC(rawMonthCost);
+          }
+        }
+        if(rawMonthCost > 0) {
+          requestAnimationFrame(animateCost);
+        } else {
+          monthCostEl.textContent = fC(0);
+        }
+      }
+    }
+
+    // Show section immediately — month hero is ready
     section.style.display = '';
-    grid.innerHTML = '<div style="color:var(--gray-dim);font-size:0.9rem;padding:1rem">Loading rate limits...</div>';
+  })();
+
+  /* ── Rate limits section secondary detail (async from /api/rate-limits) ── */
+  (function(){
+    var section = document.getElementById('rateLimitsSection');
+    var pacePanel = document.getElementById('weekPacePanel');
+    if(!section || !pacePanel) return;
 
     function renderAllRateLimits(wb) {
-    if(!wb) { section.style.display = 'none'; return; }
-
-    section.style.display = '';
+    if(!wb) return; // month hero still stands; just leave pace panel empty
 
     var DAY_MS = 24 * 60 * 60 * 1000;
     var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-    // ── Enterprise weekly spend panel ──
-    var weekCost = wb.week_cost || 0;
+    // ── 7-day pace secondary detail ──
     var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
 
     function fmtHM(totalMin) {
@@ -2791,28 +2898,22 @@ function renderMode(mode) {
 
     var statsHtml = '<div class="rate-gauge-stats">'
       + '<div class="rate-gauge-stat">'
-      + '<div class="rate-gauge-stat-value">$' + weekCost.toFixed(2) + '</div>'
-      + '<div class="rate-gauge-stat-label">spend · 7d</div>'
-      + '</div>'
-      + '<div class="rate-gauge-stat">'
       + '<div class="rate-gauge-stat-value">' + fmtHM(weekActiveMin) + '</div>'
       + '<div class="rate-gauge-stat-label">active · 7d</div>'
       + '</div>'
       + '</div>';
 
-    var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View pace chart">'
+    var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View 7-day pace">'
       + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
       + '</button>';
 
-    var panelHtml = '<div class="rate-gauge">'
-      + '<div class="rate-gauge-head">'
-      + '<span class="rate-gauge-label">Weekly Spend' + chartBtnHtml + '</span>'
+    var panelHtml = '<div class="rate-gauge-head">'
+      + '<span class="rate-gauge-label">7-Day Pace' + chartBtnHtml + '</span>'
       + '<span class="rate-gauge-reset">rolling 7 days</span>'
       + '</div>'
-      + statsHtml
-      + '</div>';
+      + statsHtml;
 
-    grid.innerHTML = panelHtml;
+    pacePanel.innerHTML = panelHtml;
 
   /* ── Weekly usage pace chart (modal popup) ── */
   (function(){
@@ -3058,15 +3159,13 @@ function renderMode(mode) {
 
     } // end renderAllRateLimits
 
-    // Fetch rate limits from API
+    // Fetch rate limits from API (secondary detail only — month hero already shown)
     fetch('/api/rate-limits')
       .then(function(r) { return r.json(); })
       .then(function(data) { renderAllRateLimits(data.weekly_budget); })
-      .catch(function() {
-        grid.innerHTML = '<div style="color:var(--gray-dim);font-size:0.9rem;padding:1rem">Rate limits unavailable</div>';
-      });
+      .catch(function() { /* pace panel stays empty; month hero unaffected */ });
 
-    // Poll every 60s to keep rate limits fresh
+    // Poll every 60s to keep pace panel fresh
     setInterval(function() {
       fetch('/api/rate-limits')
         .then(function(r) { return r.json(); })
