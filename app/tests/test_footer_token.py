@@ -46,6 +46,17 @@ class FooterTokenRevealTest(TempDBTestCase):
             html = self._get_html()
         self.assertNotIn("ingestKeyBtn", html)
 
+    def test_footer_observer_uses_unclipped_sentinel(self):
+        """Source-level regression: the footer self-hides via clip-path until
+        .in-view, but IntersectionObserver intersects the CLIPPED rect (0x0),
+        so observing the footer directly deadlocks at ratio 0 and the footer
+        (and the ingest-key button in it) stays invisible forever. The template
+        must observe an unclipped sentinel instead of the footer itself."""
+        from pathlib import Path
+        tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
+        self.assertIn("footerSentinel", tpl)
+        self.assertNotIn("obs.observe(footer)", tpl)
+
     def test_token_is_html_escaped(self):
         """A token containing HTML metacharacters must not break out of the
         attribute it is embedded in (defense-in-depth; real keys are URL-safe)."""

@@ -3969,8 +3969,23 @@ setMode(localStorage.getItem('dashMode') || '14d');
     });
   }, {threshold:0.15});
   document.querySelectorAll('.section-header').forEach(function(el){ obs.observe(el); });
+  // The footer hides itself with clip-path inset(0 100% 0 0) until .in-view —
+  // but IntersectionObserver intersects the CLIPPED rect, which is 0x0, so
+  // observing the footer directly never fires (ratio stays 0 forever).
+  // Observe an unclipped 1px sentinel placed just before it instead.
   var footer = document.querySelector('.footer');
-  if(footer) obs.observe(footer);
+  if(footer){
+    var sentinel = document.createElement('div');
+    sentinel.id = 'footerSentinel';
+    sentinel.style.cssText = 'height:1px;margin:0;padding:0;';
+    footer.parentNode.insertBefore(sentinel, footer);
+    var fobs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){ footer.classList.add('in-view'); fobs.disconnect(); }
+      });
+    }, {threshold: 0});
+    fobs.observe(sentinel);
+  }
 })();
 
 /* ---- Auto-Refresh Polling ---- */
