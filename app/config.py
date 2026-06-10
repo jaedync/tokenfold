@@ -24,7 +24,12 @@ ENTERPRISE_PRED = (
 PERSONAL_PRED = "NOT (" + ENTERPRISE_PRED + ")"
 
 VALID_SCOPES = ("enterprise", "personal")
-DEFAULT_SCOPE = "enterprise"
+# Which scope the dashboard lands on / APIs fall back to. Configurable per-instance:
+# a personal-only deployment (e.g. ms01) sets TOKENFOLD_DEFAULT_SCOPE=personal so the
+# dashboard doesn't open on an empty enterprise view. Invalid values fall back safely.
+DEFAULT_SCOPE = os.environ.get("TOKENFOLD_DEFAULT_SCOPE", "enterprise")
+if DEFAULT_SCOPE not in VALID_SCOPES:
+    DEFAULT_SCOPE = "enterprise"
 
 # Env lock: when set to a valid scope, the instance is LOCKED to it — the UI toggle is
 # hidden and the API refuses other scopes (fail-closed compliance posture).
