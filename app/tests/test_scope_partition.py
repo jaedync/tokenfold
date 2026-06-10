@@ -124,13 +124,15 @@ class PartitionCompletenessTest(TempDBTestCase):
         # Row D (the trap) must land in PERSONAL, not enterprise — and not be lost.
         ent_blob = json.dumps(ent)
         per_blob = json.dumps(per)
-        self.assertIn("mD-trap", per_blob,
+        # (machine names are canonicalized to lowercase at read time, so the
+        # payload carries "md-trap"/"mc"; quoted forms keep the match exact)
+        self.assertIn("md-trap", per_blob,
                       "trap row D (plan=NULL, valid org+account) must appear in personal")
-        self.assertNotIn("mD-trap", ent_blob,
+        self.assertNotIn("md-trap", ent_blob,
                          "trap row D must NOT appear in enterprise (plan is NULL, not 'enterprise')")
         # Row C (all-NULL) also lands in personal (not lost).
-        self.assertIn("mC", per_blob, "all-NULL row C must appear in personal")
-        self.assertNotIn("mC", ent_blob, "all-NULL row C must NOT appear in enterprise")
+        self.assertIn('"mc"', per_blob, "all-NULL row C must appear in personal")
+        self.assertNotIn('"mc"', ent_blob, "all-NULL row C must NOT appear in enterprise")
 
     def test_org_type_enterprise_signal_partition(self):
         """Rows classified by org_type (not plan) also satisfy partition completeness.
@@ -173,13 +175,14 @@ class PartitionCompletenessTest(TempDBTestCase):
 
         ent_blob = json.dumps(ent)
         per_blob = json.dumps(per)
-        self.assertIn("mE", ent_blob,
+        # canonical machine names are lowercase; match the quoted JSON token
+        self.assertIn('"me"', ent_blob,
                       "org_type=claude_enterprise row must appear in enterprise")
-        self.assertNotIn("mE", per_blob,
+        self.assertNotIn('"me"', per_blob,
                          "org_type=claude_enterprise row must NOT appear in personal")
-        self.assertIn("mP", per_blob,
+        self.assertIn('"mp"', per_blob,
                       "org_type=claude_max row must appear in personal")
-        self.assertNotIn("mP", ent_blob,
+        self.assertNotIn('"mp"', ent_blob,
                          "org_type=claude_max row must NOT appear in enterprise")
 
     def test_scope_key_in_payload(self):

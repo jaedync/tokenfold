@@ -447,10 +447,10 @@ class MultiEnterpriseAccountSameDayTest(TempDBTestCase):
         self.assertAlmostEqual(mb_models["Opus 4.8"], 5.0, places=2)
         self.assertAlmostEqual(mb_models["Sonnet 4.6"], 3.0, places=2)
 
-        # 5. machine_summary includes both mA and mB
+        # 5. machine_summary includes both machines (canonical names are lowercase)
         ms_machines = {m["machine"] for m in d["machine_summary"]}
-        self.assertIn("mA", ms_machines, "mA must appear in machine_summary")
-        self.assertIn("mB", ms_machines, "mB must appear in machine_summary")
+        self.assertIn("ma", ms_machines, "mA must appear in machine_summary")
+        self.assertIn("mb", ms_machines, "mB must appear in machine_summary")
 
         # 6. today panel: cost 8.0 and both models present (_merge_summary_rows path)
         today_panel = d["today"]

@@ -77,11 +77,13 @@ class ScriptBreakoutTest(TempDBTestCase):
         c = self.client()
         html = c.get("/").text
 
-        # The prefix 'mEvil' must still appear (escaped form) — payload wasn't dropped
+        # The prefix must still appear (escaped form) — payload wasn't dropped.
+        # Machine names are canonicalized (lowercased) at read time, so the
+        # surviving form is 'mevil...'.
         self.assertIn(
-            "mEvil",
+            "mevil",
             html,
-            "Machine name 'mEvil' prefix is missing — escaping dropped the value",
+            "Machine name 'mevil' prefix is missing — escaping dropped the value",
         )
 
     def test_comment_trick_breakout_absent_in_html(self):
@@ -106,11 +108,12 @@ class ScriptBreakoutTest(TempDBTestCase):
             "Raw '<!--<script>' tokenizer breakout found in HTML — comment-trick "
             "vector not fixed (encode '<' as \\u003c)",
         )
-        # The payload must not have been dropped — prefix still present (escaped)
+        # The payload must not have been dropped — prefix still present
+        # (escaped; canonicalization lowercases machine names)
         self.assertIn(
-            "mEvil2",
+            "mevil2",
             html,
-            "Machine name 'mEvil2' prefix missing — escaping dropped the value",
+            "Machine name 'mevil2' prefix missing — escaping dropped the value",
         )
 
     def test_no_raw_lt_breakout_tokens_in_html(self):
@@ -134,16 +137,19 @@ class ScriptBreakoutTest(TempDBTestCase):
                          "raw </script><script> breakout token present")
         self.assertNotIn("<!--<script>", html,
                          "raw <!--<script> breakout token present")
-        # Both payloads survive (escaped, not dropped)
-        self.assertIn("mEvil", html, "</script> payload dropped")
-        self.assertIn("mEvil2", html, "<!--<script> payload dropped")
+        # Both payloads survive (escaped + canonical-lowercased, not dropped)
+        self.assertIn("mevil", html, "</script> payload dropped")
+        self.assertIn("mevil2", html, "<!--<script> payload dropped")
 
     def test_api_stats_roundtrips_raw_string_unmodified(self):
         """Hole 1 fix must only affect HTML embedding; /api/stats JSON must return
-        the raw (unescaped) machine name so downstream consumers see the literal value."""
+        the un-HTML-escaped machine name so downstream consumers see the literal
+        value. (Machine names ARE canonicalized — lowercase, domain suffix
+        stripped — but never HTML-escaped server-side.)"""
         _ins(self.conn, "e1", "r1", EVIL_MACHINE, EVIL_PROJECT)
 
         from app.summarizer import summarize_days
+        from app.aggregator import canonical_machine
         import app.aggregator as agg
         summarize_days(None)
         agg._cached_data.clear()
@@ -152,10 +158,12 @@ class ScriptBreakoutTest(TempDBTestCase):
         data = c.get("/api/stats").json()
 
         machines = data.get("machines", [])
+        expected = canonical_machine(EVIL_MACHINE)
+        self.assertIn("<", expected, "canonical form should keep raw '<'")
         self.assertIn(
-            EVIL_MACHINE,
+            expected,
             machines,
-            f"Expected literal evil machine string in /api/stats machines list, got: {machines}",
+            f"Expected un-HTML-escaped canonical machine string in /api/stats machines list, got: {machines}",
         )
 
 

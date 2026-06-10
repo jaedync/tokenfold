@@ -6,6 +6,7 @@ activity is still computed live from events/tool_uses (48h window).
 """
 
 import json
+import os
 import random
 import re
 import threading
@@ -100,6 +101,44 @@ def _make_display_names(raw_dirs: list[str]) -> dict[str, str]:
                 um = re.search(r"(?:home|Users)-([^-]+)", d)
                 short[d] = "~ (" + um.group(1) + ")" if um else d.strip("-")
     return short
+
+
+# ── Machine identity normalization (UX P1-7) ────────────────────────────────
+# The same physical machine reports under hostname variants (bare hostname,
+# Tailscale/mDNS FQDN, different casing) and was counted as several machines.
+# Normalize at READ time only — database rows keep the raw reported name.
+#
+# Variants that differ structurally (not just by domain suffix / case) need an
+# alias entry. Extend via the MACHINE_ALIASES env var: "alias=canonical,...".
+_DEFAULT_MACHINE_ALIASES = {
+    "macbook-pro": "jaedyns-macbook-pro",
+}
+
+
+def _load_machine_aliases() -> dict[str, str]:
+    aliases = dict(_DEFAULT_MACHINE_ALIASES)
+    for pair in os.environ.get("MACHINE_ALIASES", "").split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            k, v = k.strip().lower(), v.strip().lower()
+            if k and v:
+                aliases[k] = v
+    return aliases
+
+
+MACHINE_ALIASES = _load_machine_aliases()
+
+
+def canonical_machine(name):
+    """Collapse hostname variants of one machine to a canonical display name.
+
+    lowercase -> keep only the first DNS label (drops .ts.net/.local/etc.)
+    -> alias map. None/empty pass through unchanged.
+    """
+    if not name:
+        return name
+    base = name.strip().lower().split(".", 1)[0]
+    return MACHINE_ALIASES.get(base, base)
 
 
 _rebuilding = False
@@ -247,7 +286,7 @@ def _build_recent_sessions(conn, pred, limit=25):
             "session_id": st["session_id"],
             "title": titles.get(st["session_id"]),
             "project": project_names.get(st["project_dir"], st["project_dir"]),
-            "machine": st["machine"],
+            "machine": canonical_machine(st["machine"]),
             "model": primary_model,
             "cost": round(st["cost"], 2),
             "total_tokens": st["total_tokens"],
@@ -551,20 +590,31 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         for k in raw_dirs
     ]
 
-    # Machine summary for today
+    # Machine summary for today — accumulate per CANONICAL machine so hostname
+    # variants of one box merge instead of appearing as separate rows.
     mach_data = json.loads(row["machine_json"] or "{}")
-    machine_summary = []
-    for mname in sorted(mach_data, key=lambda x: -mach_data[x].get("prompts", 0)):
-        mv = mach_data[mname]
-        total_tok = mv.get("input", 0) + mv.get("output", 0) + mv.get("cache_write", 0) + mv.get("cache_read", 0)
-        machine_summary.append({
+    mach_canon: dict[str, dict] = defaultdict(lambda: {
+        "prompts": 0, "calls": 0, "tool_calls": 0, "total_tokens": 0, "cost": 0.0,
+    })
+    for raw_mname, mv in mach_data.items():
+        mc = mach_canon[canonical_machine(raw_mname)]
+        mc["prompts"] += mv.get("prompts", 0)
+        mc["calls"] += mv.get("calls", 0)
+        mc["tool_calls"] += mv.get("tool_calls", 0)
+        mc["total_tokens"] += (mv.get("input", 0) + mv.get("output", 0)
+                               + mv.get("cache_write", 0) + mv.get("cache_read", 0))
+        mc["cost"] += mv.get("cost", 0)
+    machine_summary = [
+        {
             "machine": mname,
-            "prompts": mv.get("prompts", 0),
-            "api_calls": mv.get("calls", 0),
-            "tool_calls": mv.get("tool_calls", 0),
-            "total_tokens": total_tok,
-            "cost": round(mv.get("cost", 0), 2),
-        })
+            "prompts": mc["prompts"],
+            "api_calls": mc["calls"],
+            "tool_calls": mc["tool_calls"],
+            "total_tokens": mc["total_tokens"],
+            "cost": round(mc["cost"], 2),
+        }
+        for mname, mc in sorted(mach_canon.items(), key=lambda kv: -kv[1]["prompts"])
+    ]
 
     return {
         "cost": round(row["cost"] or 0.0, 2),
@@ -725,7 +775,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
 
         # ── machine_json ──
         mach_data = json.loads(row["machine_json"] or "{}")
-        for mname, md in mach_data.items():
+        for raw_mname, md in mach_data.items():
+            mname = canonical_machine(raw_mname)
             machine_set.add(mname)
             ma = mach_all[mname]
             ma["input"] += md.get("input", 0)
@@ -934,7 +985,10 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "GROUP BY source_machine"
     ):
         if r["ts"]:
-            machine_last_active[r["source_machine"]] = r["ts"]
+            mkey = canonical_machine(r["source_machine"])
+            # variants of one machine merge: keep the most recent timestamp
+            if r["ts"] > machine_last_active.get(mkey, 0):
+                machine_last_active[mkey] = r["ts"]
             if last_active_ts is None or r["ts"] > last_active_ts:
                 last_active_ts = r["ts"]
 
