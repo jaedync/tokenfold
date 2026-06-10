@@ -185,3 +185,53 @@ class CacheTierDisplayTest(TempDBTestCase):
         tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
         self.assertIn("cache_write_1h", tpl)
         self.assertNotIn("with 5-min prompt caching", tpl)
+
+
+class CostByModelTierComponentsTest(TempDBTestCase):
+    """The Cost-by-Model stacked chart needs per-tier dollar components:
+    cost_cache_5m (5m + unsplit legacy at 1.25x) and cost_cache_1h (2x base),
+    in both the all-time/recent breakdown and the today view."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ins(self, uuid, cw, c5m, c1h):
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+            "source_machine,project_dir,model,is_sidechain,agent_id,input_tokens,"
+            "output_tokens,cache_creation_tokens,cache_read_tokens,cache_ephemeral_5m,"
+            "cache_ephemeral_1h,is_human_prompt) "
+            "VALUES(?,'assistant','2026-06-09T12:00:00Z',1781000000.0,'2026-06-09',"
+            "'s1',?,'m1','proj','claude-opus-4-8',0,NULL,0,0,?,0,?,?,0)",
+            (uuid, "r-" + uuid, cw, c5m, c1h),
+        )
+        self.conn.commit()
+
+    def _model(self):
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        summarize_days(["2026-06-09"])
+        data = build_dashboard_data("personal")
+        return [m for m in data["model_breakdown"] if m["model"] == "Opus 4.8"][0]
+
+    def test_tier_cost_components_split(self):
+        # 2 MTok total: 0.5 MTok 5m, 1 MTok 1h, 0.5 MTok unsplit-legacy
+        self._ins("u1", 2_000_000, 500_000, 1_000_000)
+        m = self._model()
+        # 1h: 1 MTok * $10 = $10; 5m bucket: (2 - 1) MTok * $6.25 = $6.25
+        self.assertAlmostEqual(m["cost_cache_1h"], 10.00, places=2)
+        self.assertAlmostEqual(m["cost_cache_5m"], 6.25, places=2)
+        # components sum to the old lump figure
+        self.assertAlmostEqual(m["cost_cache_5m"] + m["cost_cache_1h"],
+                               m["cost_cache_write"], places=2)
+        # recent variants exist too
+        self.assertIn("recent_cost_cache_5m", m)
+        self.assertIn("recent_cost_cache_1h", m)
+
+    def test_chart_uses_tier_datasets(self):
+        from pathlib import Path
+        tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
+        self.assertIn("label:'Cache 5m'", tpl)
+        self.assertIn("label:'Cache 1h'", tpl)
+        self.assertNotIn("label:'Cache Write'", tpl)

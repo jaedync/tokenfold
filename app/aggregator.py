@@ -151,11 +151,18 @@ def get_cache_version() -> int:
 
 
 
+def _tiered_cw_parts(cw, c1h, p):
+    """Cache-write dollar components honoring the tier split: 1h tokens at 2x
+    base input, everything else (5m + unsplit legacy) at the 5m rate p[2].
+    Returns (cost_5m_bucket, cost_1h)."""
+    cw = cw or 0
+    c1h = min(c1h or 0, cw)
+    return ((cw - c1h) * p[2] / 1e6, c1h * p[0] * 2.0 / 1e6)
+
+
 def _tiered_cw_cost(cw, c1h, p):
-    """Cache-write dollar component honoring the tier split: 1h tokens at 2x
-    base input, everything else (5m + unsplit legacy) at the 5m rate p[2]."""
-    c1h = min(c1h or 0, cw or 0)
-    return ((cw - c1h) * p[2] + c1h * p[0] * 2.0) / 1e6
+    c5, c1 = _tiered_cw_parts(cw, c1h, p)
+    return c5 + c1
 
 
 def _build_recent_sessions(conn, pred, limit=25):
@@ -476,6 +483,8 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "cost_input": round(inp * p[0] / 1e6, 2),
             "cost_output": round(out * p[1] / 1e6, 2),
             "cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
+            "cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
+            "cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
             "cost_cache_read": round(cr * p[3] / 1e6, 2),
             # Today view uses the same keys as recent/all for compatibility
             "recent_cost": round(cost, 2),
@@ -487,6 +496,8 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "recent_cost_input": round(inp * p[0] / 1e6, 2),
             "recent_cost_output": round(out * p[1] / 1e6, 2),
             "recent_cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
+            "recent_cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
+            "recent_cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
             "recent_cost_cache_read": round(cr * p[3] / 1e6, 2),
             "recent_input": inp, "recent_output": out,
             "recent_cache_write": cw, "recent_cache_read": cr,
@@ -823,6 +834,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "cost_input": round(ms["input"] * p[0] / 1e6, 2),
             "cost_output": round(ms["output"] * p[1] / 1e6, 2),
             "cost_cache_write": round(_tiered_cw_cost(ms["cache_write"], ms["cache_1h"], p), 2),
+            "cost_cache_5m": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[0], 2),
+            "cost_cache_1h": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[1], 2),
             "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
             "last_seen": ms["last_seen"],
             "recent": ms["last_seen"] >= cutoff_date,
@@ -834,7 +847,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
             "recent_cost_input": round(ms["recent_input"] * p[0] / 1e6, 2),
             "recent_cost_output": round(ms["recent_output"] * p[1] / 1e6, 2),
-            "recent_cost_cache_write": round(ms["recent_cache_write"] * p[2] / 1e6, 2),
+            "recent_cost_cache_write": round(_tiered_cw_cost(ms["recent_cache_write"], ms["recent_cache_1h"], p), 2),
+            "recent_cost_cache_5m": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[0], 2),
+            "recent_cost_cache_1h": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[1], 2),
             "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,

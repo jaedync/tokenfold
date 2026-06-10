@@ -3697,7 +3697,8 @@ function renderMode(mode) {
   /* ── Cost by Model stacked bar ── */
   const ciKey = isRecent ? 'recent_cost_input' : 'cost_input';
   const coKey = isRecent ? 'recent_cost_output' : 'cost_output';
-  const cwKey = isRecent ? 'recent_cost_cache_write' : 'cost_cache_write';
+  const cw5Key = isRecent ? 'recent_cost_cache_5m' : 'cost_cache_5m';
+  const cw1Key = isRecent ? 'recent_cost_cache_1h' : 'cost_cache_1h';
   const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
   const costModels = activeMB;
   const costWrap = document.getElementById('costWrap');
@@ -3711,7 +3712,8 @@ function renderMode(mode) {
       data:{labels:costModels.map(m=>m.model),datasets:[
         {label:'Input',data:costModels.map(m=>m[ciKey]),backgroundColor:'#1a4b8c80',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Output',data:costModels.map(m=>m[coKey]),backgroundColor:'#e6332980',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Cache Write',data:costModels.map(m=>m[cwKey]),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Cache 5m',data:costModels.map(m=>m[cw5Key]||0),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Cache 1h',data:costModels.map(m=>m[cw1Key]||0),backgroundColor:'#d9900080',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1}
       ]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
