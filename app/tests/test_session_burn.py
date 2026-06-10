@@ -186,3 +186,38 @@ class AiTitleCaptureTest(TempDBTestCase):
         ])
         n = self.conn.execute("SELECT COUNT(*) c FROM session_titles").fetchone()["c"]
         self.assertEqual(n, 0)
+
+
+class SessionDetailFieldsTest(TempDBTestCase):
+    """Expandable session rows need per-session detail: token breakdown,
+    api_calls, human prompt count, per-model costs, and start timestamp."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_detail_fields(self):
+        conn = self.conn
+        ins = SessionBurnTest._ins.__get__(self)
+        ins("u1", "sessA", NOW, inp=1_000_000)
+        ins("u2", "sessA", NOW + 600, model="claude-sonnet-4-6", inp=2_000_000)
+        conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
+            "source_machine,project_dir,is_sidechain,is_human_prompt) "
+            "VALUES('p1','user','2026-06-09T12:00:00Z',?, '2026-06-09','sessA',"
+            "'mac1','projA',0,1)", (NOW,))
+        conn.commit()
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        summarize_days(["2026-06-09"])
+        s = [x for x in build_dashboard_data("personal")["recent_sessions"]
+             if x["session_id"] == "sessA"][0]
+        self.assertEqual(s["input"], 3_000_000)
+        self.assertEqual(s["output"], 2_000)
+        self.assertEqual(s["api_calls"], 2)
+        self.assertEqual(s["prompts"], 1)
+        self.assertEqual(s["first_ts"], NOW)
+        models = {m["model"]: m["cost"] for m in s["models"]}
+        self.assertIn("Opus 4.8", models)
+        self.assertIn("Sonnet 4.6", models)
+        self.assertGreater(models["Sonnet 4.6"], models["Opus 4.8"])  # 2M Sonnet in > 1M Opus in

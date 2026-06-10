@@ -174,7 +174,7 @@ def _build_recent_sessions(conn, pred, limit=25):
     to an hourly rate produces absurd numbers."""
     cutoff_epoch = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).timestamp()
     rows = conn.execute(
-        "SELECT session_id, model, speed, inference_geo, "
+        "SELECT session_id, model, speed, inference_geo, COUNT(*) as reqs, "
         "MIN(first_ts) as min_ts, MAX(last_ts) as max_ts, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
         "SUM(c5m) as c5m, SUM(c1h) as c1h, "
@@ -201,6 +201,8 @@ def _build_recent_sessions(conn, pred, limit=25):
         sid = r["session_id"]
         st = sessions.setdefault(sid, {
             "session_id": sid, "cost": 0.0, "total_tokens": 0,
+            "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+            "api_calls": 0,
             "min_ts": r["min_ts"], "max_ts": r["max_ts"],
             "machine": r["machine"], "project_dir": r["project_dir"],
             "_model_cost": {},
@@ -212,11 +214,21 @@ def _build_recent_sessions(conn, pred, limit=25):
         st["cost"] += c
         st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
         st["total_tokens"] += (r["inp"] or 0) + (r["outp"] or 0) + (r["cc"] or 0) + (r["cr"] or 0)
+        st["input"] += r["inp"] or 0
+        st["output"] += r["outp"] or 0
+        st["cache_write"] += r["cc"] or 0
+        st["cache_read"] += r["cr"] or 0
+        st["api_calls"] += r["reqs"] or 0
         st["min_ts"] = min(st["min_ts"], r["min_ts"])
         st["max_ts"] = max(st["max_ts"], r["max_ts"])
 
     # AI-assigned names (from ai-title transcript records) as the base layer;
     # explicit Claude Desktop titles overlay them.
+    prompt_counts = {r["session_id"]: r["n"] for r in conn.execute(
+        f"SELECT session_id, COUNT(*) as n FROM events "
+        f"WHERE is_human_prompt=1 AND session_id IS NOT NULL AND {pred} "
+        f"AND ts_epoch >= ? GROUP BY session_id", (cutoff_epoch,))}
+
     titles = {r["session_id"]: r["title"] for r in conn.execute(
         "SELECT session_id, title FROM session_titles")}
     titles.update({r["cli_session_id"]: r["title"] for r in conn.execute(
@@ -239,6 +251,13 @@ def _build_recent_sessions(conn, pred, limit=25):
             "model": primary_model,
             "cost": round(st["cost"], 2),
             "total_tokens": st["total_tokens"],
+            "input": st["input"], "output": st["output"],
+            "cache_write": st["cache_write"], "cache_read": st["cache_read"],
+            "api_calls": st["api_calls"],
+            "prompts": prompt_counts.get(st["session_id"], 0),
+            "models": [{"model": m, "cost": round(c, 2)} for m, c in
+                       sorted(st["_model_cost"].items(), key=lambda kv: -kv[1])],
+            "first_ts": st["min_ts"],
             "duration_s": round(duration_s),
             "burn_per_hr": burn,
             "last_ts": st["max_ts"],

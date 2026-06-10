@@ -2079,6 +2079,21 @@ th[data-info]:hover::after { opacity: 1; }
   <div id="activityHeatmap" style="overflow-x:auto;padding:4px 0 8px;margin-top:1.5rem"></div>
 </div>
 
+<!-- ======== SESSIONS / BURN RATE ======== -->
+<div class="table-panel">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--yellow"></div>
+    <h2>Recent Sessions</h2>
+  </div>
+  <div class="tbl-wrap" style="margin-top:1.5rem">
+    <table>
+      <thead><tr><th>Session</th><th>Machine</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th><th class="num" data-info="Cost divided by wall-clock duration (first to last API call). Needs at least 5 minutes of activity.">$/hr</th><th class="num">Last Active</th></tr></thead>
+      <tbody id="sessionsBody"></tbody>
+    </table>
+  </div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window. Titled rows come from Claude Desktop; untitled sessions show their project.</div>
+</div>
+
 <!-- ======== HOURLY ACTIVITY ======== -->
 <div class="panel" style="border-bottom:var(--border)">
   <div class="section-header">
@@ -2264,21 +2279,6 @@ th[data-info]:hover::after { opacity: 1; }
   <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Cost estimated using published Anthropic API rates (5m and 1h prompt-cache tiers billed at their actual rates). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
 </div>
 
-<!-- ======== SESSIONS / BURN RATE ======== -->
-<div class="table-panel">
-  <div class="section-header">
-    <div class="section-header-bar section-header-bar--yellow"></div>
-    <h2>Recent Sessions</h2>
-  </div>
-  <div class="tbl-wrap" style="margin-top:1.5rem">
-    <table>
-      <thead><tr><th>Session</th><th>Machine</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th><th class="num" data-info="Cost divided by wall-clock duration (first to last API call). Needs at least 5 minutes of activity.">$/hr</th><th class="num">Last Active</th></tr></thead>
-      <tbody id="sessionsBody"></tbody>
-    </table>
-  </div>
-  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window. Titled rows come from Claude Desktop; untitled sessions show their project.</div>
-</div>
-
 <!-- ======== DAILY BREAKDOWN TABLE ======== -->
 <div class="table-panel" style="border-bottom:none">
   <div class="section-header">
@@ -2371,6 +2371,8 @@ const TF_LOCKED = {{ 'true' if scope_locked else 'false' }};
   var saved;
   try { saved = localStorage.getItem('tf_scope'); } catch(e) {}
   if (saved && (saved === 'enterprise' || saved === 'personal') && saved !== TF_SCOPE) {
+    // migrate legacy localStorage-only users to the cookie, then one last redirect
+    document.cookie = 'tf_scope=' + saved + ';path=/;max-age=31536000;SameSite=Lax';
     url.searchParams.set('scope', saved);
     window.location.replace(url.toString());     // replace (not assign) so Back isn't trapped
   }
@@ -2379,6 +2381,9 @@ const TF_LOCKED = {{ 'true' if scope_locked else 'false' }};
 /* ---- Scope Toggle ---- */
 function setScope(s) {
   try { localStorage.setItem('tf_scope', s); } catch(e) {}
+  // Cookie lets the SERVER render the right scope on future bare / visits
+  // (single load — no client-side redirect).
+  document.cookie = 'tf_scope=' + s + ';path=/;max-age=31536000;SameSite=Lax';
   var u = new URL(window.location.href);
   u.searchParams.set('scope', s);
   window.location.assign(u.toString());
@@ -2507,7 +2512,7 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
 (function(){
   const body = document.getElementById('pricingBody');
   if (!body || !pricingModels.length) return;
-  function fP(v){ return '$'+v.toFixed(2); }
+  function fP(v){ return fC(v); }
   pricingModels.forEach(name => {
     const p = mPricing[name];
     const c = mColor(name);
@@ -2564,7 +2569,7 @@ function positionTip(tip, e){
 
 /* ---- Activity Heatmap ---- */
 function renderHeatmap(){
-  const CS=13,CG=3,DLW=30,MLH=20,STEP=CS+CG;
+  const CS=20,CG=4,DLW=38,MLH=26,STEP=CS+CG;
   const HM=['#ede9e1','rgba(230,51,41,0.15)','rgba(230,51,41,0.30)','rgba(230,51,41,0.55)','rgba(230,51,41,0.80)'];
   const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const DAYNAMES=['','Mon','','Wed','','Fri',''];
@@ -2609,12 +2614,12 @@ function renderHeatmap(){
   let svg='<svg width="'+totalW+'" height="'+totalH+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
 
   monthMarks.forEach(function(mm){
-    svg+='<text x="'+(DLW+mm.wi*STEP)+'" y="'+(MLH-5)+'" fill="#6b6860" font-size="11" font-family="'+FF+'" font-weight="700">'+mm.name+'</text>';
+    svg+='<text x="'+(DLW+mm.wi*STEP)+'" y="'+(MLH-5)+'" fill="#6b6860" font-size="13" font-family="'+FF+'" font-weight="700">'+mm.name+'</text>';
   });
 
   DAYNAMES.forEach(function(name,i){
     if(!name)return;
-    svg+='<text x="'+(DLW-5)+'" y="'+(MLH+i*STEP+CS-1)+'" fill="#6b6860" font-size="10" font-family="'+FF+'" text-anchor="end">'+name+'</text>';
+    svg+='<text x="'+(DLW-5)+'" y="'+(MLH+i*STEP+CS-1)+'" fill="#6b6860" font-size="12" font-family="'+FF+'" text-anchor="end">'+name+'</text>';
   });
 
   weeks.forEach(function(week,wi){
@@ -3336,13 +3341,13 @@ function renderMode(mode) {
         color: overUnder ? 'var(--red)' : 'var(--blue)'
       });
     }
-    weeklyStats.push({ value: '$' + weekCost.toFixed(2), label: 'spent this week' });
+    weeklyStats.push({ value: fC(weekCost), label: 'spent this week' });
     weeklyStats.push({ value: fmtHMg(weekActiveMin), label: 'active this week' });
 
     var remainPct = 100 - wPct;
     if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
       var parts = [];
-      if(weekCost > 0) parts.push('~$' + ((weekCost / wPct) * remainPct).toFixed(2));
+      if(weekCost > 0) parts.push('~' + fC((weekCost / wPct) * remainPct));
       if(weekActiveMin > 0) parts.push('~' + fmtHMg((weekActiveMin / wPct) * remainPct));
       var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow)' : null;
       weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
@@ -4027,20 +4032,51 @@ function renderSessions(){
     if(s < 3600) return Math.round(s/60)+'m';
     return (s/3600).toFixed(1)+'h';
   }
-  body.innerHTML = rows.map(s=>{
+  // machine-coded left border: same palette as the machine charts
+  const sColors = buildMachineColors([...new Set(rows.map(s=>s.machine).filter(Boolean))]);
+  body.innerHTML = rows.map((s,i)=>{
     const label = s.title ? esc(s.title) : '<span style="color:var(--gray-dim)">'+esc(s.project||'unknown')+'</span>';
     const burn = s.burn_per_hr != null ? fC(s.burn_per_hr) : dot;
-    return '<tr>'
+    const mc = sColors[s.machine] || '#8b8680';
+    const modelsStr = (s.models||[]).map(m=>esc(m.model)+' '+fC(m.cost)).join(' · ') || dot;
+    const cpp = s.prompts > 0 ? fC(s.cost / s.prompts) : dot;
+    return '<tr class="sess-row" onclick="toggleSess('+i+')" style="cursor:pointer;border-left:5px solid '+mc+'">'
       +'<td title="'+esc(s.session_id)+'">'+label+'</td>'
-      +'<td>'+esc(s.machine||dot)+'</td>'
+      +'<td><span class="sess-machine" style="border-bottom:2px solid '+mc+'">'+esc(s.machine||dot)+'</span></td>'
       +'<td>'+esc(s.model||dot)+'</td>'
       +'<td class="num">'+fN(s.total_tokens)+'</td>'
       +'<td class="num" style="color:'+(s.cost>0?'var(--red)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
       +'<td class="num">'+dur(s.duration_s)+'</td>'
       +'<td class="num">'+burn+'</td>'
       +'<td class="num">'+rel(s.last_ts)+'</td>'
-      +'</tr>';
+      +'</tr>'
+      +'<tr class="mb-detail" id="sessd'+i+'" style="display:none;border-left:5px solid '+mc+'"><td colspan="8">'
+      +'<div class="mb-grid">'
+      +'<div class="mb-group"><div class="mb-group-title">Tokens</div>'
+      +'<div class="mb-stat"><span class="mb-label">Input</span><span>'+fN(s.input||0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Output</span><span>'+fN(s.output||0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Cache Write</span><span>'+fN(s.cache_write||0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Cache Read</span><span>'+fN(s.cache_read||0)+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Activity</div>'
+      +'<div class="mb-stat"><span class="mb-label">Prompts</span><span>'+fN(s.prompts||0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">API Calls</span><span>'+fN(s.api_calls||0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Cost/Prompt</span><span>'+cpp+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Started</span><span>'+rel(s.first_ts)+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Models</div>'
+      +'<div class="mb-stat" style="display:block"><span>'+modelsStr+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Context</div>'
+      +'<div class="mb-stat"><span class="mb-label">Project</span><span>'+esc(s.project||dot)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Session</span><span style="font-size:.6rem">'+esc((s.session_id||'').slice(0,8))+'</span></div>'
+      +'</div>'
+      +'</div></td></tr>';
   }).join('');
+}
+function toggleSess(i){
+  const d = document.getElementById('sessd'+i);
+  if(d) d.style.display = d.style.display === 'none' ? '' : 'none';
 }
 renderSessions();
 

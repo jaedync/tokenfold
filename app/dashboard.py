@@ -52,12 +52,18 @@ def _fmt_cost(c):
 async def dashboard(request: Request, scope: Optional[str] = None):
     # Soft-fail: a bookmarked bad/forbidden ?scope= shouldn't 403 the whole page;
     # it just serves the allowed scope. API routes do hard-fail (400/403).
+    # Scope precedence: lock > ?scope= > tf_scope cookie > default. The cookie
+    # lets a bare / render the user's saved scope in ONE load (previously the
+    # client redirected after render — a full double page-load on every visit).
     requested = scope
+    cookie_scope = request.cookies.get("tf_scope")
     locked = config.LOCKED_SCOPE
     if locked and locked in VALID_SCOPES:
         effective = locked
     elif requested in VALID_SCOPES:
         effective = requested
+    elif cookie_scope in VALID_SCOPES:
+        effective = cookie_scope
     else:
         effective = DEFAULT_SCOPE
 

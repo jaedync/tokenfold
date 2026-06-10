@@ -127,3 +127,38 @@ class AutoRefreshScopePinnedTest(unittest.TestCase):
 
     def test_footer_timestamp_update_preserves_ingest_key(self):
         self.assertNotIn("footerRight.textContent", self.tpl)
+
+
+class ScopeCookieTest(TempDBTestCase):
+    """Bare / visits used to render the DEFAULT scope and then client JS
+    redirected (full second page load) to the localStorage-saved scope.
+    The server now honors a tf_scope cookie directly: one load, right scope."""
+
+    def test_cookie_selects_scope(self):
+        # default is enterprise, so asserting personal proves the cookie acted
+        c = self.client()
+        r = c.get("/", cookies={"tf_scope": "personal"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("const TF_SCOPE = 'personal'", r.text)
+
+    def test_url_param_beats_cookie(self):
+        c = self.client()
+        r = c.get("/?scope=enterprise", cookies={"tf_scope": "personal"})
+        self.assertIn("const TF_SCOPE = 'enterprise'", r.text)
+
+    def test_invalid_cookie_falls_back(self):
+        c = self.client()
+        r = c.get("/", cookies={"tf_scope": "garbage-value"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("const TF_SCOPE = 'enterprise'", r.text)  # falls to default
+
+    def test_locked_ignores_cookie(self):
+        with patch.object(cfg, "LOCKED_SCOPE", "personal"):
+            c = self.client()
+            r = c.get("/", cookies={"tf_scope": "enterprise"})
+        self.assertIn("const TF_SCOPE = 'personal'", r.text)
+
+    def test_setscope_writes_cookie(self):
+        from pathlib import Path
+        tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
+        self.assertIn("document.cookie = 'tf_scope='", tpl)
