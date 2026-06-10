@@ -56,8 +56,8 @@ class TempDBTestCase(unittest.TestCase):
         import app.summarizer as _s
         saved = (_p._dynamic_pricing, _p.load_pricing, _s.load_pricing)
         _p._dynamic_pricing = {}
-        _p.load_pricing = lambda: None
-        _s.load_pricing = lambda: None
+        _p.load_pricing = lambda force=False: None
+        _s.load_pricing = lambda force=False: None
 
         def _restore():
             _p._dynamic_pricing, _p.load_pricing, _s.load_pricing = saved

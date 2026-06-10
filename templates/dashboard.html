@@ -1617,6 +1617,19 @@ th[data-info]:hover::after { opacity: 1; }
   gap: 0.75rem;
 }
 
+.unpriced-badge {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--black);
+  background: var(--yellow);
+  padding: 0.1rem 0.35rem;
+  margin-left: 0.4rem;
+  cursor: help;
+}
+
 .ingest-key-btn {
   font-family: var(--font-body);
   font-weight: 600;
@@ -2706,7 +2719,9 @@ function renderMode(mode) {
   const cphFilterKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
   const activeMB = isToday
     ? todayMB.filter(m => m.cost > 0 || m.api_calls > 0)
-    : mb.filter(m => m[cphFilterKey] != null && m[cphFilterKey] > 0);
+    : mb.filter(m => (m[cphFilterKey] != null && m[cphFilterKey] > 0)
+        /* unpriced models have $0 cost everywhere — keep them visible by token activity */
+        || (m.unpriced && m[isRecent ? 'recent_total_tokens' : 'total_tokens'] > 0));
   const cutoff = D.cutoff_date;
   const todayStr = D.generation_time.slice(0, 10); // YYYY-MM-DD from server TZ
   const daily = isToday
@@ -3892,7 +3907,9 @@ function renderMode(mode) {
     const row = document.createElement('tr');
     row.className = 'mb-row';
     row.onclick = function(){ toggleMB(i); };
-    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)+'</div></td>'
+    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
+      +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
+      +'</div></td>'
       +'<td>'+fN(m.api_calls)+'</td>'
       +'<td>'+fN(m[tokKey])+'</td>'
       +'<td>'+costStr+'</td>'

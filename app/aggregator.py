@@ -18,7 +18,7 @@ from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .db import get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
-    load_pricing, model_sort_key,
+    is_priced, load_pricing, model_sort_key,
 )
 from .water import compute_energy_wh, compute_water_ml
 
@@ -361,6 +361,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         water = compute_water_ml(mname, inp, out)
         today_mb.append({
             "model": mname,
+            "unpriced": not is_priced(mname),
             "api_calls": md.get("api_calls", 0),
             "input": inp, "output": out,
             "cache_write": cw, "cache_read": cr,
@@ -704,7 +705,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         recent_energy = compute_energy_wh(name, ms["recent_input"], ms["recent_output"])
         recent_water = compute_water_ml(name, ms["recent_input"], ms["recent_output"])
         model_breakdown.append({
-            "model": name, "api_calls": ms["api_calls"],
+            "model": name, "unpriced": not is_priced(name),
+            "api_calls": ms["api_calls"],
             "input": ms["input"], "output": ms["output"],
             "cache_write": ms["cache_write"], "cache_read": ms["cache_read"],
             "total_tokens": total_tok, "cost": round(cost, 2),
@@ -845,6 +847,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         },
         "projects": _projects_list,
         "model_breakdown": model_breakdown,
+        "unpriced_models": sorted(m["model"] for m in model_breakdown if m["unpriced"]),
         "total_cost": round(total_cost, 2),
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),
         "total_agent_cost": round(sum(m["agent_cost"] for m in model_breakdown), 2),

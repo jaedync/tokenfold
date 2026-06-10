@@ -8,6 +8,7 @@ from .config import LITELLM_URL, PRICING_CACHE_TTL
 from .db import get_conn
 
 MODEL_DISPLAY = {
+    "claude-fable-5": "Fable 5",
     "claude-opus-4-8": "Opus 4.8",
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-6": "Opus 4.6",
@@ -22,6 +23,7 @@ MODEL_DISPLAY = {
 
 # Pricing per MTok: (input, output, cache_write_5m, cache_read)
 MODEL_PRICING = {
+    "Fable 5":   (10.00, 50.00, 12.50, 1.00),
     "Opus 4.8":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.7":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.6":  (5.00, 25.00, 6.25, 0.50),
@@ -33,7 +35,17 @@ MODEL_PRICING = {
     "Haiku 4.5":  (1.00, 5.00, 1.25, 0.10),
     "Haiku 3.5":  (0.80, 4.00, 1.00, 0.08),
 }
-FALLBACK_PRICING = (3.00, 15.00, 3.75, 0.30)
+# No silent fallback: a model without confirmed pricing contributes $0 to every
+# cost figure and is flagged via is_priced() so the UI shows an em-dash instead
+# of a fabricated number. (The old behavior silently billed unknown models at
+# Sonnet rates — Fable 5 launched at 2x Opus and was undercounted ~3-4x.)
+_UNPRICED = (0.0, 0.0, 0.0, 0.0)
+
+# Encountering an unknown model forces a TTL-bypassing LiteLLM refresh so new
+# models get real pricing within minutes of first appearing, not up to 24h
+# later. Rate-limited so a permanently-unknown name can't hammer GitHub.
+UNKNOWN_REFRESH_INTERVAL_S = 900
+_unknown_refresh_ts = 0.0
 
 # Fast-mode Opus base (input, output) per MTok; cache rates re-derived from base.
 # Keyed by display name — only Opus has a fast tier.
@@ -82,14 +94,16 @@ def display_model(mid: str) -> str:
     return name.replace("-", " ").title()
 
 
-def load_pricing():
-    """Fetch Claude pricing from LiteLLM GitHub, with 24h DB-backed cache."""
+def load_pricing(force=False):
+    """Fetch Claude pricing from LiteLLM GitHub, with 24h DB-backed cache.
+    force=True bypasses a still-fresh cache (used when an unknown model shows
+    up — the cache may simply predate the model's addition to LiteLLM)."""
     global _dynamic_pricing
 
     conn = get_conn()
     # Check DB cache
     row = conn.execute("SELECT value FROM meta WHERE key='pricing_cache'").fetchone()
-    if row:
+    if row and not force:
         try:
             cache = json.loads(row["value"])
             if time.time() - cache.get("ts", 0) < PRICING_CACHE_TTL:
@@ -146,10 +160,36 @@ def load_pricing():
             pass
 
 
+def is_priced(model_name: str) -> bool:
+    """True when the model has CONFIRMED pricing (LiteLLM-fetched or static)."""
+    return model_name in _dynamic_pricing or model_name in MODEL_PRICING
+
+
+def _maybe_refresh_for_unknown(model_name: str):
+    """Force a TTL-bypassing pricing refresh for an unseen model, rate-limited."""
+    global _unknown_refresh_ts
+    now = time.time()
+    if now - _unknown_refresh_ts < UNKNOWN_REFRESH_INTERVAL_S:
+        return
+    _unknown_refresh_ts = now
+    print(f"[pricing] unknown model {model_name!r} — forcing LiteLLM refresh")
+    try:
+        load_pricing(force=True)
+    except Exception as e:
+        print(f"[pricing] forced refresh failed: {e}")
+
+
 def get_pricing(model_name: str) -> tuple:
     if model_name in _dynamic_pricing:
         return _dynamic_pricing[model_name]
-    return MODEL_PRICING.get(model_name, FALLBACK_PRICING)
+    if model_name in MODEL_PRICING:
+        return MODEL_PRICING[model_name]
+    # Unknown: maybe LiteLLM knows it and our cache is just older than the
+    # model — refresh once, then re-check. Otherwise it is unpriced ($0).
+    _maybe_refresh_for_unknown(model_name)
+    if model_name in _dynamic_pricing:
+        return _dynamic_pricing[model_name]
+    return _UNPRICED
 
 
 def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
