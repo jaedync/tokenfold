@@ -97,8 +97,10 @@ async def dashboard(request: Request, scope: Optional[str] = None):
     )
 
     max_day_cost = max((d["cost"] for d in data["daily"] if d["cost"] > 0), default=1.0)
-    HM_COLORS = ["", "rgba(230,51,41,0.08)", "rgba(230,51,41,0.16)",
-                 "rgba(230,51,41,0.26)", "rgba(230,51,41,0.38)"]
+    # Tint capped at 0.12 alpha so high-cost rows stay legible (UX P2-25);
+    # mirrors HM_ROW in the template's rebuildDailyTable().
+    HM_COLORS = ["", "rgba(230,51,41,0.03)", "rgba(230,51,41,0.06)",
+                 "rgba(230,51,41,0.09)", "rgba(230,51,41,0.12)"]
 
     def row_hm_style(cost):
         if not cost:
@@ -107,9 +109,21 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         lvl = 1 if p < 0.25 else 2 if p < 0.55 else 3 if p < 0.80 else 4
         return f' style="background:{HM_COLORS[lvl]}"'
 
+    # Red is reserved for warning-level days (> 1.5x the nonzero-day average);
+    # ordinary costs render black (UX P1-8). Mirrors rebuildDailyTable().
+    _nz_costs = [d["cost"] for d in data["daily"] if d["cost"] > 0]
+    _hot_cost = (sum(_nz_costs) / len(_nz_costs)) * 1.5 if _nz_costs else 0.0
+
+    def _cost_color(cost):
+        if not cost:
+            return "var(--gray-dim)"
+        if _hot_cost > 0 and cost > _hot_cost:
+            return "var(--red)"
+        return "var(--black)"
+
     rows = []
     for d in reversed(data["daily"]):
-        cost_color = 'var(--red)' if d["cost"] > 0 else 'var(--gray-dim)'
+        cost_color = _cost_color(d["cost"])
         rows.append(
             f'<tr{row_hm_style(d["cost"])}><td>{d["date"]}</td><td>{d["sessions"]}</td>'
             f'<td>{d["prompts"]}</td><td>{d["tool_calls"]}</td>'

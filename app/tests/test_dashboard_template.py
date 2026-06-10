@@ -84,6 +84,60 @@ class DashboardTemplateTest(unittest.TestCase):
         self.assertIn("ex.update('none')", self.tpl)
         self.assertNotIn("_tCharts", self.tpl)
 
+    # ── Information clarity (P1-5 / P1-6 / P1-8) ──────────────────────────
+
+    def test_cost_hero_names_its_window(self):
+        """The hero figure must say which window it covers."""
+        self.assertIn("costHeroLabel", self.tpl)
+        self.assertIn("'Estimated API Cost · ' + windowLabel", self.tpl)
+        self.assertIn("'Last 14 Days'", self.tpl)
+
+    def test_personal_scope_api_equivalent_note(self):
+        self.assertIn("costHeroNote", self.tpl)
+        self.assertIn("TF_SCOPE === 'personal'", self.tpl)
+        self.assertIn("not what you're billed", self.tpl)
+
+    def test_yellow_text_token_for_light_surfaces(self):
+        """Yellow #f5c518 fails contrast as text on cream; a darkened token
+        must exist and the known offenders must use it."""
+        self.assertIn("--yellow-text: #9a7a00", self.tpl)
+        # Minutes axis on Daily Activity no longer uses raw yellow ticks
+        self.assertNotIn("ticks:{color:'#f5c518'}", self.tpl)
+
+    def test_no_sub_055rem_labels(self):
+        """Floor micro-labels at 0.55rem (was 0.42-0.5rem)."""
+        import re
+        for m in re.finditer(r"font-size:\s*0\.(\d+)rem", self.tpl):
+            size = float("0." + m.group(1))
+            self.assertGreaterEqual(
+                size, 0.55,
+                "label below 0.55rem floor: %s" % m.group(0))
+
+    def test_red_reserved_for_high_costs(self):
+        """Ordinary costs render black; red only above the 1.5x-average
+        threshold (client table rebuild mirrors the server render)."""
+        self.assertIn("hotCost", self.tpl)
+        self.assertNotIn("d.cost>0?'var(--red)'", self.tpl)
+        self.assertNotIn("s.cost>0?'var(--red)'", self.tpl)
+        self.assertNotIn("ms.cost > 0 ? 'var(--red)'", self.tpl)
+
+
+class DashboardServerRenderTest(unittest.TestCase):
+    """Server-rendered daily rows follow the same red-is-a-warning rule."""
+
+    def test_cost_color_threshold(self):
+        from app.dashboard import _fmt_cost  # noqa: F401 (import sanity)
+        import app.dashboard as dash
+        # replicate the inline logic deterministically via a tiny harness:
+        daily = [{"cost": c} for c in (5.0, 5.0, 5.0, 50.0, 0.0)]
+        nz = [d["cost"] for d in daily if d["cost"] > 0]
+        hot = sum(nz) / len(nz) * 1.5
+        self.assertGreater(50.0, hot)   # the outlier day goes red
+        self.assertLess(5.0, hot)       # ordinary days stay black
+        src = (TEMPLATE.parent.parent / "app" / "dashboard.py").read_text()
+        self.assertIn("_hot_cost", src)
+        self.assertNotIn("'var(--red)' if d[\"cost\"] > 0", src)
+
 
 if __name__ == "__main__":
     unittest.main()

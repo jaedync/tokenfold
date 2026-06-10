@@ -47,6 +47,10 @@
   --red: #e63329;
   --blue: #1a4b8c;
   --yellow: #f5c518;
+  /* Yellow as TEXT on the cream background fails contrast (≈1.6:1).
+     Use this darkened ochre for any yellow-coded text on light surfaces;
+     keep --yellow for fills, bands, and text on dark surfaces. */
+  --yellow-text: #9a7a00;
   --gray-light: #d8d4cc;
   --gray-dim: #6b6860;
   --gray-model: #8b8680;
@@ -501,6 +505,23 @@ body {
   margin-top: 0.6rem;
 }
 
+/* Personal scope runs on a subscription — the hero figure is what the same
+   tokens WOULD cost at list price, never a bill. Say so right under it. */
+.cost-hero-note {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--blue);
+  border: 2px solid var(--blue);
+  padding: 0.2rem 0.55rem;
+  margin-top: 0.7rem;
+  background: var(--bg);
+  position: relative;
+  z-index: 2;
+}
+
 .cost-hero-circle {
   position: absolute;
   width: 260px;
@@ -643,7 +664,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-body);
-  font-size: 0.5rem;
+  font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -668,7 +689,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-body);
-  font-size: 0.42rem;
+  font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -791,7 +812,7 @@ body {
 
 .rate-gauge-stat-label {
   font-family: var(--font-body);
-  font-size: 0.44rem;
+  font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1933,9 +1954,10 @@ th[data-info]:hover::after { opacity: 1; }
 <div class="cost-hero">
   <div class="cost-hero-circle"></div>
   <div class="cost-hero-main">
-    <div class="cost-hero-label">Estimated API Cost</div>
+    <div id="costHeroLabel" class="cost-hero-label">Estimated API Cost</div>
     <div class="cost-hero-value"><span id="costAnim">$0.00</span></div>
     <div id="costSplit" class="cost-hero-period"></div>
+    <div id="costHeroNote" class="cost-hero-note" style="display:none">API-equivalent at list price — not what you're billed (subscription)</div>
   </div>
   <div class="cost-hero-side">
     <div class="cost-hero-side-red"><div class="geo-inner-circle"></div></div>
@@ -2729,17 +2751,24 @@ function rebuildDailyTable(){
   const tbody=document.querySelector('#dailyTable tbody');
   if(!tbody)return;
   const maxCost=Math.max(...D.daily.map(d=>d.cost||0),1.0);
-  const HM_ROW=['','rgba(230,51,41,0.08)','rgba(230,51,41,0.16)','rgba(230,51,41,0.26)','rgba(230,51,41,0.38)'];
+  // Tint capped at 0.12 alpha — the old 0.38 made the most expensive rows the
+  // hardest to read. (P2-25)
+  const HM_ROW=['','rgba(230,51,41,0.03)','rgba(230,51,41,0.06)','rgba(230,51,41,0.09)','rgba(230,51,41,0.12)'];
   function rowBg(cost){
     if(!cost)return '';
     const p=cost/maxCost;
     const lvl=p<0.25?1:p<0.55?2:p<0.80?3:4;
     return 'background:'+HM_ROW[lvl];
   }
+  // Red is a WARNING, not a synonym for "costs money": ordinary costs render
+  // black; red is reserved for days well above the average (> 1.5x). (P1-8)
+  const nzCosts=D.daily.filter(d=>d.cost>0).map(d=>d.cost);
+  const avgCost=nzCosts.length?nzCosts.reduce((a,b)=>a+b,0)/nzCosts.length:0;
+  const hotCost=avgCost*1.5;
   let html='';
   for(let i=D.daily.length-1;i>=0;i--){
     const d=D.daily[i];
-    const costColor=d.cost>0?'var(--red)':'var(--gray-dim)';
+    const costColor=!d.cost?'var(--gray-dim)':(hotCost>0&&d.cost>hotCost)?'var(--red)':'var(--black)';
     html+='<tr'+(d.cost?' style="'+rowBg(d.cost)+'"':'')+'>'
       +'<td>'+d.date+'</td><td>'+d.sessions+'</td>'
       +'<td>'+d.prompts+'</td><td>'+d.tool_calls+'</td>'
@@ -2877,7 +2906,7 @@ function renderMode(mode) {
         sub.textContent = '';
       } else {
         const avgPD = Math.round(totPrompts / numDays);
-        sub.innerHTML = '<span style="color:var(--yellow)">' + fN(avgPD) + '</span> avg/day';
+        sub.innerHTML = '<span style="color:var(--yellow-text)">' + fN(avgPD) + '</span> avg/day';
       }
     } else if (i === 2) {
       // Tokens (red bg): cache hit + I/O
@@ -2943,7 +2972,7 @@ function renderMode(mode) {
       scales:{
         x:{grid:{display:false},border:{color:'#1a1a1a',width:3}},
         y:{beginAtZero:true,title:{display:!isMobile(),text:'Tool Calls',color:'#e63329',font:{size:10}},ticks:{color:'#e63329'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-        y1:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Minutes',color:'#f5c518',font:{size:10}},ticks:{color:'#f5c518'},grid:{display:false},border:{color:'#1a1a1a',width:3}},
+        y1:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Minutes',color:'#9a7a00',font:{size:10}},ticks:{color:'#9a7a00'},grid:{display:false},border:{color:'#1a1a1a',width:3}},
         y2:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Prompts',color:'#1a4b8c',font:{size:10}},ticks:{color:'#1a4b8c'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
       },
       plugins:{
@@ -2978,8 +3007,14 @@ function renderMode(mode) {
   const agentCost = isToday ? activeMB.reduce((s,m)=>s+m.agent_cost,0) : isRecent ? mb.reduce((s,m)=>s+m.recent_agent_cost,0) : D.total_agent_cost;
   const costEl = document.getElementById('costAnim');
   animateCardValue(costEl, totalCost, fC, 1200, true);
+  // Name the window — an unlabeled 14-day figure larger than "month to date"
+  // reads as a bug. (P1-5)
+  const windowLabel = isToday ? 'Today' : isRecent ? 'Last 14 Days' : 'All Time';
+  document.getElementById('costHeroLabel').textContent = 'Estimated API Cost · ' + windowLabel;
   document.getElementById('costSplit').innerHTML =
     '<span style="color:var(--black)">'+fC(orchCost)+'</span> orchestrator &nbsp;+&nbsp; <span style="color:var(--black)">'+fC(agentCost)+'</span> sub-agent';
+  // Personal scope = subscription: figure is API-equivalent, never billed.
+  document.getElementById('costHeroNote').style.display = TF_SCOPE === 'personal' ? '' : 'none';
 
   const cKey = isRecent ? 'recent_cost' : 'cost';
   const mcKey = isRecent ? 'recent_main_cost' : 'main_cost';
@@ -3270,7 +3305,7 @@ function renderMode(mode) {
   const machineBody = document.getElementById('machineBody');
   machineBody.innerHTML = '';
   mSummary.forEach(ms => {
-    const costColor = ms.cost > 0 ? 'var(--red)' : 'var(--gray-dim)';
+    const costColor = ms.cost > 0 ? 'var(--black)' : 'var(--gray-dim)';
     machineBody.innerHTML += '<tr><td>'+esc(ms.machine)+'</td>'
       +'<td>'+fN(ms.prompts)+'</td>'
       +'<td>'+fN(ms.api_calls)+'</td>'
@@ -3446,6 +3481,12 @@ function initRateLimits(){
     var FIVE_HR_MS = 5 * 60 * 60 * 1000;
     var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+    // Fill colors stay saturated; yellow TEXT on the cream bg must use the
+    // darkened token or it's unreadable (see --yellow-text).
+    function textColorFor(color) {
+      return color === 'var(--yellow)' ? 'var(--yellow-text)' : color;
+    }
+
     // Color based on pace (how usage compares to expected position in window)
     function barColor(pct, expectedPct) {
       if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
@@ -3557,7 +3598,7 @@ function initRateLimits(){
         + innerHtml
         + '</div>'
         + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:' + color + '">' + Math.round(pct) + '%</span>'
+        + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
         + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
         + '</div>'
         + projHtml
@@ -3627,7 +3668,7 @@ function initRateLimits(){
       var parts = [];
       if(weekCost > 0) parts.push('~' + fC((weekCost / wPct) * remainPct));
       if(weekActiveMin > 0) parts.push('~' + fmtHMg((weekActiveMin / wPct) * remainPct));
-      var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow)' : null;
+      var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow-text)' : null;
       weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
     }
 
@@ -3681,7 +3722,7 @@ function initRateLimits(){
         + '<div class="rate-gauge-fill" style="width:' + Math.min(euPct, 100).toFixed(1) + '%;background:var(--yellow)"></div>'
         + '</div>'
         + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:var(--yellow)">' + Math.round(euPct) + '%</span>'
+        + '<span class="rate-gauge-pct" style="color:var(--yellow-text)">' + Math.round(euPct) + '%</span>'
         + '<span class="rate-gauge-remaining">' + (100 - Math.round(euPct)) + '% remaining</span>'
         + '</div></div>';
     }
@@ -4048,7 +4089,7 @@ function renderSessions(){
       +'<td><span class="sess-machine" style="border-bottom:2px solid '+mc+'">'+esc(s.machine||dot)+'</span></td>'
       +'<td>'+esc(s.model||dot)+'</td>'
       +'<td class="num">'+fN(s.total_tokens)+'</td>'
-      +'<td class="num" style="color:'+(s.cost>0?'var(--red)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
+      +'<td class="num" style="color:'+(s.cost>0?'var(--black)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
       +'<td class="num">'+dur(s.duration_s)+'</td>'
       +'<td class="num">'+burn+'</td>'
       +'<td class="num">'+rel(s.last_ts)+'</td>'
