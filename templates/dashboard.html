@@ -506,6 +506,7 @@ body {
   letter-spacing: 0.04em;
   color: var(--gray-dim);
   margin-top: 0.6rem;
+  min-height: 1.3em; /* reserve the line before JS fills the orch/agent split */
 }
 
 /* Personal scope runs on a subscription — the hero figure is what the same
@@ -1324,7 +1325,10 @@ body {
   top: 0;
   z-index: 100;
   display: flex;
-  flex-wrap: wrap;
+  /* nowrap: on narrow screens the nav scrolls horizontally (scrollbar hidden
+     below). Wrapping made it 3 rows tall on phones, so anchored sections
+     (scroll-margin-top 44px) landed underneath it. */
+  flex-wrap: nowrap;
   gap: 0;
   background: var(--black);
   border-bottom: var(--border-thin);
@@ -1624,7 +1628,11 @@ body {
 
 table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate, NOT collapse: with border-collapse:collapse the borders are
+     painted by the table layer, so a sticky thead's 4px bottom border scrolls
+     away with the rows and the header looks detached mid-scroll. */
+  border-collapse: separate;
+  border-spacing: 0;
   font-family: var(--font-body);
   font-size: 0.82rem;
 }
@@ -1646,7 +1654,7 @@ thead th {
   z-index: 1;
 }
 
-thead th:first-child { padding-left: 0; }
+thead th:first-child { padding-left: 0.85rem; }
 thead th.num { text-align: right; }
 
 tbody td {
@@ -1656,8 +1664,30 @@ tbody td {
   white-space: nowrap;
 }
 
-tbody td:first-child { padding-left: 0; }
+/* first column keeps a breathing margin — flush-left text overlapped the
+   panel edge and the machine-color border on session rows */
+tbody td:first-child { padding-left: 0.85rem; }
 tbody tr:last-child td { border-bottom: none; }
+
+/* machine-coded left border lives on the CELL: tr borders don't paint
+   under border-collapse:separate */
+.sess-row > td:first-child,
+.sess-detail > td:first-child { border-left: 5px solid var(--mc, transparent); }
+
+/* ---- SORTABLE HEADERS ---- */
+
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--black); }
+thead th.sortable:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
+tr.sess-row:focus-visible, tr.mb-row:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
+.sort-ind {
+  display: inline-block;
+  min-width: 0.9em;
+  margin-left: 2px;
+  font-size: 0.55rem;
+  color: var(--red);
+  vertical-align: middle;
+}
 
 td:not(:first-child) {
   font-variant-numeric: tabular-nums;
@@ -1732,21 +1762,32 @@ tr:hover td { background: rgba(26, 26, 26, 0.03); }
 .mb-stat {
   display: flex;
   justify-content: space-between;
+  gap: 10px;
   font-size: 0.8rem;
   padding: 3px 0;
 }
 
-.mb-stat .mb-label { color: var(--gray-dim); }
-.mb-stat span:last-child { font-variant-numeric: tabular-nums; }
+.mb-stat .mb-label { color: var(--gray-dim); flex-shrink: 0; }
+.mb-stat span:last-child {
+  font-variant-numeric: tabular-nums;
+  /* long values (project paths) ellipsize instead of jamming into the label */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---- COLUMN INFO TOOLTIP ---- */
+/* NO position:relative here — it would override the thead's position:sticky
+   (this is exactly how the $/hr header used to scroll away while its siblings
+   stuck). A sticky th is already a containing block for the ::after. */
 
-th[data-info] { position: relative; cursor: help; }
+th[data-info] { cursor: help; }
 
 th[data-info]::after {
   content: attr(data-info);
   position: absolute;
-  bottom: calc(100% + 6px);
+  /* below the header, not above: the thead sits at the very top of the
+     .tbl-wrap scroll container, so anything above it is clipped */
+  top: calc(100% + 6px);
   right: 0;
   background: var(--black);
   border: 3px solid var(--black);
@@ -2194,16 +2235,22 @@ th[data-info]:focus::after { opacity: 1; }
     <div id="costHeroLabel" class="cost-hero-label">Estimated API Cost</div>
     <div class="cost-hero-value"><span id="costAnim">$0.00</span></div>
     <div id="costSplit" class="cost-hero-period"></div>
-    <div id="costHeroNote" class="cost-hero-note" style="display:none">API-equivalent at list price — not what you're billed (subscription)</div>
+    <!-- scope is server-known: render the note's box statically so it doesn't
+         pop in and push the layout when JS arrives (slow-network CLS) -->
+    <div id="costHeroNote" class="cost-hero-note"{% if scope != 'personal' %} style="display:none"{% endif %}>API-equivalent at list price — not what you're billed (subscription)</div>
   </div>
   <div class="cost-hero-side">
     <div class="cost-hero-side-red"><div class="geo-inner-circle"></div></div>
     <div class="cost-hero-side-blue"><div class="geo-inner-rect"></div></div>
   </div>
 </div>
-<div id="costMeta" class="cost-meta-bar"></div>
+<!-- min-height reserves one line per costed model so the per-model cost lines
+     don't push the page down when JS fills them in (slow-network CLS) -->
+<div id="costMeta" class="cost-meta-bar" style="min-height:{{ cost_meta_minh }}"></div>
 <!-- ======== ENVIRONMENTAL IMPACT ======== -->
-<div id="envBar" class="env-bar" style="display:none">
+<!-- statically visible ("—" placeholders): JS only hides it in the rare
+     no-data case, so the common path never reveals-and-shifts -->
+<div id="envBar" class="env-bar">
   <div class="env-metric">
     <span class="env-label">Energy</span>
     <span class="env-value" id="envEnergy">—</span>
@@ -2285,7 +2332,9 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
 </div>
 <!-- ======== MONTH-TO-DATE COST PANEL ======== -->
-<div id="rateLimitsSection" class="rate-limits" style="display:none">
+<!-- statically visible: the month hero renders from embedded data at boot,
+     and hiding-until-JS made the whole page jump on slow networks -->
+<div id="rateLimitsSection" class="rate-limits">
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
     <h2>Cost &amp; Limits</h2>
@@ -2303,8 +2352,12 @@ th[data-info]:focus::after { opacity: 1; }
     <!-- Secondary: 7-day pace stats + chart trigger (populated by fetch) -->
     <div id="weekPacePanel" class="rate-gauge"></div>
   </div>
-  <!-- Personal-scope OAuth limit gauges (hidden until wb.oauth arrives) -->
-  <div id="oauthGaugesPanel"></div>
+  <!-- Personal-scope OAuth limit gauges. Scope is server-known, so personal
+       reserves the gauges' height (~325px) with a static placeholder — the
+       fetch result replaces it without moving anything below. -->
+  <div id="oauthGaugesPanel"{% if scope == 'personal' %} style="display:block;min-height:325px"{% endif %}>
+    {%- if scope == 'personal' %}<div class="rate-gauge" style="border-top:var(--border)"><div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>{% endif -%}
+  </div>
 </div>
 
 <!-- Weekly usage chart modal -->
@@ -2588,12 +2641,117 @@ th[data-info]:focus::after { opacity: 1; }
    BAUHAUS DASHBOARD - JAVASCRIPT
    ============================================================ */
 
+/* ---- Expanded-row state (survives live-refresh re-renders) ----
+   Keys are stable identifiers (model name / session id), never row indexes:
+   renderers consult these Sets so an expanded row stays open when the tbody
+   is rebuilt or resorted. */
+const _openModels = new Set();
+const _openSessions = new Set();
+
 function toggleMB(i){
   const d=document.getElementById('mbd'+i);
   const a=document.getElementById('arrow'+i);
-  if(d.style.display==='none'){d.style.display='';a.classList.add('open')}
-  else{d.style.display='none';a.classList.remove('open')}
+  if(!d)return;
+  const open=d.style.display==='none';
+  d.style.display=open?'':'none';
+  if(a)a.classList.toggle('open',open);
+  const row=d.previousElementSibling;
+  if(row)row.setAttribute('aria-expanded', open?'true':'false');
+  const key=d.dataset.key;
+  if(key){ if(open)_openModels.add(key); else _openModels.delete(key); }
 }
+
+/* ---- Sortable tables ----
+   Every .tbl-wrap table header is clickable (and keyboard-activatable):
+   numeric columns start descending, text columns ascending; a second click
+   flips direction. Detail rows (.mb-detail) travel with their parent row.
+   Sort state lives on the <table> element and is re-applied after every
+   tbody rebuild (live refresh / mode switch). */
+function sortVal(text){
+  const t = text.replace(/\s+/g,' ').trim();
+  if(!t || t === '—' || t === '·') return null;     // — and · mean "no value"
+  let m;
+  if((m = t.match(/^(\d+(?:\.\d+)?)([mhd]) ago$/)))           // relative time → minutes
+    return {m:1,h:60,d:1440}[m[2]] * parseFloat(m[1]);
+  if(t === '<1m') return 0.5;
+  if((m = t.match(/^(?:(\d+)h ?)?(\d+)m$/)))                  // "2h 28m" / "14m" → minutes
+    return (m[1]?parseInt(m[1],10)*60:0) + parseInt(m[2],10);
+  if((m = t.match(/^(\d+(?:\.\d+)?)h$/)))                     // "70.3h" → minutes
+    return parseFloat(m[1])*60;
+  if((m = t.match(/^\$?(-?[\d,]+(?:\.\d+)?)([KMB%])?$/i))){   // $1,234.56 / 49.3K / 1.08B / 42
+    const mult = {K:1e3,M:1e6,B:1e9,'%':1}[(m[2]||'').toUpperCase()] || 1;
+    return parseFloat(m[1].replace(/,/g,'')) * mult;
+  }
+  return t.toLowerCase();                                     // titles, models, ISO dates
+}
+
+function applySort(tbl){
+  const st = tbl._sort;
+  const tbody = tbl.tBodies[0];
+  if(!st || !tbody) return;
+  const groups = [];
+  Array.from(tbody.rows).forEach(r=>{
+    if(r.classList.contains('mb-detail') && groups.length) groups[groups.length-1].rows.push(r);
+    else groups.push({rows:[r]});
+  });
+  if(groups.length < 2) return;
+  groups.forEach((g,gi)=>{
+    const cell = g.rows[0].cells[st.col];
+    g.key = cell ? sortVal(cell.textContent) : null;
+    g.idx = gi;
+  });
+  groups.sort((a,b)=>{
+    const A=a.key, B=b.key;
+    let c;
+    if(A===null||B===null) c = A===null ? (B===null?0:1) : -1;   // null always last
+    else if(typeof A==='number' && typeof B==='number') c = (A-B)*st.dir;
+    else if(typeof A==='number') c = -st.dir;
+    else if(typeof B==='number') c = st.dir;
+    else c = A.localeCompare(B)*st.dir;
+    return c || (a.idx-b.idx);                                   // stable
+  });
+  groups.forEach(g=>g.rows.forEach(r=>tbody.appendChild(r)));
+}
+
+function updateSortIndicators(tbl){
+  tbl.querySelectorAll('thead th').forEach((th,i)=>{
+    const ind = th.querySelector('.sort-ind');
+    const active = tbl._sort && tbl._sort.col === i;
+    if(ind) ind.textContent = active ? (tbl._sort.dir === 1 ? '▲' : '▼') : '';
+    if(active) th.setAttribute('aria-sort', tbl._sort.dir === 1 ? 'ascending' : 'descending');
+    else th.removeAttribute('aria-sort');
+  });
+}
+
+/* Re-apply a table's active sort after its tbody was rebuilt. */
+function afterTableRender(tbody){
+  const tbl = tbody.closest ? tbody.closest('table') : null;
+  if(tbl && tbl._sort) applySort(tbl);
+}
+
+(function initSortableTables(){
+  document.querySelectorAll('.tbl-wrap table').forEach(function(tbl){
+    tbl.querySelectorAll('thead th').forEach(function(th, i){
+      th.classList.add('sortable');
+      if(!th.hasAttribute('tabindex')) th.setAttribute('tabindex','0');
+      const ind = document.createElement('span');
+      ind.className = 'sort-ind';
+      ind.setAttribute('aria-hidden','true');
+      th.appendChild(ind);
+      function activate(){
+        const cur = tbl._sort;
+        const firstDir = th.classList.contains('num') ? -1 : 1;  // numbers: biggest first
+        tbl._sort = { col:i, dir:(cur && cur.col===i) ? -cur.dir : firstDir };
+        applySort(tbl);
+        updateSortIndicators(tbl);
+      }
+      th.addEventListener('click', activate);
+      th.addEventListener('keydown', function(e){
+        if(e.key==='Enter'||e.key===' '){ e.preventDefault(); activate(); }
+      });
+    });
+  });
+})();
 
 /* esc() — HTML-encode any user-supplied string before inserting into
    innerHTML.  Prevents XSS when machine names, model names, tool names,
@@ -2739,7 +2897,18 @@ function buildMachineColors(names){
   return map;
 }
 
-function fN(n){if(n>=1e9)return(n/1e9).toFixed(2)+'B';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return n.toLocaleString();return n.toString()}
+/* THE count formatter — one notation per magnitude everywhere: 1.2K, 492K,
+   2.4M, 1.08B. (Previously 1,000–999,999 fell through to comma-thousands, so
+   "492,000" sat next to "2.4M" in the same column.) Trailing zeros trimmed. */
+function fN(n){
+  if(n==null||isNaN(n))return '0';
+  const neg=n<0?'-':'', a=Math.abs(n);
+  const u=(v,d,s)=>neg+(+v.toFixed(d))+s;       // +x.toFixed trims ".0"
+  if(a>=9.995e8)return u(a/1e9,2,'B');          // 999.95M+ rounds up: promote
+  if(a>=999950)return u(a/1e6,1,'M');           // 999,960 rounds up: promote
+  if(a>=1e3)return u(a/1e3,1,'K');
+  return neg+a.toString();
+}
 /* THE duration formatter — every "Xh Ym" on the page goes through fT/fHM
    so durations read identically everywhere (P3-31). */
 function fT(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?h+'h '+m+'m':m+'m'}
@@ -2831,6 +3000,7 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
 
 /* ---- Benchmarks (static) — chart built at boot, after deferred Chart.js ---- */
 function renderBenchmarks(){
+if(document.getElementById('cBench')) return; // already built (boot retries)
 const bench = D.benchmarks;
 const benchModels = Object.keys(bench).filter(m=>Object.keys(bench[m]).length>0);
 benchModels.sort((a,b)=>modelSort(a,b));
@@ -3059,7 +3229,11 @@ function rebuildDailyTable(){
       +'<td>'+fT(d.active_minutes*60)+'</td>'
       +'<td style="color:'+costColor+'">'+fC(d.cost)+'</td></tr>';
   }
+  const wrap=tbody.closest('.tbl-wrap');
+  const st=wrap?wrap.scrollTop:0;
   tbody.innerHTML=html;
+  afterTableRender(tbody);
+  if(wrap)wrap.scrollTop=st;
 }
 
 /* ---- Environmental info modal + comparisons chart (wired ONCE) ---- */
@@ -3209,7 +3383,7 @@ function renderMode(mode) {
     } else if (i === 1) {
       // Prompts: mode-aware subtitle
       if (isToday) {
-        sub.textContent = '';
+        sub.textContent = '​'; /* keep the line box — emptying it reflows the card */
       } else {
         const avgPD = Math.round(totPrompts / numDays);
         sub.innerHTML = '<span style="color:var(--yellow-text)">' + fN(avgPD) + '</span> avg/day';
@@ -3222,7 +3396,7 @@ function renderMode(mode) {
       // Active (black bg): sub-agent time
       sub.innerHTML = '<span style="color:var(--yellow)">~ ' + fT(subagentTime) + '</span> sub-agent';
     } else if (i === 3) {
-      sub.textContent = '';
+      sub.textContent = '​'; /* keep the line box — emptying it reflows the card */
     } else if (i === 4) {
       // Tools (plain bg): most-used tool
       sub.innerHTML = 'top: <span style="color:var(--blue)">' + esc(topTool) + '</span>';
@@ -3257,7 +3431,7 @@ function renderMode(mode) {
         const subVal = Math.round(subagentTime / numDays);
         sub.innerHTML = '<span style="color:var(--blue)">~ ' + fT(subVal) + '</span> sub-agent';
       } else {
-        sub.textContent = '';
+        sub.textContent = '​'; /* keep the line box — emptying it reflows the card */
       }
     }
   });
@@ -3646,20 +3820,35 @@ function renderMode(mode) {
 
   /* ── Machine Breakdown table ── */
   const machineBody = document.getElementById('machineBody');
-  machineBody.innerHTML = '';
-  mSummary.forEach(ms => {
-    const costColor = ms.cost > 0 ? 'var(--black)' : 'var(--gray-dim)';
-    machineBody.innerHTML += '<tr><td>'+esc(ms.machine)+'</td>'
-      +'<td>'+fN(ms.prompts)+'</td>'
-      +'<td>'+fN(ms.api_calls)+'</td>'
-      +'<td>'+fN(ms.tool_calls)+'</td>'
-      +'<td>'+fN(ms.total_tokens)+'</td>'
-      +'<td style="color:'+costColor+'">'+fC(ms.cost)+'</td></tr>';
-  });
+  const machineKey = mode + '|' + JSON.stringify(mSummary);
+  if (machineBody._renderKey !== machineKey) {
+    machineBody._renderKey = machineKey;
+    const mWrap = machineBody.closest('.tbl-wrap');
+    const mScroll = mWrap ? mWrap.scrollTop : 0;
+    machineBody.innerHTML = mSummary.map(ms => {
+      const costColor = ms.cost > 0 ? 'var(--black)' : 'var(--gray-dim)';
+      return '<tr><td>'+esc(ms.machine)+'</td>'
+        +'<td>'+fN(ms.prompts)+'</td>'
+        +'<td>'+fN(ms.api_calls)+'</td>'
+        +'<td>'+fN(ms.tool_calls)+'</td>'
+        +'<td>'+fN(ms.total_tokens)+'</td>'
+        +'<td style="color:'+costColor+'">'+fC(ms.cost)+'</td></tr>';
+    }).join('');
+    afterTableRender(machineBody);
+    if (mWrap) mWrap.scrollTop = mScroll;
+  }
 
-  /* ── Model Breakdown table ── */
+  /* ── Model Breakdown table ──
+     Keyed rebuild: live refreshes with unchanged data skip the rebuild
+     entirely; when data DID change, expansion state (by model name), sort
+     order, and .tbl-wrap scroll position are restored afterwards. */
   const dot = '<span style="color:var(--gray-light)">&#183;</span>';
   const modelBody = document.getElementById('modelBody');
+  const modelKey = mode + '|' + JSON.stringify(activeMB);
+  if (modelBody._renderKey !== modelKey) {
+  modelBody._renderKey = modelKey;
+  const mbWrap = modelBody.closest('.tbl-wrap');
+  const mbScroll = mbWrap ? mbWrap.scrollTop : 0;
   modelBody.innerHTML = '';
   activeMB.forEach((m, i) => {
     const tokKey = isRecent ? 'recent_total_tokens' : 'total_tokens';
@@ -3673,10 +3862,13 @@ function renderMode(mode) {
     const cphStr = cphVal != null ? fC(cphVal) : dot;
     const tpsStr = tpsVal != null ? Math.round(tpsVal).toString() : dot;
     const costStr = costVal > 0 ? fC(costVal) : dot;
+    const isOpen = _openModels.has(m.model);
     const row = document.createElement('tr');
     row.className = 'mb-row';
+    row.tabIndex = 0;
+    row.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
     row.onclick = function(){ toggleMB(i); };
-    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
+    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow'+(isOpen?' open':'')+'" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
       +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
       +'</div></td>'
       +'<td>'+fN(m.api_calls)+'</td>'
@@ -3706,7 +3898,8 @@ function renderMode(mode) {
     const detail = document.createElement('tr');
     detail.className = 'mb-detail';
     detail.id = 'mbd'+i;
-    detail.style.display = 'none';
+    detail.dataset.key = m.model;
+    detail.style.display = isOpen ? '' : 'none';
     detail.innerHTML = '<td colspan="7">'
       +'<div class="mb-grid">'
       +'<div class="mb-group"><div class="mb-group-title">Tokens</div>'
@@ -3744,6 +3937,9 @@ function renderMode(mode) {
       +'</div></td>';
     modelBody.appendChild(detail);
   });
+  afterTableRender(modelBody);
+  if (mbWrap) mbWrap.scrollTop = mbScroll;
+  } // end model-table keyed rebuild
 
   /* ── Daily table: rebuild + show/hide rows ── */
   rebuildDailyTable();
@@ -3816,6 +4012,7 @@ function initRateLimits(){
     var oauth = wb && wb.oauth;
     if(!oauth) {
       oauthPanel.style.display = 'none';
+      oauthPanel.style.minHeight = '';   // release the reserved loading space
       if(staleIntervalId !== null) { clearInterval(staleIntervalId); staleIntervalId = null; }
       return;
     }
@@ -3823,6 +4020,7 @@ function initRateLimits(){
     // MUST be 'block' (a real value), not '' — clearing the inline style lets the
     // stylesheet's #oauthGaugesPanel { display:none } win and the panel never shows.
     oauthPanel.style.display = 'block';
+    oauthPanel.style.minHeight = '';     // real content replaces the placeholder
 
     var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
     var DAY_MS  = 24 * 60 * 60 * 1000;
@@ -4372,6 +4570,9 @@ function initRateLimits(){
         pacePanel.innerHTML = '<div class="rate-gauge-head"><span class="rate-gauge-label">7-Day Pace</span>'
           + '<span class="rate-gauge-reset">limits unavailable — retrying</span></div>';
       }
+      // The personal-scope placeholder must not say "loading" forever
+      var lbl = document.querySelector('#oauthGaugesPanel .rate-gauge-label');
+      if(lbl && /loading/.test(lbl.textContent)) lbl.textContent = 'limits unavailable — retrying';
     }
 
     // Fetch rate limits from API (secondary detail only — month hero already shown).
@@ -4389,28 +4590,59 @@ function initRateLimits(){
     setInterval(pollLimits, 60000);
 }
 
-/* ---- Single global Escape handler for all modals (was 1 listener per render) ---- */
+/* ---- Single global keydown handler (was 1 listener per render) ----
+   Escape closes any open modal; Enter/Space expands a focused table row
+   (rows are tabbable — mouse-only expansion failed keyboard users). */
 document.addEventListener('keydown', function(e){
-  if(e.key !== 'Escape') return;
-  document.querySelectorAll('.env-modal-overlay.visible, .usage-chart-overlay.visible')
-    .forEach(function(el){ el.classList.remove('visible'); });
+  if(e.key === 'Escape'){
+    document.querySelectorAll('.env-modal-overlay.visible, .usage-chart-overlay.visible')
+      .forEach(function(el){ el.classList.remove('visible'); });
+    return;
+  }
+  if((e.key === 'Enter' || e.key === ' ') && e.target && e.target.matches
+      && e.target.matches('tr.sess-row, tr.mb-row')){
+    e.preventDefault();
+    e.target.click();
+  }
 });
 
 /* ---- Boot ----
-   Chart.js loads deferred (executes before DOMContentLoaded); everything that
-   may draw a chart starts here. If the library failed to load, initChartGlobals
-   is false and all chart builds no-op — cards, tables and heatmaps still work. */
-function boot(){
-  initChartGlobals();
-  setMode(localStorage.getItem('dashMode') || '14d');
+   Two-phase, so the first paint is already composed (no layout shifts):
+
+   1. boot() runs SYNCHRONOUSLY during parse (this script sits at the end of
+      <body>) — cards, tables, env bar, Cost & Limits section and all wrapper
+      heights (sizeWrap) are in place before the first frame paints.
+   2. bootCharts() runs once Chart.js (deferred) has executed, at
+      DOMContentLoaded. Charts paint into already-reserved boxes, so their
+      late arrival never moves layout. If the library never loads, every
+      chart build no-ops and tables/heatmaps still work. */
+let _chartsBooted = false;
+function bootCharts(){
+  if(_chartsBooted || !initChartGlobals()) return;
+  _chartsBooted = true;
+  renderMode(localStorage.getItem('dashMode') || '14d');
   renderBenchmarks();
+}
+function reserveLimitsSpace(){
+  // Personal scope gets OAuth gauges (~325px) once /api/rate-limits resolves;
+  // the server reserves the space with a static placeholder — this is just a
+  // belt-and-braces fallback if that markup is ever missing.
+  if(TF_SCOPE !== 'personal') return;
+  var p = document.getElementById('oauthGaugesPanel');
+  if(!p || p.innerHTML.trim()) return;     // server already reserved it
+  p.style.display = 'block';
+  p.style.minHeight = '325px';
+  p.innerHTML = '<div class="rate-gauge" style="border-top:var(--border)">'
+    + '<div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>';
+}
+function boot(){
+  reserveLimitsSpace();
+  setMode(localStorage.getItem('dashMode') || '14d');
   initRateLimits();
+  bootCharts(); // no-op under defer; covers an already-present Chart global
 }
-if(document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', boot);
-} else {
-  boot();
-}
+boot();
+document.addEventListener('DOMContentLoaded', bootCharts);
 
 /* ---- Recent Sessions (burn rate per task) ---- */
 function renderSessions(){
@@ -4440,14 +4672,21 @@ function renderSessions(){
   }
   // machine-coded left border: same palette as the machine charts
   const sColors = buildMachineColors([...new Set(rows.map(s=>s.machine).filter(Boolean))]);
+  // preserve scroll position + expanded rows + sort across the rebuild
+  const wrap = body.closest('.tbl-wrap');
+  const scrollPos = wrap ? wrap.scrollTop : 0;
   body.innerHTML = rows.map((s,i)=>{
     const label = s.title ? esc(s.title) : '<span style="color:var(--gray-dim)">'+esc(s.project||'unknown')+'</span>';
     const burn = s.burn_per_hr != null ? fC(s.burn_per_hr) : dot;
     const mc = sColors[s.machine] || '#8b8680';
-    const modelsStr = (s.models||[]).map(m=>esc(m.model)+' '+fC(m.cost)).join(' · ') || dot;
+    // proper vertical list (model left, cost right) — matches every other group
+    const modelRows = (s.models||[]).map(m=>
+      '<div class="mb-stat"><span class="mb-label">'+esc(m.model)+'</span><span>'+fC(m.cost)+'</span></div>'
+    ).join('') || '<div class="mb-stat"><span class="mb-label">'+dot+'</span></div>';
     const cpp = s.prompts > 0 ? fC(s.cost / s.prompts) : dot;
-    return '<tr class="sess-row" onclick="toggleSess('+i+')" style="cursor:pointer;border-left:5px solid '+mc+'">'
-      +'<td title="'+esc(s.session_id)+'">'+label+'</td>'
+    const isOpen = _openSessions.has(s.session_id);
+    return '<tr class="sess-row" onclick="toggleSess('+i+')" tabindex="0" aria-expanded="'+(isOpen?'true':'false')+'" style="cursor:pointer;--mc:'+mc+'">'
+      +'<td title="'+esc(s.session_id)+'"><svg class="mb-arrow'+(isOpen?' open':'')+'" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+label+'</td>'
       +'<td><span class="sess-machine" style="border-bottom:2px solid '+mc+'">'+esc(s.machine||dot)+'</span></td>'
       +'<td>'+esc(s.model||dot)+'</td>'
       +'<td class="num">'+fN(s.total_tokens)+'</td>'
@@ -4456,7 +4695,7 @@ function renderSessions(){
       +'<td class="num">'+burn+'</td>'
       +'<td class="num">'+rel(s.last_ts)+'</td>'
       +'</tr>'
-      +'<tr class="mb-detail" id="sessd'+i+'" style="display:none;border-left:5px solid '+mc+'"><td colspan="8">'
+      +'<tr class="mb-detail sess-detail" id="sessd'+i+'" data-sid="'+esc(s.session_id||'')+'" style="display:'+(isOpen?'':'none')+';--mc:'+mc+'"><td colspan="8">'
       +'<div class="mb-grid">'
       +'<div class="mb-group"><div class="mb-group-title">Tokens</div>'
       +'<div class="mb-stat"><span class="mb-label">Input</span><span>'+fN(s.input||0)+'</span></div>'
@@ -4471,7 +4710,7 @@ function renderSessions(){
       +'<div class="mb-stat"><span class="mb-label">Started</span><span>'+rel(s.first_ts)+'</span></div>'
       +'</div>'
       +'<div class="mb-group"><div class="mb-group-title">Models</div>'
-      +'<div class="mb-stat" style="display:block"><span>'+modelsStr+'</span></div>'
+      +modelRows
       +'</div>'
       +'<div class="mb-group"><div class="mb-group-title">Context</div>'
       +'<div class="mb-stat"><span class="mb-label">Project</span><span>'+esc(s.project||dot)+'</span></div>'
@@ -4479,10 +4718,22 @@ function renderSessions(){
       +'</div>'
       +'</div></td></tr>';
   }).join('');
+  afterTableRender(body);
+  if(wrap) wrap.scrollTop = scrollPos;
 }
 function toggleSess(i){
   const d = document.getElementById('sessd'+i);
-  if(d) d.style.display = d.style.display === 'none' ? '' : 'none';
+  if(!d) return;
+  const open = d.style.display === 'none';
+  d.style.display = open ? '' : 'none';
+  const row = d.previousElementSibling;
+  if(row){
+    row.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const ar = row.querySelector('.mb-arrow');
+    if(ar) ar.classList.toggle('open', open);
+  }
+  const sid = d.dataset.sid;
+  if(sid){ if(open)_openSessions.add(sid); else _openSessions.delete(sid); }
 }
 renderSessions();
 

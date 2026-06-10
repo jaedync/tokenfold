@@ -171,6 +171,122 @@ class DashboardTemplateTest(unittest.TestCase):
         self.assertNotIn("ms.cost > 0 ? 'var(--red)'", self.tpl)
 
 
+class TableUxRegressionTest(unittest.TestCase):
+    """Pins the table/animation regression fixes: sticky headers that survive
+    scroll, sortable columns, state-preserving live refresh, K-notation
+    number formatting, and the composed (shift-free) two-phase boot."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    # ── number formatting consistency ──────────────────────────────────────
+
+    def test_fmt_num_k_notation(self):
+        from app.dashboard import _fmt_num
+        self.assertEqual(_fmt_num(492_000), "492K")
+        self.assertEqual(_fmt_num(1_234), "1.2K")
+        self.assertEqual(_fmt_num(26_259), "26.3K")
+        self.assertEqual(_fmt_num(2_400_000), "2.4M")
+        self.assertEqual(_fmt_num(1_080_000_000), "1.08B")
+        self.assertEqual(_fmt_num(999), "999")
+        self.assertEqual(_fmt_num(999_950), "1M")      # round-up promotion
+
+    def test_fn_js_no_comma_thousands(self):
+        """Client fN() must not fall through to toLocaleString for 1e3-1e6."""
+        start = self.tpl.index("function fN(")
+        end = self.tpl.index("function fT(")
+        self.assertNotIn("toLocaleString", self.tpl[start:end])
+        self.assertIn("'K'", self.tpl[start:end])
+
+    # ── sticky table headers ───────────────────────────────────────────────
+
+    def test_sticky_headers_survive_scroll(self):
+        """border-collapse:collapse paints borders at the table layer, so a
+        sticky thead's border scrolls away with the rows."""
+        self.assertIn("border-collapse: separate", self.tpl)
+        self.assertNotIn("border-collapse: collapse", self.tpl)
+
+    def test_tooltip_th_does_not_break_sticky(self):
+        """position:relative on th[data-info] overrode position:sticky and the
+        $/hr header scrolled away while its siblings stuck."""
+        import re
+        m = re.search(r"th\[data-info\]\s*\{([^}]*)\}", self.tpl)
+        self.assertIsNotNone(m)
+        self.assertNotIn("position", m.group(1))
+
+    def test_first_table_column_has_padding(self):
+        self.assertNotIn("th:first-child { padding-left: 0; }", self.tpl)
+        self.assertNotIn("td:first-child { padding-left: 0; }", self.tpl)
+
+    def test_session_machine_border_on_cell_not_row(self):
+        """tr borders don't paint under border-collapse:separate."""
+        self.assertIn(".sess-row > td:first-child", self.tpl)
+        self.assertNotIn("border-left:5px solid '+mc", self.tpl)
+
+    # ── sortable columns ───────────────────────────────────────────────────
+
+    def test_sortable_tables_wired(self):
+        self.assertIn("function initSortableTables", self.tpl)
+        self.assertIn("function applySort", self.tpl)
+        self.assertIn("function sortVal", self.tpl)
+        self.assertIn("aria-sort", self.tpl)
+        self.assertIn("sort-ind", self.tpl)
+
+    def test_sort_keeps_detail_rows_attached(self):
+        """Detail rows (.mb-detail) must travel with their parent row group."""
+        start = self.tpl.index("function applySort")
+        end = self.tpl.index("function updateSortIndicators")
+        self.assertIn("mb-detail", self.tpl[start:end])
+
+    def test_sort_reapplied_after_rebuilds(self):
+        """Every tbody rebuild restores the active sort."""
+        self.assertGreaterEqual(self.tpl.count("afterTableRender("), 5)
+
+    # ── state-preserving live refresh ──────────────────────────────────────
+
+    def test_expanded_rows_keyed_by_identity(self):
+        """Expansion state keys on session_id / model name (not row index) so
+        re-renders restore open rows."""
+        self.assertIn("_openSessions", self.tpl)
+        self.assertIn("_openModels", self.tpl)
+        self.assertIn("data-sid", self.tpl)
+        self.assertIn("_openSessions.has(s.session_id)", self.tpl)
+        self.assertIn("_openModels.has(m.model)", self.tpl)
+
+    def test_model_and_machine_tables_skip_unchanged_renders(self):
+        self.assertIn("modelBody._renderKey", self.tpl)
+        self.assertIn("machineBody._renderKey", self.tpl)
+
+    def test_tbl_wrap_scroll_preserved(self):
+        self.assertGreaterEqual(self.tpl.count("scrollTop"), 6)
+
+    # ── session detail models group ────────────────────────────────────────
+
+    def test_session_models_render_vertically(self):
+        """Models in the expanded session detail are mb-stat rows, not a
+        ' · '-joined horizontal string."""
+        self.assertNotIn("join(' · ') || dot", self.tpl)
+        start = self.tpl.index("function renderSessions")
+        end = self.tpl.index("function toggleSess")
+        self.assertIn("modelRows", self.tpl[start:end])
+
+    # ── composed load (no layout shifts) ───────────────────────────────────
+
+    def test_two_phase_boot(self):
+        """Data/DOM boot is synchronous (pre-paint); charts attach at
+        DOMContentLoaded into pre-sized containers."""
+        self.assertIn("function bootCharts()", self.tpl)
+        self.assertIn("\nboot();", self.tpl)
+        self.assertIn("document.addEventListener('DOMContentLoaded', bootCharts)", self.tpl)
+
+    def test_oauth_gauge_space_reserved(self):
+        """Personal scope reserves the OAuth gauges' height before the
+        rate-limits fetch resolves (no late shift)."""
+        self.assertIn("reserveLimitsSpace", self.tpl)
+        self.assertIn("minHeight", self.tpl)
+
+
 class DashboardServerRenderTest(unittest.TestCase):
     """Server-rendered daily rows follow the same red-is-a-warning rule."""
 

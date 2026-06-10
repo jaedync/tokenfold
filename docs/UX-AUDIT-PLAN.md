@@ -82,3 +82,21 @@ Add a slim sticky jump-nav (anchors per section) — the page is ~8,800px with n
 ### Notes on root causes worth knowing
 - `renderMode()` is a 1,280-line god function (`:2733-4010`) containing chart builds, card text, env modal wiring, the rate-limit poller, and the pace modal. Most P1/P2 leak fixes are mechanical once it's split into `renderCards / renderCharts / initLimits (once) / renderLimits` — aligns with the 200-400-line file/function house style.
 - The screenshot-blank-charts symptom (P1-3) is the same root cause as the "page feels slow" complaint: every visit pays entrance clip-paths + 1.2s count-ups + ~1s chart grows before the data is readable.
+
+---
+
+## R — Table/animation regression batch (2026-06-10, interaction-deep verification)
+
+All reproduced in a real browser first (Playwright: scrolling inside every `.tbl-wrap`, expanding rows, simulated live refreshes, throttled-network loads), then fixed, then re-verified interactively.
+
+- [x] **R-1 Layout shifts on load** (CLS 0.16 fast / 1.14 throttled → 0.00 / 0.01). Causes: `display:none → JS reveal` for Cost & Limits / env bar / OAuth gauges / hero note, costMeta filled post-paint, boot gated on deferred Chart.js. Fix: two-phase boot (DOM boot synchronous pre-paint; charts attach at DOMContentLoaded into pre-sized containers), statically visible sections, server-reserved OAuth-gauge placeholder (scope known server-side), per-model costMeta min-height, zero-width-space sub-detail line reservation.
+- [x] **R-2 Sticky thead broken.** `border-collapse:collapse` painted the 4px header border at the table layer (it scrolled away with rows) → `border-collapse:separate`. `th[data-info]{position:relative}` overrode `position:sticky` ($/hr header scrolled away) → removed; tooltip now drops *below* the header (above was clipped by the scroll container). First-column `padding-left:0` → 0.85rem; machine-color border moved from `tr` (doesn't paint under `separate`) to `td:first-child` via `--mc`.
+- [x] **R-3 Sortable headers** on all 5 `.tbl-wrap` tables: click/Enter/Space, ▲▼ indicator, `aria-sort`, numeric columns start descending, `—`/`·` sort last, detail rows travel with parents, sort re-applied after every tbody rebuild. Parser handles $, K/M/B, durations, "Xh ago", ISO dates.
+- [x] **R-4 Session detail models** now a vertical mb-stat list (model left, cost right) instead of a ' · '-joined string.
+- [x] **R-5 Number notation unified** — fN()/server `_fmt_num` both render 1.2K / 492K / 2.4M / 1.08B (no more comma-thousands next to M-notation); round-up promotion at unit boundaries.
+- [x] **R-6 Live refresh preserves UI state.** Expanded rows keyed by session_id / model name (Sets), `.tbl-wrap` scrollTop restored, model & machine tables skip rebuild when data unchanged (render keys), sort re-applied.
+- [x] **R-7 Extra finds (same pass):** jump-nav wrapped to 3 rows on phones so anchors landed 10px under it (`flex-wrap:nowrap`, it already horizontal-scrolls); session/model rows were mouse-only (now tabbable, Enter/Space toggles, `aria-expanded`, focus ring, expand arrow added to session rows); long values (project paths) in detail groups jammed into their labels (ellipsis).
+
+### Deferred (noted, not fixed)
+- **Font-swap CLS on cold cache:** Google Fonts load with `display=swap`; on a first uncached visit the Archivo Black/DM Sans swap can still nudge text metrics (~0.01 CLS observed). Fixing properly means self-hosting the fonts (like chart.js) or `size-adjust` fallback overrides — worth doing if the fonts ever get flagged again.
+- **costMeta reservation is heuristic:** min-height reserves one line per costed model in the default 14d window; a localStorage mode of `today`/`all` with a *different* costed-model count can still shift a line's worth of height on slow networks.

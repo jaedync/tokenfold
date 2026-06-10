@@ -19,13 +19,21 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 
 
 def _fmt_num(n):
+    """One notation per magnitude: 1.2K, 492K, 2.4M, 1.08B — mirrors fN() in
+    the template (comma-thousands like '492,000' next to '2.4M' read as two
+    different units). Trailing zeros are trimmed."""
     n = int(n)
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.2f}B"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
+
+    def unit(v, digits, suffix):
+        s = f"{v:.{digits}f}".rstrip("0").rstrip(".")
+        return s + suffix
+
+    if n >= 999_500_000:  # 999.5M+ rounds up: promote to B
+        return unit(n / 1_000_000_000, 2, "B")
+    if n >= 999_950:      # 999,950+ rounds up: promote to M
+        return unit(n / 1_000_000, 1, "M")
     if n >= 1_000:
-        return f"{n:,}"
+        return unit(n / 1_000, 1, "K")
     return str(n)
 
 
@@ -90,9 +98,12 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         ("Avg Prompts/Day", _fmt_num(c["avg_prompts_day"])),
         ("Avg Active/Day", _fmt_time(c["avg_active_day_s"])),
     ]
+    # The zero-width-space sub-detail reserves its line box server-side so the
+    # card doesn't grow (layout shift) when JS fills the subtitle in.
     cards_html = "\n".join(
         f'<div class="{cls}"><div class="stat-label">{lab}</div>'
-        f'<div class="stat-value">{val}</div></div>'
+        f'<div class="stat-value">{val}</div>'
+        f'<div class="sub-detail">​</div></div>'
         for (lab, val), cls in zip(card_items, CARD_CLASSES)
     )
 
@@ -148,6 +159,13 @@ async def dashboard(request: Request, scope: Optional[str] = None):
     else:
         machines_pills = '<span class="machine-pill" style="color:var(--gray-dim)">no machines</span>'
 
+    # Reserve one cost-meta line per costed model (default 14d window) so the
+    # JS-rendered per-model lines don't push the page down on slow networks.
+    _meta_lines = sum(1 for m in data.get("model_breakdown", [])
+                      if m.get("recent_cost", 0) > 0)
+    # 0.8rem vertical padding x2 + line-height 1.8 per model line
+    cost_meta_minh = f"calc(1.6rem + {_meta_lines} * 1.8em)" if _meta_lines else "0"
+
     return templates.TemplateResponse(request, "dashboard.html", {
         # Encode every '<' as its JSON unicode escape so no '</script', '<!--',
         # or '<script' token can form inside the embedded <script> block. A bare
@@ -157,6 +175,7 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         "data_json": json.dumps(data).replace("<", "\\u003c"),
         "cards_html": cards_html,
         "table_rows": table_rows,
+        "cost_meta_minh": cost_meta_minh,
         "gen_time": data["generation_time"],
         "data_range": data["data_range"],
         "machines_pills": machines_pills,
