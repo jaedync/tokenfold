@@ -41,7 +41,17 @@ if ENTERPRISE_ORG_TYPES:
 if ENTERPRISE_ORG_UUIDS:
     _signals.append(_sql_in("org_uuid", ENTERPRISE_ORG_UUIDS))
 for _dom in ENTERPRISE_EMAIL_DOMAINS:
-    _d = _dom.lstrip("@").replace("'", "''")
+    _d = _dom.lstrip("@")
+    # LIKE wildcard hardening: '%' and '_' in a configured domain are live SQL
+    # LIKE wildcards (e.g. '%.io' would classify EVERY *.io personal account as
+    # enterprise). Skip such domains entirely (fail-closed) rather than strip:
+    # stripping 'my_corp.io' -> 'mycorp.io' would silently match a DIFFERENT
+    # domain, which is worse than not matching at all.
+    if "%" in _d or "_" in _d:
+        print(f"[config] WARNING: ENTERPRISE_EMAIL_DOMAINS entry {_dom!r} contains "
+              f"SQL LIKE wildcard characters (%/_) — ignored (fail-closed)")
+        continue
+    _d = _d.replace("'", "''")
     _signals.append(f"COALESCE(account_email,'') LIKE '%@{_d}'")
 
 ENTERPRISE_PRED = (

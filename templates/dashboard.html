@@ -3013,6 +3013,10 @@ function renderMode(mode) {
     var pacePanel = document.getElementById('weekPacePanel');
     if(!section || !pacePanel) return;
 
+    // Staleness ticker id — lives OUTSIDE renderAllRateLimits so the 60s poll
+    // can clear the previous interval before creating a new one (no leak).
+    var staleIntervalId = null;
+
     function renderAllRateLimits(wb) {
     if(!wb) return; // month hero still stands; just leave pace panel empty
 
@@ -3057,10 +3061,13 @@ function renderMode(mode) {
     var oauth = wb && wb.oauth;
     if(!oauth) {
       oauthPanel.style.display = 'none';
+      if(staleIntervalId !== null) { clearInterval(staleIntervalId); staleIntervalId = null; }
       return;
     }
 
-    oauthPanel.style.display = '';
+    // MUST be 'block' (a real value), not '' — clearing the inline style lets the
+    // stylesheet's #oauthGaugesPanel { display:none } win and the panel never shows.
+    oauthPanel.style.display = 'block';
 
     var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
     var DAY_MS  = 24 * 60 * 60 * 1000;
@@ -3309,7 +3316,10 @@ function renderMode(mode) {
 
     oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;
 
-    // Staleness indicator — tied to oauth.updated_at_epoch
+    // Staleness indicator — tied to oauth.updated_at_epoch.
+    // renderAllRateLimits is re-run by the 60s poll, so clear the previous
+    // ticker before creating a new one (otherwise one interval leaks per poll,
+    // with stale closures fighting over #rateLimitsUpdated).
     (function(){
       var updatedEl = document.getElementById('rateLimitsUpdated');
       if(!updatedEl || !oauth.updated_at_epoch) return;
@@ -3329,7 +3339,8 @@ function renderMode(mode) {
         updatedEl.classList.toggle('rate-limits-updated--stale', stale);
       }
       updateStale();
-      setInterval(updateStale, 30000);
+      if(staleIntervalId !== null) clearInterval(staleIntervalId);
+      staleIntervalId = setInterval(updateStale, 30000);
     })();
   })();
 

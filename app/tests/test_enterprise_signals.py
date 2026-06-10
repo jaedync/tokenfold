@@ -180,6 +180,31 @@ class EmailDomainEnvTest(TempDBTestCase):
         self.assertAlmostEqual(ent["total_cost"], 1.0, places=2,
                                msg="@ prefix stripped; acme.io email must classify enterprise")
 
+    def test_like_wildcard_domain_is_ignored(self):
+        """A domain containing SQL LIKE wildcards ('%.io') must NOT match arbitrary
+        emails: '%' is a live LIKE wildcard, so without sanitization '%.io' would
+        classify EVERY *.io personal account as enterprise. The config builder must
+        skip such entries (fail-closed -> row stays personal)."""
+        _insert_with_org(
+            self.conn, "e1", "r1", "someone@personal.io", None, None,
+            org_type=None, org_uuid=None, machine="m1")
+
+        _reload_config_with_env({"ENTERPRISE_EMAIL_DOMAINS": "%.io"})
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        ent = agg.build_dashboard_data("enterprise")
+        per = agg.build_dashboard_data("personal")
+        self.assertAlmostEqual(
+            ent["total_cost"], 0.0, places=2,
+            msg="'%.io' wildcard domain must NOT classify someone@personal.io as enterprise")
+        self.assertAlmostEqual(
+            per["total_cost"], 1.0, places=2,
+            msg="row must remain personal when the only signal is a wildcard domain")
+
 
 class SqlInjectionSafetyTest(TempDBTestCase):
     """Single quotes in env values must not break predicate SQL execution."""

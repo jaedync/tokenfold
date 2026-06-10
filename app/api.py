@@ -77,8 +77,13 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     """Return scope-filtered weekly spend over a rolling 7-day window.
 
     Defaults to enterprise scope. Pass ?scope=personal for personal view.
-    Personal consumer-account gauge fields are intentionally absent —
-    this is a compliance-facing view.
+
+    OAuth gauge contract (scope-gated):
+    - personal scope on a non-enterprise-locked instance, with an oauth_usage
+      meta row present -> weekly_budget.oauth carries the Max-subscription
+      gauge fields (weekly_pct, five_hour_pct, per-model pcts, extra_usage, ...).
+    - enterprise scope, enterprise-locked instance, or no meta row -> the
+      'oauth' key is NEVER present (compliance-facing invariant).
     """
     effective = _resolve_scope(scope)
     import sys

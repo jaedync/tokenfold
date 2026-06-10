@@ -205,6 +205,29 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self.assertNotIn("oauth", wb,
                          "'oauth' key must not appear when LOCKED_SCOPE='enterprise'")
 
+    def test_oauth_panel_show_path_sets_real_display_value(self):
+        """Visibility regression pin (P1): #oauthGaugesPanel is hidden by the
+        stylesheet (display:none), so the JS show-path MUST set a real inline
+        value ('block'). Setting style.display = '' merely removes the inline
+        style and the stylesheet's display:none wins — gauges build their DOM
+        but render 0x0/invisible. Crude source-level assertion, but it pins the
+        exact bug class so it can't silently return."""
+        from pathlib import Path
+        tpl = (Path(__file__).resolve().parent.parent.parent
+               / "templates" / "dashboard.html").read_text()
+        # The CSS hide must exist (panel hidden until oauth payload arrives)...
+        self.assertIn("#oauthGaugesPanel", tpl)
+        # ...and the show-path must use a non-empty display value.
+        self.assertIn(
+            "oauthPanel.style.display = 'block'", tpl,
+            "oauth gauges show-path must set display to 'block' (a real value); "
+            "style.display = '' lets the stylesheet's display:none win and the "
+            "gauges never become visible")
+        self.assertNotIn(
+            "oauthPanel.style.display = ''", tpl,
+            "show-path must never clear the inline display style — the "
+            "stylesheet default is display:none")
+
     def test_dashboard_data_json_never_contains_gauge_fields(self):
         """The embedded data_json (aggregator payload served in /) must never contain
         oauth gauge fields in ANY scope — gauges come from /api/rate-limits, not the
@@ -226,12 +249,13 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
             html = c.get(f"/?scope={scope}").text
             import re as _re
             m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
-            if m:
-                data_blob = m.group(1)
-                for field in ("weekly_pct", "opus_pct", "five_hour_pct", "extra_usage"):
-                    self.assertNotIn(f'"{field}"', data_blob,
-                                     f"'{field}' must not be in embedded data_json "
-                                     f"(scope={scope})")
+            self.assertIsNotNone(
+                m, f"data_json embed (const D = {{...}};) not found in page (scope={scope})")
+            data_blob = m.group(1)
+            for field in ("weekly_pct", "opus_pct", "five_hour_pct", "extra_usage"):
+                self.assertNotIn(f'"{field}"', data_blob,
+                                 f"'{field}' must not be in embedded data_json "
+                                 f"(scope={scope})")
 
     def test_aggregator_exposes_scope_not_org_name(self):
         """build_dashboard_data must expose 'scope', NOT org_name or plan_scope."""
@@ -301,12 +325,12 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         # so we cannot check full HTML; we check the data payload specifically.)
         import re as _re
         m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
-        if m:
-            data_blob = m.group(1)
-            self.assertNotIn('"weekly_pct"', data_blob,
-                             "weekly_pct must not appear in embedded data payload")
-            self.assertNotIn('"opus_pct"', data_blob,
-                             "opus_pct must not appear in embedded data payload")
+        self.assertIsNotNone(m, "data_json embed (const D = {...};) not found in page")
+        data_blob = m.group(1)
+        self.assertNotIn('"weekly_pct"', data_blob,
+                         "weekly_pct must not appear in embedded data payload")
+        self.assertNotIn('"opus_pct"', data_blob,
+                         "opus_pct must not appear in embedded data payload")
 
 
 class EnterprisePredicateUnattributedTest(TempDBTestCase):
