@@ -33,12 +33,13 @@ def compute_window_cost(
     for r in conn.execute(
         "SELECT model, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, "
-        "SUM(cc) as cc, SUM(cr) as cr "
+        "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h "
         "FROM ("
         "  SELECT model, request_id, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
-        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr "
+        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
+        "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
@@ -56,5 +57,7 @@ def compute_window_cost(
             r["cr"] or 0,
             r["speed"],
             r["inference_geo"],
+            cw_5m=r["c5m"] or 0,
+            cw_1h=r["c1h"] or 0,
         )
     return total

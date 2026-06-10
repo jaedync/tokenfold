@@ -134,8 +134,16 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
             row["output_tokens"] = usage.get("output_tokens", 0)
             row["cache_creation_tokens"] = usage.get("cache_creation_input_tokens", 0)
             row["cache_read_tokens"] = usage.get("cache_read_input_tokens", 0)
-            row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
-            row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
+            # Real transcript shape (verified against live Claude Code output):
+            # usage.cache_creation = {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}.
+            # The flat *_5m/*_1h keys are kept as a fallback for older payloads.
+            _cc_obj = usage.get("cache_creation")
+            if isinstance(_cc_obj, dict):
+                row["cache_ephemeral_5m"] = _cc_obj.get("ephemeral_5m_input_tokens", 0)
+                row["cache_ephemeral_1h"] = _cc_obj.get("ephemeral_1h_input_tokens", 0)
+            else:
+                row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
+                row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
             # service_tier/speed/inference_geo come from untrusted transcript JSON:
             # coerce non-strings to NULL (a dict/list would raise at sqlite bind
             # and 500 the whole batch) and truncate to a sane length.

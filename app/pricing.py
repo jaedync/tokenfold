@@ -193,14 +193,26 @@ def get_pricing(model_name: str) -> tuple:
 
 
 def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
-                 speed: str | None = None, inference_geo: str | None = None) -> float:
+                 speed: str | None = None, inference_geo: str | None = None,
+                 cw_5m: int = 0, cw_1h: int = 0) -> float:
     """List-price cost. Optional speed='fast' (Opus only) and inference_geo='us'
     modifiers layer on the LiteLLM-or-static base rate; defaults reproduce prior
-    pricing exactly. Mirrors claude-usage-telemetry's effective_rates()."""
+    pricing exactly. Mirrors claude-usage-telemetry's effective_rates().
+
+    cw is the TOTAL cache-write tokens; cw_5m/cw_1h are the ephemeral-duration
+    split when known. 5m writes bill at 1.25x base input (the cw_p rate), 1h
+    writes at 2x base input. Any unsplit remainder — and all legacy rows that
+    predate split capture — bills at the 5m rate (the historical behavior).
+    A split that exceeds cw is untrusted transcript input and is ignored."""
     base_in, out_p, cw_p, cr_p = get_pricing(model_name)
     if (speed or "").lower() == "fast" and model_name in FAST_OPUS_BASE:
         b_in, b_out = FAST_OPUS_BASE[model_name]
         base_in, out_p, cw_p, cr_p = b_in, b_out, b_in * 1.25, b_in * 0.1
+    cw_1h_p = base_in * 2.0  # 1h cache write = 2x base, stacks on fast-mode base
     if (inference_geo or "").lower() == "us":
-        base_in, out_p, cw_p, cr_p = (x * GEO_US_MULT for x in (base_in, out_p, cw_p, cr_p))
-    return (inp * base_in + out * out_p + cw * cw_p + cr * cr_p) / 1_000_000
+        base_in, out_p, cw_p, cr_p, cw_1h_p = (
+            x * GEO_US_MULT for x in (base_in, out_p, cw_p, cr_p, cw_1h_p))
+    cache_write = cw * cw_p
+    if cw_1h > 0 and (cw_5m or 0) + cw_1h <= cw:
+        cache_write += cw_1h * (cw_1h_p - cw_p)  # premium over the 5m rate
+    return (inp * base_in + out * out_p + cache_write + cr * cr_p) / 1_000_000
