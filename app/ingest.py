@@ -371,12 +371,15 @@ async def ingest(req: IngestRequest):
         conn.rollback()
         raise
 
-    # Recompute today's summary and trigger eager cache rebuild
+    # Recompute the summary for EVERY day this batch touched — a newly
+    # connected machine pushes months of historical transcripts, and only
+    # re-rolling "today" left those events invisible in the daily rollup
+    # (stale daily table / heatmap / month counter) until a manual re-roll.
     if accepted > 0:
         from .summarizer import summarize_days
         from .aggregator import trigger_eager_rebuild
         today = datetime.now(TZ).strftime("%Y-%m-%d")
-        summarize_days([today])
+        summarize_days(sorted(touched_days | {today}))
         trigger_eager_rebuild()
 
     return IngestResponse(

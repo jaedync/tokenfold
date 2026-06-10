@@ -94,3 +94,34 @@ class BackfillTest(TempDBTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestRerollsTouchedDaysTest(TempDBTestCase):
+    """A push containing HISTORICAL events (a newly-connected machine pushing
+    months of transcripts) must re-roll every touched day, not just today —
+    otherwise the events sit invisible in the events table while the daily
+    rollup (daily table, heatmap, month counter) stays stale."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_historical_day_rolled_up_on_ingest(self):
+        c = self.client()
+        r = c.post("/api/ingest", json={
+            "machine": "newmach", "project_dir": "p", "session_file": "s.jsonl",
+            "cursor": {"last_line_num": 0},
+            "events": [{
+                "uuid": "hist1", "type": "assistant",
+                "timestamp": "2026-04-02T12:00:00Z",
+                "sessionId": "s1", "requestId": "r1",
+                "message": {"model": "claude-opus-4-8", "id": "m1",
+                            "usage": {"input_tokens": 1_000_000, "output_tokens": 0}},
+            }],
+        }, headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["accepted"], 1)
+        row = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE day='2026-04-02'").fetchone()
+        self.assertIsNotNone(row, "historical day must be summarized on ingest")
+        self.assertGreater(row["cost"], 0)
