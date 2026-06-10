@@ -1,8 +1,13 @@
 # Tokenfold Usage Hook — Setup & Verification Runbook
 
 **Point a Claude Code session at this file** to install (or verify) the Stop/SessionEnd
-hook that "phones home" this machine's Claude Code usage to
-**https://your-server.example.com** (the tokenfold dashboard).
+hook that "phones home" this machine's Claude Code usage to your tokenfold server.
+
+You need two inputs from the operator (neither is stored in this repo):
+- **Server URL** — the address of your tokenfold dashboard.
+- **Ingest token** — the server's `STATS_API_KEY`. Easiest way to retrieve it: log in
+  to the dashboard and click **Ingest Key** in the footer (click-to-reveal + copies to
+  clipboard). Canonical source: the server's `.env`.
 
 > For an agent: read this whole file, then run the **one command** in step 2. Everything
 > else is context and troubleshooting. The installer is idempotent — running it on an
@@ -17,7 +22,7 @@ hook that "phones home" this machine's Claude Code usage to
 | `~/.claude/usage-telemetry/tokenfold-push.py` | The pusher: reads new lines from `~/.claude/projects/**/*.jsonl`, batches them, POSTs to `/api/ingest`. Incremental (cursor at `~/.tokenfold-cursor.json`); server-side dedup makes re-runs safe. |
 | `~/.claude/usage-telemetry/tokenfold-usage-push.sh` | Detaching wrapper — returns instantly so the hook never blocks your session. |
 | `~/.claude/usage-telemetry/hook.sh` | Stamps `TOKENFOLD_MACHINE=$(hostname -s)` and execs the wrapper. This is what the hook calls. |
-| `~/.config/notify-relay-url` | Server base URL (`https://your-server.example.com`). |
+| `~/.config/notify-relay-url` | Server base URL. |
 | `~/.config/tokenfold-api-key` (mode `0600`) | The ingest token (`STATS_API_KEY`). **Never committed to git.** |
 | `~/.claude/settings.json` → `hooks.Stop` and `hooks.SessionEnd` | A new hook **group object** calling `hook.sh`. Appended, never merged into an existing group, so it can't disturb your other hooks. |
 
@@ -82,7 +87,7 @@ Flags:
 From the `client/` directory of a tokenfold checkout:
 
 ```bash
-./install-tokenfold-hook.sh --token '<STATS_API_KEY>'
+./install-tokenfold-hook.sh --url '<SERVER_URL>' --token '<STATS_API_KEY>'
 ```
 
 That single command:
@@ -102,7 +107,7 @@ REGISTERED                       # or ALREADY on a re-run
   ✓ retired launchd agent claude-stats-push (backup: …bak-tokenfold-…)
   ✓ auth OK — server accepted the ingest probe (HTTP 200)
   ✓ push completed — Done: 16 accepted, 0 duplicates
-  ✓ done. This machine's Stop/SessionEnd hook will flush usage to https://your-server.example.com.
+  ✓ done. This machine's Stop/SessionEnd hook will flush usage to <your server URL>.
 ```
 
 If the token is already on the machine (from a prior install or a notify hook), you can
@@ -129,7 +134,7 @@ still wired up without touching any files.
    ```bash
    python3 -c "import json,os;o=json.load(open(os.path.expanduser('~/.claude.json'))).get('oauthAccount',{});print({k:o.get(k) for k in ('emailAddress','organizationName','organizationType','organizationUuid')})"
    ```
-3. Open the dashboard at https://your-server.example.com (HTTP Basic auth) and confirm
+3. Open the dashboard (HTTP Basic auth) and confirm
    this machine appears with fresh activity. Personal usage shows under the **personal**
    scope; enterprise orgs under **enterprise**.
 

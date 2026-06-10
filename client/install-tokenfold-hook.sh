@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # install-tokenfold-hook.sh — idempotent installer + verifier for the tokenfold
-# Stop/SessionEnd usage hook ("phone home" to your-server.example.com).
+# Stop/SessionEnd usage hook ("phone home" to your tokenfold server).
 #
 # Point a Claude Code session at client/HOOK-SETUP.md and it will run this.
 # Safe to re-run: a second run is a no-op except for re-verification.
 #
 # Usage:
-#   ./install-tokenfold-hook.sh --token <STATS_API_KEY> [--url <URL>] [options]
+#   ./install-tokenfold-hook.sh --url <SERVER_URL> --token <STATS_API_KEY> [options]
 #   ./install-tokenfold-hook.sh --verify-only        # check an existing install
 #
-# Token resolution (first hit wins; the script NEVER hardcodes a token):
+# Nothing server-identifying is hardcoded: both the URL and the token are inputs.
+# URL resolution (first hit wins):
+#   1. --url <value>
+#   2. $TOKENFOLD_URL in the environment
+#   3. ~/.config/notify-relay-url    (existing install)
+# Token resolution (first hit wins):
 #   1. --token <value>
 #   2. $TOKENFOLD_API_KEY in the environment
 #   3. ~/.config/tokenfold-api-key   (dedicated ingest token, preferred)
 #   4. ~/.config/notify-relay-token  (legacy shared notify token)
 #
 # Options:
-#   --url <URL>      Server base URL (default: existing config or
-#                    https://your-server.example.com)
+#   --url <URL>      Server base URL (required unless already configured)
 #   --token <TOKEN>  STATS_API_KEY for /api/ingest auth
 #   --verify-only    Skip install; only run the auth probe against current config
 #   --no-push        Install + verify auth, but do NOT fire a real push
@@ -25,8 +29,8 @@
 #   --keep-legacy    Do NOT touch any pre-existing launchd/cron reporter
 #   -h | --help      Show this help
 #
-# This hook REPLACES the old periodic reporter (the launchd agent
-# claude-stats-push / a cron job running claude-stats-push.py).
+# This hook REPLACES the old periodic reporter (a claude-stats-push launchd
+# agent / a cron job running claude-stats-push.py).
 # Running both would mean two reporters on one machine, and the old one predates
 # org_type/org_uuid attribution (it would land enterprise usage as personal). By
 # default the installer retires the legacy reporter (backing everything up first).
@@ -35,7 +39,6 @@
 # Exit codes: 0 = success (installed and/or verified), non-zero = failure.
 set -euo pipefail
 
-DEFAULT_URL="https://your-server.example.com"
 HOOKS_DIR="$HOME/.claude/usage-telemetry"
 CONFIG_DIR="$HOME/.config"
 SETTINGS="$HOME/.claude/settings.json"
@@ -70,10 +73,11 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required but not found on 
 command -v curl    >/dev/null 2>&1 || die "curl is required but not found on PATH"
 
 # ── Resolve URL ───────────────────────────────────────────────────────────────
+if [ -z "$URL" ]; then URL="${TOKENFOLD_URL:-}"; fi
 if [ -z "$URL" ] && [ -f "$CONFIG_DIR/notify-relay-url" ]; then
   URL="$(cat "$CONFIG_DIR/notify-relay-url")"
 fi
-[ -n "$URL" ] || URL="$DEFAULT_URL"
+[ -n "$URL" ] || die "no server URL. Pass --url <SERVER_URL>, set \$TOKENFOLD_URL, or have $CONFIG_DIR/notify-relay-url from a prior install"
 URL="${URL%/}"  # strip trailing slash
 
 # ── Resolve token (never logged) ──────────────────────────────────────────────

@@ -144,4 +144,8 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         "scope_label": effective.upper(),
         "scope": effective,
         "scope_locked": bool(config.LOCKED_SCOPE),
+        # Ingest key for client onboarding (footer click-to-reveal). Fail-closed:
+        # only embedded when the dashboard itself is behind Basic auth — an open
+        # dashboard must never leak the machine-ingest key.
+        "ingest_key": config.STATS_API_KEY if config.DASHBOARD_PASSWORD else "",
     })

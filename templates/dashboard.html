@@ -1612,6 +1612,33 @@ th[data-info]:hover::after { opacity: 1; }
   font-size: 0.7rem;
   color: var(--gray-dim);
   letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.ingest-key-btn {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  background: none;
+  border: 2px solid var(--gray-dim);
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+.ingest-key-btn:hover { color: var(--black); border-color: var(--black); }
+
+.ingest-key-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.65rem;
+  color: var(--black);
+  background: var(--yellow);
+  padding: 0.2rem 0.4rem;
+  user-select: all;
+  word-break: break-all;
 }
 
 /* ---- ENTRANCE ANIMATIONS ---- */
@@ -2252,8 +2279,39 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
     <div class="footer-text">{% if owner %}{{ owner|e }} / {% endif %}Tokenfold</div>
   </div>
-  <div class="footer-right">Generated {{ gen_time|e }}</div>
+  <div class="footer-right">
+    {% if ingest_key %}<span id="ingestKeyWrap"><button type="button" class="ingest-key-btn" id="ingestKeyBtn"
+      data-ingest-key="{{ ingest_key|e }}"
+      title="Reveal + copy the ingest key (STATS_API_KEY) for setting up new machines">Ingest Key</button></span>
+    <span aria-hidden="true">·</span>
+    {% endif %}<span>Generated {{ gen_time|e }}</span>
+  </div>
 </footer>
+{% if ingest_key %}
+<script>
+(function () {
+  // Click-to-reveal: never render the key as visible text until asked, and
+  // copy it to the clipboard at the same time so onboarding is one click.
+  var btn = document.getElementById('ingestKeyBtn');
+  btn.addEventListener('click', function () {
+    var key = btn.getAttribute('data-ingest-key');
+    var wrap = document.getElementById('ingestKeyWrap');
+    var span = document.createElement('span');
+    span.className = 'ingest-key-value';
+    span.textContent = key;
+    wrap.replaceChildren(span);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(key).then(function () {
+        var note = document.createElement('span');
+        note.textContent = ' copied';
+        note.style.color = 'var(--gray-dim)';
+        wrap.appendChild(note);
+      }, function () { /* no clipboard (http/permission) — key is shown, that's enough */ });
+    }
+  });
+})();
+</script>
+{% endif %}
 
 <div id="hmTip"></div>
 
