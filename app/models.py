@@ -31,6 +31,12 @@ class BackfillRequest(BaseModel):
     Batches are capped — the client splits large backfills across requests."""
     cache_tiers: dict[str, list[int]] = Field(default_factory=dict, max_length=20000)
     titles: dict[str, str] = Field(default_factory=dict, max_length=20000)
+    # Multi-batch protocol: data batches send reroll=False (server defers the
+    # expensive day re-roll and just reports touched days); the client then
+    # sends ONE final request with the union as reroll_days, so each affected
+    # day is summarized exactly once instead of once per batch.
+    reroll: bool = True
+    reroll_days: list[str] = Field(default_factory=list, max_length=2000)
 
 
 class DesktopSessionUpsert(BaseModel):

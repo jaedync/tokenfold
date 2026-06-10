@@ -3,6 +3,7 @@ POST /api/usage - store OAuth usage data from client.
 """
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -436,10 +437,14 @@ async def backfill(req: BackfillRequest):
         conn.rollback()
         raise
 
-    if touched_days:
+    # Explicit final-pass days (validated: strict YYYY-MM-DD only)
+    valid_day = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    final_days = {d for d in req.reroll_days if valid_day.match(d)}
+    days_to_roll = (touched_days if req.reroll else set()) | final_days
+    if days_to_roll:
         from .summarizer import summarize_days
-        summarize_days(sorted(touched_days))
-    if touched_days or updated_titles:
+        summarize_days(sorted(days_to_roll))
+    if days_to_roll or updated_titles:
         from .aggregator import trigger_eager_rebuild
         trigger_eager_rebuild()
 

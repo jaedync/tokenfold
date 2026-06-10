@@ -125,3 +125,60 @@ class IngestRerollsTouchedDaysTest(TempDBTestCase):
             "SELECT cost FROM daily_summary WHERE day='2026-04-02'").fetchone()
         self.assertIsNotNone(row, "historical day must be summarized on ingest")
         self.assertGreater(row["cost"], 0)
+
+
+class BackfillDeferredRerollTest(TempDBTestCase):
+    """Re-roll work must not be repeated per batch: a multi-batch backfill
+    sends reroll=false on every data batch (server skips summarize, just
+    returns touched days) and one final reroll_days request that summarizes
+    each affected day exactly once."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ins(self, uuid, day):
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+            "source_machine,project_dir,model,is_sidechain,agent_id,input_tokens,"
+            "output_tokens,cache_creation_tokens,cache_read_tokens,cache_ephemeral_5m,"
+            "cache_ephemeral_1h,is_human_prompt) "
+            "VALUES(?,'assistant',?,1781000000.0,?,'s1',?,'m1','proj',"
+            "'claude-opus-4-8',0,NULL,0,0,1000000,0,0,0,0)",
+            (uuid, day + "T12:00:00Z", day, "r-" + uuid),
+        )
+        self.conn.commit()
+
+    def _post(self, payload):
+        c = self.client()
+        return c.post("/api/backfill", json=payload,
+                      headers={"X-API-Key": self.api_key})
+
+    def test_reroll_false_defers_summarize(self):
+        self._ins("u1", "2026-06-09")
+        r = self._post({"cache_tiers": {"u1": [0, 1_000_000]}, "titles": {},
+                        "reroll": False})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["updated_events"], 1)
+        self.assertIn("2026-06-09", r.json()["touched_days"])
+        row = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE day='2026-06-09'").fetchone()
+        self.assertIsNone(row, "summarize must be deferred when reroll=false")
+
+    def test_final_reroll_days_summarizes(self):
+        self._ins("u1", "2026-06-09")
+        self._post({"cache_tiers": {"u1": [0, 1_000_000]}, "titles": {},
+                    "reroll": False})
+        r = self._post({"cache_tiers": {}, "titles": {},
+                        "reroll_days": ["2026-06-09"]})
+        self.assertEqual(r.status_code, 200)
+        row = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE day='2026-06-09'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertAlmostEqual(row["cost"], 10.00, places=2)  # 1h rate applied
+
+    def test_reroll_days_validated(self):
+        r = self._post({"cache_tiers": {}, "titles": {},
+                        "reroll_days": ["DROP TABLE events"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["touched_days"], [])  # garbage ignored
