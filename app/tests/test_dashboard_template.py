@@ -113,6 +113,55 @@ class DashboardTemplateTest(unittest.TestCase):
                 size, 0.55,
                 "label below 0.55rem floor: %s" % m.group(0))
 
+    # ── P2 batch (information architecture) ───────────────────────────────
+
+    def test_jump_nav_present(self):
+        """8,800px page needs in-page navigation (P2-22)."""
+        self.assertIn('class="jump-nav"', self.tpl)
+        for anchor in ("#cost", "#sessions", "#activity", "#models",
+                       "#machines", "#daily", "#reference"):
+            self.assertIn('href="%s"' % anchor, self.tpl)
+
+    def test_reference_accordion_demotes_static_content(self):
+        """Pricing/Benchmarks/CPH are Anthropic constants, not telemetry —
+        they live in a collapsed accordion at the bottom (P2-16)."""
+        self.assertIn('<details class="ref-accordion"', self.tpl)
+        ref_pos = self.tpl.index('<details class="ref-accordion"')
+        self.assertGreater(ref_pos, self.tpl.index('id="daily"'),
+                           "Reference must sit below the Daily table")
+        self.assertGreater(self.tpl.index('id="pricingBody"'), ref_pos)
+        self.assertGreater(self.tpl.index('id="benchWrap"'), ref_pos)
+        self.assertGreater(self.tpl.index('id="cphWrap"'), ref_pos)
+
+    def test_section_header_renamed(self):
+        """'Monthly Cost' mislabeled weekly/5h/extra gauges (P2-9)."""
+        self.assertIn("<h2>Cost &amp; Limits</h2>", self.tpl)
+        self.assertNotIn("<h2>Monthly Cost</h2>", self.tpl)
+
+    def test_mode_chips_self_describe_windows(self):
+        """Sections affected by the period toggle carry a window chip (P2-18)."""
+        self.assertGreaterEqual(self.tpl.count("data-mode-chip"), 8)
+        self.assertIn("'last 14 days'", self.tpl)
+
+    def test_sessions_footnote_corrected(self):
+        """Titles are AI summaries, not Claude-Desktop-only (P2-20)."""
+        self.assertNotIn("Titled rows come from Claude Desktop", self.tpl)
+        self.assertIn("Titles are AI-generated summaries", self.tpl)
+
+    def test_toggles_are_labeled_and_pressed(self):
+        """Scope and period toggles are visually distinct controls (P2-23)."""
+        self.assertIn('id="scopeToggleLabel"', self.tpl)
+        self.assertIn('id="modeToggleLabel"', self.tpl)
+        self.assertIn("aria-pressed", self.tpl)
+
+    def test_skip_unchanged_renders(self):
+        """Live refresh must not reflash unchanged heatmap/sessions DOM (P2-24)."""
+        self.assertGreaterEqual(self.tpl.count("_renderKey"), 4)
+
+    def test_token_breakdown_cache_toggle(self):
+        self.assertIn('id="tokCacheToggle"', self.tpl)
+        self.assertIn("_tokIncludeCacheReads", self.tpl)
+
     def test_red_reserved_for_high_costs(self):
         """Ordinary costs render black; red only above the 1.5x-average
         threshold (client table rebuild mirrors the server render)."""

@@ -141,6 +141,49 @@ def canonical_machine(name):
     return MACHINE_ALIASES.get(base, base)
 
 
+# ── MCP tool display naming (UX P2-15) ──────────────────────────────────────
+
+def display_tool_name(name):
+    """Short display name for MCP tool ids: ``server · tool``.
+
+    ``mcp__plugin_playwright_playwright__browser_take_screenshot``
+    → ``playwright · browser_take_screenshot``
+    (mcp__ prefix stripped, repeated server tokens deduped, generic leading
+    'plugin' token dropped). Non-MCP names pass through unchanged.
+    """
+    if not name or not name.startswith("mcp__"):
+        return name
+    parts = name[5:].split("__", 1)
+    if len(parts) == 1:
+        return parts[0]
+    server, tool = parts
+    tokens: list[str] = []
+    for t in server.split("_"):
+        if t and (not tokens or tokens[-1] != t):
+            tokens.append(t)
+    if len(tokens) > 1 and tokens[0] == "plugin":
+        tokens = tokens[1:]
+    return "{} · {}".format("_".join(tokens) or server, tool)
+
+
+def _display_tool_counts(counter, top: int = 20):
+    """Collapse a raw tool counter to display names.
+
+    Returns (top-N {display: count} ordered by count desc,
+             {display: [raw ids]} for renamed tools — tooltip fallback).
+    """
+    merged: Counter = Counter()
+    fulls: dict[str, set] = defaultdict(set)
+    for raw, cnt in counter.items():
+        disp = display_tool_name(raw)
+        merged[disp] += cnt
+        if disp != raw:
+            fulls[disp].add(raw)
+    top_items = dict(merged.most_common(top))
+    full_map = {d: sorted(fulls[d]) for d in top_items if d in fulls}
+    return top_items, full_map
+
+
 _rebuilding = False
 
 
@@ -326,7 +369,7 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
             "active_time_s": 0, "tool_calls": 0, "models_used": 0,
             "avg_prompts_day": 0, "avg_active_day_s": 0,
         },
-        "daily": [], "tools": {}, "recent_tools": {},
+        "daily": [], "tools": {}, "recent_tools": {}, "tool_full_names": {},
         "time_breakdown": {
             "thinking": 0, "tool_execution": 0, "subagent": 0, "agent_runs": 0,
             "recent_subagent": 0, "recent_agent_runs": 0,
@@ -575,8 +618,9 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         "agent_runs": row["agent_runs"],
     }
 
-    # Tools for today
-    tools = json.loads(row["tool_json"] or "{}")
+    # Tools for today (display-named like the all-time/recent counters)
+    tools, today_tool_fulls = _display_tool_counts(
+        Counter(json.loads(row["tool_json"] or "{}")))
 
     # Projects for today
     proj_data = json.loads(row["project_json"] or "{}")
@@ -621,6 +665,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         "model_breakdown": today_mb,
         "time_breakdown": time_breakdown,
         "tools": tools,
+        "tool_full_names": today_tool_fulls,
         "projects": projects,
         "machine_summary": machine_summary,
     }
@@ -842,9 +887,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
                 "cache_creation_tokens": 0, "cache_read_tokens": 0, "cost": 0,
             })
 
-    # ── Tool counts (top 20) ──
-    tool_counts = dict(all_tool_counts.most_common(20))
-    recent_tools = dict(recent_tool_counts.most_common(20))
+    # ── Tool counts (top 20, MCP ids display-named; raw ids kept for tooltips) ──
+    tool_counts, _tool_fulls = _display_tool_counts(all_tool_counts)
+    recent_tools, _recent_fulls = _display_tool_counts(recent_tool_counts)
 
     # ── Model breakdown ──
     total_cost = 0.0
@@ -1028,6 +1073,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "daily": daily_list,
         "tools": tool_counts,
         "recent_tools": recent_tools,
+        "tool_full_names": {**_tool_fulls, **_recent_fulls},
         "time_breakdown": {
             "thinking": round(tot["thinking_s"]),
             "tool_execution": round(tot["tool_exec_s"]),

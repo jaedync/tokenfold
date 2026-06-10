@@ -331,6 +331,7 @@ body {
 .machine-pill--active {
   color: var(--red);
   font-weight: 700;
+  border-bottom: 2px solid var(--red);  /* non-color cue, not just hue */
 }
 
 .machine-pill + .machine-pill::before {
@@ -1083,6 +1084,22 @@ body {
   margin-left: 2px;
 }
 
+/* the env bar opens a modal — make that discoverable (incl. touch) */
+.env-info-btn {
+  margin-left: auto;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  border: 2px solid var(--gray-light);
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.env-bar:hover .env-info-btn { color: var(--black); border-color: var(--black); }
+
 /* Info modal overlay */
 .env-modal-overlay {
   position: fixed;
@@ -1298,6 +1315,173 @@ body {
   color: var(--black);
 }
 
+/* ---- JUMP NAV (sticky) ---- */
+
+.jump-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  background: var(--black);
+  border-bottom: var(--border-thin);
+  padding: 0 2.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.jump-nav::-webkit-scrollbar { display: none; }
+
+.jump-nav a {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bg);
+  text-decoration: none;
+  padding: 0.45rem 0.85rem;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.jump-nav a:hover { background: var(--red); color: #fff; }
+
+/* anchored sections land below the sticky nav */
+#cost, #rateLimitsSection, #sessions, #activity, #trends,
+#models, #machines, #tools, #daily, #reference { scroll-margin-top: 44px; }
+
+/* ---- PERIOD CHIPS (each section names its window) ---- */
+
+.chip-toggle {
+  margin-left: 0.8rem;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  border: 2px solid var(--black);
+  background: transparent;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+  align-self: center;
+}
+.chip-toggle[aria-pressed="true"] { background: var(--black); color: var(--bg); }
+
+.period-chip {
+  margin-left: 0.8rem;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  border: 2px solid var(--gray-light);
+  padding: 0.12rem 0.45rem;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.section-subheader {
+  display: flex;
+  align-items: center;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--black);
+}
+.section-subheader::before {
+  content: '';
+  width: 5px;
+  height: 20px;
+  background: var(--yellow);
+  margin-right: 0.7rem;
+}
+
+/* ---- HEATMAP / HOURLY LEGENDS ---- */
+
+.hm-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+}
+.hm-legend .sw {
+  width: 11px;
+  height: 11px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.hm-legend .gap { margin-left: 0.9rem; }
+
+/* ---- REFERENCE ACCORDION (static Anthropic data, demoted) ---- */
+
+.ref-accordion {
+  border-top: var(--border);
+  background: var(--bg);
+}
+
+.ref-accordion summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.1rem 2.5rem;
+  user-select: none;
+}
+.ref-accordion summary::-webkit-details-marker { display: none; }
+.ref-accordion summary:hover { background: rgba(26,26,26,0.03); }
+
+.ref-accordion-title {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--black);
+}
+
+.ref-accordion-sub {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+}
+
+.ref-accordion-arrow {
+  margin-left: auto;
+  font-size: 0.9rem;
+  color: var(--black);
+  transition: transform 0.15s;
+}
+.ref-accordion[open] .ref-accordion-arrow { transform: rotate(90deg); }
+.ref-accordion[open] summary { border-bottom: var(--border); }
+
+/* ---- TOGGLE GROUPS (scope vs period are different controls) ---- */
+
+.toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.toggle-group .toggle-label {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.55rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+}
+.scope-btn--loading { opacity: 0.5; pointer-events: none; }
+
 /* ---- PANELS ---- */
 
 .panel {
@@ -1406,6 +1590,12 @@ body {
 .tbl-wrap {
   max-height: 500px;
   overflow-y: auto;
+  /* Right-edge scroll shadow: the static shadow layer signals "more columns
+     this way"; the cream local layer rides the content and covers the shadow
+     once you've scrolled to the end. */
+  background:
+    linear-gradient(to left, var(--bg), rgba(244,240,232,0) 16px) right / 16px 100% no-repeat local,
+    linear-gradient(to left, rgba(26,26,26,0.12), rgba(26,26,26,0) 14px) right / 14px 100% no-repeat scroll;
 }
 
 .tbl-wrap::-webkit-scrollbar { width: 6px; }
@@ -1553,7 +1743,8 @@ th[data-info]::after {
   z-index: 10;
 }
 
-th[data-info]:hover::after { opacity: 1; }
+th[data-info]:hover::after,
+th[data-info]:focus::after { opacity: 1; }
 
 /* ---- HEATMAP TOOLTIP ---- */
 
@@ -1821,6 +2012,14 @@ th[data-info]:hover::after { opacity: 1; }
 
   /* Table column info tooltips - prevent viewport overflow */
   th[data-info]::after { white-space: normal; max-width: 200px; right: auto; left: 0; }
+
+  /* Mobile: hide secondary table columns (P2-28).
+     Sessions: Machine (left-border color carries it) and $\/hr.
+     Daily: Tool Calls and Cache Read. */
+  #sessions table th:nth-child(2), #sessions table .sess-row td:nth-child(2),
+  #sessions table th:nth-child(7), #sessions table .sess-row td:nth-child(7) { display: none; }
+  #daily table th:nth-child(4), #daily table td:nth-child(4),
+  #daily table th:nth-child(7), #daily table td:nth-child(7) { display: none; }
 }
 
 @media (max-width: 480px) {
@@ -1873,7 +2072,9 @@ th[data-info]:hover::after { opacity: 1; }
 
   .mode-btn { padding: 4px 10px; font-size: 0.7rem; }
   .scope-btn { padding: 4px 10px; font-size: 0.7rem; }
+  /* keep every 3rd hour label on phones instead of anonymous squares */
   .hourly-lbl { display: none; }
+  .hourly-lbl--key { display: block; font-size: 0.55rem; }
   .hourly-cell { gap: 0; }
   .hourly-grid { gap: 2px; }
 }
@@ -1917,7 +2118,6 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
   </div>
 </header>
-
 <!-- ======== DATE BAR ======== -->
 <div class="date-bar">
   <div class="date-bar-left">
@@ -1932,26 +2132,43 @@ th[data-info]:hover::after { opacity: 1; }
     <div id="refreshIndicator" class="refresh-indicator">DATA UPDATED</div>
     <div class="machine-pills">{{ machines_pills|safe }}</div>
     {% if not scope_locked %}
-    <div class="scope-toggle" role="group" aria-label="Usage scope">
-      <button class="scope-btn{% if scope == 'enterprise' %} scope-btn--active{% endif %}"
-              data-scope="enterprise" onclick="setScope('enterprise')">Enterprise</button>
-      <button class="scope-btn{% if scope == 'personal' %} scope-btn--active{% endif %}"
-              data-scope="personal" onclick="setScope('personal')">Personal</button>
+    <div class="toggle-group">
+      <span class="toggle-label" id="scopeToggleLabel">Scope</span>
+      <div class="scope-toggle" role="group" aria-labelledby="scopeToggleLabel">
+        <button class="scope-btn{% if scope == 'enterprise' %} scope-btn--active{% endif %}"
+                aria-pressed="{{ 'true' if scope == 'enterprise' else 'false' }}"
+                data-scope="enterprise" onclick="setScope('enterprise', this)">Enterprise</button>
+        <button class="scope-btn{% if scope == 'personal' %} scope-btn--active{% endif %}"
+                aria-pressed="{{ 'true' if scope == 'personal' else 'false' }}"
+                data-scope="personal" onclick="setScope('personal', this)">Personal</button>
+      </div>
     </div>
     {% endif %}
-    <div class="mode-toggle">
-      <button class="mode-btn" data-mode="today" onclick="setMode('today')">Today</button>
-      <button class="mode-btn" data-mode="14d" onclick="setMode('14d')">14 Days</button>
-      <button class="mode-btn" data-mode="all" onclick="setMode('all')">All Time</button>
+    <div class="toggle-group">
+      <span class="toggle-label" id="modeToggleLabel">Period</span>
+      <div class="mode-toggle" role="group" aria-labelledby="modeToggleLabel">
+        <button class="mode-btn" data-mode="today" aria-pressed="false" onclick="setMode('today')">Today</button>
+        <button class="mode-btn" data-mode="14d" aria-pressed="false" onclick="setMode('14d')">14 Days</button>
+        <button class="mode-btn" data-mode="all" aria-pressed="false" onclick="setMode('all')">All Time</button>
+      </div>
     </div>
   </div>
 </div>
-
-<!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
-<div class="stats-grid">{{ cards_html|safe }}</div>
-
+<!-- ======== JUMP NAV (sticky) ======== -->
+<nav class="jump-nav" aria-label="Page sections">
+  <a href="#cost">Cost</a>
+  <a href="#rateLimitsSection">Limits</a>
+  <a href="#sessions">Sessions</a>
+  <a href="#activity">Activity</a>
+  <a href="#trends">Trends</a>
+  <a href="#models">Models</a>
+  <a href="#machines">Machines</a>
+  <a href="#tools">Tools</a>
+  <a href="#daily">Daily</a>
+  <a href="#reference">Reference</a>
+</nav>
 <!-- ======== COST HERO ======== -->
-<div class="cost-hero">
+<div class="cost-hero" id="cost">
   <div class="cost-hero-circle"></div>
   <div class="cost-hero-main">
     <div id="costHeroLabel" class="cost-hero-label">Estimated API Cost</div>
@@ -1965,7 +2182,6 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 <div id="costMeta" class="cost-meta-bar"></div>
-
 <!-- ======== ENVIRONMENTAL IMPACT ======== -->
 <div id="envBar" class="env-bar" style="display:none">
   <div class="env-metric">
@@ -1981,10 +2197,11 @@ th[data-info]:hover::after { opacity: 1; }
   <div class="env-metric" id="envEquiv" style="display:none">
     <span class="env-equiv-text" id="envEquivVal"></span>
   </div>
+  <span class="env-info-btn" aria-hidden="true">&#9432; methodology</span>
 </div>
 
 <!-- Environmental methodology modal -->
-<div class="env-modal-overlay" id="envModal">
+<div class="env-modal-overlay" id="envModal" role="dialog" aria-modal="true" aria-label="Environmental estimation methodology">
   <div class="env-modal">
     <div class="env-modal-header">
       <h3>Estimation Methodology</h3>
@@ -2047,12 +2264,11 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
   </div>
 </div>
-
 <!-- ======== MONTH-TO-DATE COST PANEL ======== -->
 <div id="rateLimitsSection" class="rate-limits" style="display:none">
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
-    <h2>Monthly Cost</h2>
+    <h2>Cost &amp; Limits</h2>
     <span id="rateLimitsUpdated" class="rate-limits-updated">month to date</span>
   </div>
   <div id="rateLimitsGrid" class="rate-limits-grid">
@@ -2072,7 +2288,7 @@ th[data-info]:hover::after { opacity: 1; }
 </div>
 
 <!-- Weekly usage chart modal -->
-<div id="usageChartOverlay" class="usage-chart-overlay">
+<div id="usageChartOverlay" class="usage-chart-overlay" role="dialog" aria-modal="true" aria-label="Weekly usage pace chart">
   <div class="usage-chart-modal">
     <div class="usage-chart-header">
       <h3>Weekly Usage Pace</h3>
@@ -2091,87 +2307,182 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
   </div>
 </div>
-
+<!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
+<div class="stats-grid">{{ cards_html|safe }}</div>
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
-
-<!-- ======== ACTIVITY HEATMAP ======== -->
-<div class="panel" style="border-bottom:var(--border)">
-  <div class="section-header">
-    <div class="section-header-bar"></div>
-    <h2>Activity</h2>
-  </div>
-  <div id="activityHeatmap" style="overflow-x:auto;padding:4px 0 8px;margin-top:1.5rem"></div>
-</div>
-
 <!-- ======== SESSIONS / BURN RATE ======== -->
-<div class="table-panel">
+<div class="table-panel" id="sessions">
   <div class="section-header">
     <div class="section-header-bar section-header-bar--yellow"></div>
     <h2>Recent Sessions</h2>
   </div>
   <div class="tbl-wrap" style="margin-top:1.5rem">
     <table>
-      <thead><tr><th>Session</th><th>Machine</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th><th class="num" data-info="Cost divided by wall-clock duration (first to last API call). Needs at least 5 minutes of activity.">$/hr</th><th class="num">Last Active</th></tr></thead>
+      <thead><tr><th>Session</th><th>Machine</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th><th class="num" tabindex="0" data-info="Cost divided by wall-clock duration (first to last API call). Needs at least 5 minutes of activity.">$/hr</th><th class="num">Last Active</th></tr></thead>
       <tbody id="sessionsBody"></tbody>
     </table>
   </div>
-  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window. Titled rows come from Claude Desktop; untitled sessions show their project.</div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window (14 days). Titles are AI-generated summaries; untitled sessions show their project.</div>
 </div>
-
-<!-- ======== HOURLY ACTIVITY ======== -->
-<div class="panel" style="border-bottom:var(--border)">
+<!-- ======== ACTIVITY (calendar + hourly) ======== -->
+<div class="panel" style="border-bottom:var(--border)" id="activity">
   <div class="section-header">
-    <div class="section-header-bar section-header-bar--yellow"></div>
-    <h2>Hourly Activity</h2>
+    <div class="section-header-bar"></div>
+    <h2>Activity</h2>
+    <span class="period-chip">all time</span>
+  </div>
+  <div id="activityHeatmap" style="overflow-x:auto;padding:4px 0 8px;margin-top:1.5rem" role="img" aria-label="Calendar heatmap of daily cost"></div>
+  <div id="heatmapLegend" class="hm-legend"></div>
+  <div class="section-subheader">
+    <span>Hourly</span>
+    <span class="period-chip">last 24h</span>
   </div>
   <div id="hourlyHeatmap" class="hourly-grid"></div>
+  <div id="hourlyLegend" class="hm-legend"></div>
 </div>
-
+<!-- ======== STRIPE ======== -->
+<div class="stripe-band"></div>
 <!-- ======== DAILY ACTIVITY ======== -->
-<div class="panel" style="border-bottom:var(--border)">
+<div class="panel" style="border-bottom:var(--border)" id="trends">
   <div class="section-header">
     <div class="section-header-bar section-header-bar--blue"></div>
     <h2>Daily Activity</h2>
+    <span class="period-chip" data-mode-chip></span>
   </div>
   <div class="chart-container chart-container--bar" style="margin-top:1.5rem">
-    <canvas id="cDaily"></canvas>
+    <canvas id="cDaily" aria-label="Daily activity: prompts and active minutes per day" role="img"></canvas>
   </div>
 </div>
-
 <!-- ======== TOKEN BREAKDOWN ======== -->
 <div class="panel" style="border-bottom:var(--border)">
   <div class="section-header">
     <div class="section-header-bar section-header-bar--yellow"></div>
     <h2>Token Breakdown</h2>
+    <span class="period-chip" data-mode-chip></span>
+    <button id="tokCacheToggle" class="chip-toggle" aria-pressed="false">include cache reads</button>
   </div>
   <div class="chart-container chart-container--bar" style="margin-top:1.5rem">
-    <canvas id="cTokens"></canvas>
+    <canvas id="cTokens" aria-label="Daily token breakdown stacked bars" role="img"></canvas>
   </div>
 </div>
-
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
-
-<!-- ======== COST BY MODEL + COST/HR vs THROUGHPUT ======== -->
-<div class="content-grid-2col">
+<!-- ======== MODELS: COST BY MODEL + TIME BREAKDOWN ======== -->
+<div class="content-grid-2col" id="models">
   <div class="panel panel--bordered-right">
     <div class="section-header">
       <div class="section-header-bar"></div>
       <h2>Cost by Model</h2>
+      <span class="period-chip" data-mode-chip></span>
     </div>
     <div id="costWrap" class="chart-wrap" style="min-height:220px"></div>
   </div>
   <div class="panel">
     <div class="section-header">
       <div class="section-header-bar section-header-bar--blue"></div>
-      <h2>Cost/Hr vs Throughput</h2>
+      <h2>Time Breakdown</h2>
+      <span class="period-chip" data-mode-chip></span>
     </div>
-    <div id="cphWrap" class="chart-wrap" style="min-height:220px"></div>
+    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cTime" aria-label="Time breakdown doughnut chart" role="img"></canvas></div>
+    <div id="timeDetail" style="text-align:center;margin-top:8px;font-size:.78rem;color:var(--gray-dim)"></div>
   </div>
 </div>
-
-<!-- ======== PRICING + BENCHMARKS ======== -->
+<!-- ======== MODEL BREAKDOWN TABLE ======== -->
+<div class="table-panel">
+  <div class="section-header">
+    <div class="section-header-bar"></div>
+    <h2>Model Breakdown</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div class="tbl-wrap" style="margin-top:1.5rem">
+    <table>
+      <thead><tr><th>Model</th><th class="num">API Calls</th><th class="num">Total Tokens</th><th class="num">Est. Cost</th><th class="num">Hours</th><th class="num">Cost/Hr</th><th class="num" tabindex="0" data-info="Effective output tokens/sec. Measured from prompt send to last response chunk, filtered to 50+ output token requests.">Tok/s</th></tr></thead>
+      <tbody id="modelBody"></tbody>
+    </table>
+  </div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Costs use published Anthropic API rates (see Reference below). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
+</div>
+<!-- ======== STRIPE ======== -->
+<div class="stripe-band"></div>
+<!-- ======== MACHINES ======== -->
+<div class="content-grid-2col" id="machines">
+  <div class="panel panel--bordered-right">
+    <div class="section-header">
+      <div class="section-header-bar"></div>
+      <h2>Cost by Machine</h2>
+      <span class="period-chip" data-mode-chip></span>
+    </div>
+    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cMachineCost" aria-label="Cost by machine doughnut chart" role="img"></canvas></div>
+  </div>
+  <div class="panel">
+    <div class="section-header">
+      <div class="section-header-bar section-header-bar--black"></div>
+      <h2>Daily Cost by Machine</h2>
+      <span class="period-chip" data-mode-chip></span>
+    </div>
+    <div class="chart-container chart-container--bar" style="margin-top:1.5rem">
+      <canvas id="cMachineDaily" aria-label="Daily cost by machine stacked bars" role="img"></canvas>
+    </div>
+  </div>
+</div>
+<!-- ======== MACHINE BREAKDOWN TABLE ======== -->
+<div class="table-panel">
+  <div class="section-header">
+    <div class="section-header-bar"></div>
+    <h2>Machine Breakdown</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div class="tbl-wrap" style="margin-top:1.5rem">
+    <table>
+      <thead><tr><th>Machine</th><th class="num">Prompts</th><th class="num">API Calls</th><th class="num">Tool Calls</th><th class="num">Total Tokens</th><th class="num">Est. Cost</th></tr></thead>
+      <tbody id="machineBody"></tbody>
+    </table>
+  </div>
+</div>
+<!-- ======== STRIPE ======== -->
+<div class="stripe-band"></div>
+<!-- ======== TOOL USAGE ======== -->
+<div class="panel" style="border-bottom:var(--border)" id="tools">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--blue"></div>
+    <h2>Tool Usage (Top 20)</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div class="chart-wrap chart-wrap--tall"><canvas id="cTools" aria-label="Tool usage horizontal bars" role="img"></canvas></div>
+</div>
+<!-- ======== PROJECT ACTIVITY ======== -->
+<div class="panel" style="border-bottom:var(--border)">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--yellow"></div>
+    <h2>Project Activity (Top 15)</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div class="chart-wrap chart-wrap--mid"><canvas id="cProjects" aria-label="Project activity cost bars" role="img"></canvas></div>
+</div>
+<!-- ======== STRIPE ======== -->
+<div class="stripe-band"></div>
+<!-- ======== DAILY BREAKDOWN TABLE ======== -->
+<div class="table-panel" id="daily">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--blue"></div>
+    <h2>Daily Breakdown</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div class="tbl-wrap" style="margin-top:1.5rem">
+    <table id="dailyTable">
+      <thead><tr><th>Date</th><th class="num">Sessions</th><th class="num">Prompts</th><th class="num">Tool Calls</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache Read</th><th class="num">Active</th><th class="num">Cost</th></tr></thead>
+      <tbody>{{ table_rows|safe }}</tbody>
+    </table>
+  </div>
+</div>
+<!-- ======== REFERENCE (collapsed accordion: static Anthropic data) ======== -->
+<details class="ref-accordion" id="reference">
+  <summary>
+    <span class="ref-accordion-title">Reference</span>
+    <span class="ref-accordion-sub">Anthropic list pricing &middot; benchmarks &middot; cost/hr vs throughput &mdash; static data, not your telemetry</span>
+    <span class="ref-accordion-arrow" aria-hidden="true">&#9656;</span>
+  </summary>
 <div class="content-grid-2col">
   <div class="panel panel--bordered-right">
     <div class="section-header">
@@ -2180,7 +2491,7 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
     <div class="tbl-wrap" style="margin-top:1.5rem">
       <table>
-        <thead><tr><th>Model</th><th class="num">Input</th><th class="num">Output</th><th class="num" data-info="5-minute ephemeral cache writes: 1.25x base input">Cache 5m</th><th class="num" data-info="1-hour ephemeral cache writes: 2x base input">Cache 1h</th><th class="num">Cache Read</th></tr></thead>
+        <thead><tr><th>Model</th><th class="num">Input</th><th class="num">Output</th><th class="num" tabindex="0" data-info="5-minute ephemeral cache writes: 1.25x base input">Cache 5m</th><th class="num" tabindex="0" data-info="1-hour ephemeral cache writes: 2x base input">Cache 1h</th><th class="num">Cache Read</th></tr></thead>
         <tbody id="pricingBody"></tbody>
       </table>
     </div>
@@ -2196,108 +2507,15 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 
-<!-- ======== TIME BREAKDOWN + COST BY MACHINE ======== -->
-<!-- The Model Usage / Cost-by-Model donuts duplicated the stacked bar + table
-     above; the Prompts-by-Machine donut duplicated a table column. Deleted. -->
-<div class="content-grid-2col">
-  <div class="panel panel--bordered-right">
-    <div class="section-header">
-      <div class="section-header-bar section-header-bar--blue"></div>
-      <h2>Time Breakdown</h2>
-    </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cTime"></canvas></div>
-    <div id="timeDetail" style="text-align:center;margin-top:8px;font-size:.78rem;color:var(--gray-dim)"></div>
-  </div>
-  <div class="panel">
-    <div class="section-header">
-      <div class="section-header-bar"></div>
-      <h2>Cost by Machine</h2>
-    </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cMachineCost"></canvas></div>
-  </div>
-</div>
-
-<!-- ======== DAILY COST BY MACHINE ======== -->
-<div class="panel" style="border-bottom:var(--border)">
-  <div class="section-header">
-    <div class="section-header-bar section-header-bar--black"></div>
-    <h2>Daily Cost by Machine</h2>
-  </div>
-  <div class="chart-container chart-container--bar" style="margin-top:1.5rem">
-    <canvas id="cMachineDaily"></canvas>
-  </div>
-</div>
-
-<!-- ======== MACHINE BREAKDOWN TABLE ======== -->
-<div class="table-panel">
-  <div class="section-header">
-    <div class="section-header-bar"></div>
-    <h2>Machine Breakdown</h2>
-  </div>
-  <div class="tbl-wrap" style="margin-top:1.5rem">
-    <table>
-      <thead><tr><th>Machine</th><th class="num">Prompts</th><th class="num">API Calls</th><th class="num">Tool Calls</th><th class="num">Total Tokens</th><th class="num">Est. Cost</th></tr></thead>
-      <tbody id="machineBody"></tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ======== STRIPE ======== -->
-<div class="stripe-band"></div>
-
-<!-- ======== TOOL USAGE ======== -->
 <div class="panel" style="border-bottom:var(--border)">
   <div class="section-header">
     <div class="section-header-bar section-header-bar--blue"></div>
-    <h2>Tool Usage (Top 20)</h2>
+    <h2>Cost/Hr vs Throughput</h2>
+    <span class="period-chip" data-mode-chip></span>
   </div>
-  <div class="chart-wrap chart-wrap--tall"><canvas id="cTools"></canvas></div>
+  <div id="cphWrap" class="chart-wrap" style="min-height:220px"></div>
 </div>
-
-<!-- ======== PROJECT ACTIVITY ======== -->
-<div class="panel" style="border-bottom:var(--border)">
-  <div class="section-header">
-    <div class="section-header-bar section-header-bar--yellow"></div>
-    <h2>Project Activity (Top 15)</h2>
-  </div>
-  <div class="chart-wrap chart-wrap--mid"><canvas id="cProjects"></canvas></div>
-</div>
-
-<!-- ======== STRIPE ======== -->
-<div class="stripe-band"></div>
-
-<!-- ======== MODEL BREAKDOWN TABLE ======== -->
-<div class="table-panel">
-  <div class="section-header">
-    <div class="section-header-bar"></div>
-    <h2>Model Breakdown</h2>
-  </div>
-  <div class="tbl-wrap" style="margin-top:1.5rem">
-    <table>
-      <thead><tr><th>Model</th><th class="num">API Calls</th><th class="num">Total Tokens</th><th class="num">Est. Cost</th><th class="num">Hours</th><th class="num">Cost/Hr</th><th class="num" data-info="Effective output tokens/sec. Measured from prompt send to last response chunk, filtered to 50+ output token requests.">Tok/s</th></tr></thead>
-      <tbody id="modelBody"></tbody>
-    </table>
-  </div>
-  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Cost estimated using published Anthropic API rates (5m and 1h prompt-cache tiers billed at their actual rates). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
-</div>
-
-<!-- ======== DAILY BREAKDOWN TABLE ======== -->
-<div class="table-panel" style="border-bottom:none">
-  <div class="section-header">
-    <div class="section-header-bar section-header-bar--blue"></div>
-    <h2>Daily Breakdown</h2>
-  </div>
-  <div class="tbl-wrap" style="margin-top:1.5rem">
-    <table id="dailyTable">
-      <thead><tr><th>Date</th><th class="num">Sessions</th><th class="num">Prompts</th><th class="num">Tool Calls</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache Read</th><th class="num">Active</th><th class="num">Cost</th></tr></thead>
-      <tbody>{{ table_rows|safe }}</tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ======== STRIPE ======== -->
-<div class="stripe-band"></div>
-
+</details>
 <!-- ======== FOOTER ======== -->
 <footer class="footer">
   <div class="footer-left">
@@ -2381,11 +2599,19 @@ const TF_LOCKED = {{ 'true' if scope_locked else 'false' }};
 })();
 
 /* ---- Scope Toggle ---- */
-function setScope(s) {
+function setScope(s, btn) {
   try { localStorage.setItem('tf_scope', s); } catch(e) {}
   // Cookie lets the SERVER render the right scope on future bare / visits
   // (single load — no client-side redirect).
   document.cookie = 'tf_scope=' + s + ';path=/;max-age=31536000;SameSite=Lax';
+  // Pressed/loading state: this triggers a full reload, so show it happening
+  if (btn) {
+    document.querySelectorAll('.scope-btn').forEach(function(b){
+      b.classList.add('scope-btn--loading');
+      b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+    });
+    btn.classList.add('scope-btn--active');
+  }
   var u = new URL(window.location.href);
   u.searchParams.set('scope', s);
   window.location.assign(u.toString());
@@ -2690,7 +2916,22 @@ function renderHeatmap(){
   svg+='</svg>';
 
   const wrap=document.getElementById('activityHeatmap');
+  // Skip the rebuild when nothing changed — live refreshes otherwise reflash
+  // the SVG and reset the scroll position every 30s. (P2-24)
+  if(wrap._renderKey === svg) return;
+  wrap._renderKey = svg;
   wrap.innerHTML=svg;
+  // Calendar grows oldest -> newest; land the scroll on "now", not January. (P2-26)
+  wrap.scrollLeft = wrap.scrollWidth;
+
+  const legend=document.getElementById('heatmapLegend');
+  if(legend){
+    legend.innerHTML = '<span>less</span>'
+      + HM.map(function(c){return '<span class="sw" style="background:'+c+'"></span>';}).join('')
+      + '<span>more</span>'
+      + '<span class="sw gap" style="background:'+PEAK+'"></span><span>peak day</span>'
+      + '<span class="gap">one square = one day\u2019s est. cost</span>';
+  }
 }
 renderHeatmap();
 
@@ -2712,18 +2953,31 @@ function renderHourly(){
   }
 
   var html = '';
-  hourly.forEach(function(h){
+  hourly.forEach(function(h, i){
     var cost = h.cost || 0;
     var bg = h.is_future ? HM_FUTURE : hmColor(cost, h.period);
     var tipParts = [h.day_short + ' ' + h.label + (h.is_now ? ' (now)' : h.is_future ? ' (upcoming)' : '') + ': ' + fC(cost)];
     if(h.prompts > 0) tipParts.push(h.prompts + ' prompts');
     if(h.tool_calls > 0) tipParts.push(h.tool_calls + ' tools');
+    // every 3rd label keeps mobile squares anchored to a clock (P2-27)
+    var lblCls = 'hourly-lbl' + (h.is_now ? ' hourly-lbl--now' : '') + (i % 3 === 0 ? ' hourly-lbl--key' : '');
     html += '<div class="hourly-cell">'
       + '<div class="hourly-sq" style="background:' + bg + '" data-tip="' + tipParts.join(' \u00b7 ') + '"></div>'
-      + '<div class="hourly-lbl' + (h.is_now ? ' hourly-lbl--now' : '') + '">' + h.label + '</div>'
+      + '<div class="' + lblCls + '">' + h.label + '</div>'
       + '</div>';
   });
+  // Skip rebuild when unchanged (P2-24)
+  if(wrap._renderKey === html) return;
+  wrap._renderKey = html;
   wrap.innerHTML = html;
+
+  var legend = document.getElementById('hourlyLegend');
+  if(legend){
+    legend.innerHTML = '<span class="sw" style="background:' + HM_BLUE[3] + '"></span><span>today</span>'
+      + '<span class="sw gap" style="background:' + HM_YELLOW[3] + '"></span><span>yesterday</span>'
+      + '<span class="sw gap" style="background:' + HM_FUTURE + '"></span><span>upcoming</span>'
+      + '<span class="gap">shade = est. cost per hour</span>';
+  }
 }
 renderHourly();
 
@@ -2831,11 +3085,25 @@ var _envCycleTimer = null;
     }
 })();
 
+/* ---- Token-breakdown cache-read toggle (P2-13) ---- */
+var _tokIncludeCacheReads = false;
+(function(){
+  var btn = document.getElementById('tokCacheToggle');
+  if(!btn) return;
+  btn.addEventListener('click', function(){
+    _tokIncludeCacheReads = !_tokIncludeCacheReads;
+    btn.setAttribute('aria-pressed', _tokIncludeCacheReads ? 'true' : 'false');
+    renderMode(localStorage.getItem('dashMode') || '14d');
+  });
+})();
+
 /* ---- Mode Toggle ---- */
 function setMode(mode) {
   localStorage.setItem('dashMode', mode);
   document.querySelectorAll('.mode-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.mode === mode);
+    const on = b.dataset.mode === mode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   renderMode(mode);
 }
@@ -2843,6 +3111,10 @@ function setMode(mode) {
 function renderMode(mode) {
   const isRecent = mode === '14d';
   const isToday = mode === 'today';
+
+  // Each mode-aware section names its window via a header chip (P2-18)
+  const chipText = isToday ? 'today' : isRecent ? 'last 14 days' : 'all time';
+  document.querySelectorAll('[data-mode-chip]').forEach(el => { el.textContent = chipText; });
   const todayMB = isToday ? (D.today.model_breakdown || []) : null;
   const cphFilterKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
   const activeMB = isToday
@@ -2956,7 +3228,9 @@ function renderMode(mode) {
     }
   });
 
-  /* ── Daily Activity chart ── */
+  /* ── Daily Activity chart ──
+     Two axes max (prompts left, active minutes right). The old third axis
+     (tool calls) was uninterpretable — tool calls live in the tooltip. */
   const useLine = daily.length > 60;
   const lnCfg = (color) => useLine
     ? {type:'line',borderColor:color,backgroundColor:'transparent',borderWidth:3,pointRadius:2,tension:.3}
@@ -2964,32 +3238,41 @@ function renderMode(mode) {
   upsertChart('daily', document.getElementById('cDaily'),{
     type:'bar',
     data:{labels:dates,datasets:[
-      {label:'Tool Calls',data:daily.map(d=>d.tool_calls),...lnCfg('#e63329'),order:3},
-      {label:'Prompts',data:daily.map(d=>d.prompts),...lnCfg('#1a4b8c'),yAxisID:'y2',order:2},
-      {label:'Active Min',data:daily.map(d=>d.active_minutes),...lnCfg('#f5c518'),yAxisID:'y1',order:1}
+      {label:'Prompts',data:daily.map(d=>d.prompts),...lnCfg('#1a4b8c'),order:2},
+      {label:'Active Min',data:daily.map(d=>d.active_minutes),...lnCfg('#e63329'),yAxisID:'y1',order:1}
     ]},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       scales:{
         x:{grid:{display:false},border:{color:'#1a1a1a',width:3}},
-        y:{beginAtZero:true,title:{display:!isMobile(),text:'Tool Calls',color:'#e63329',font:{size:10}},ticks:{color:'#e63329'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-        y1:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Minutes',color:'#9a7a00',font:{size:10}},ticks:{color:'#9a7a00'},grid:{display:false},border:{color:'#1a1a1a',width:3}},
-        y2:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Prompts',color:'#1a4b8c',font:{size:10}},ticks:{color:'#1a4b8c'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
+        y:{beginAtZero:true,title:{display:!isMobile(),text:'Prompts',color:'#1a4b8c',font:{size:10}},ticks:{color:'#1a4b8c'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+        y1:{position:'right',beginAtZero:true,title:{display:!isMobile(),text:'Minutes',color:'#e63329',font:{size:10}},ticks:{color:'#e63329'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
       },
       plugins:{
         legend:{position:'bottom',labels:{padding:10,font:{weight:700,size:10},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.dataset.label+': '+fN(c.raw)}}
+        tooltip:{callbacks:{
+          label:c=>c.dataset.label+': '+fN(c.raw),
+          afterBody:items=>{
+            const d=daily[items[0].dataIndex];
+            return d?('Tool calls: '+fN(d.tool_calls)):'';
+          }
+        }}
       }}
   });
 
-  /* ── Token Breakdown chart ── */
+  /* ── Token Breakdown chart ──
+     Cache reads (99%+ of volume) flatten input/output to invisibility, so
+     they're excluded by default; the header toggle re-includes them. */
+  const tokDatasets = [
+    {label:'Cache Creation',data:daily.map(d=>d.cache_creation_tokens),backgroundColor:'#f5c51860',borderColor:'#1a1a1a',borderWidth:1},
+    {label:'Input',data:daily.map(d=>d.input_tokens),backgroundColor:'#1a4b8c70',borderColor:'#1a1a1a',borderWidth:1},
+    {label:'Output',data:daily.map(d=>d.output_tokens),backgroundColor:'#e6332970',borderColor:'#1a1a1a',borderWidth:1}
+  ];
+  if(_tokIncludeCacheReads){
+    tokDatasets.unshift({label:'Cache Read',data:daily.map(d=>d.cache_read_tokens),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1});
+  }
   upsertChart('tokens', document.getElementById('cTokens'),{
     type:'bar',
-    data:{labels:dates,datasets:[
-      {label:'Cache Read',data:daily.map(d=>d.cache_read_tokens),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1},
-      {label:'Cache Creation',data:daily.map(d=>d.cache_creation_tokens),backgroundColor:'#f5c51860',borderColor:'#1a1a1a',borderWidth:1},
-      {label:'Input',data:daily.map(d=>d.input_tokens),backgroundColor:'#1a4b8c70',borderColor:'#1a1a1a',borderWidth:1},
-      {label:'Output',data:daily.map(d=>d.output_tokens),backgroundColor:'#e6332970',borderColor:'#1a1a1a',borderWidth:1}
-    ]},
+    data:{labels:dates,datasets:tokDatasets},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       scales:{
         x:{stacked:true,grid:{display:false},border:{color:'#1a1a1a',width:3}},
@@ -2997,7 +3280,14 @@ function renderMode(mode) {
       },
       plugins:{
         legend:{position:'bottom',labels:{padding:10,font:{weight:700,size:10},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.dataset.label+': '+fN(c.raw)}}
+        tooltip:{callbacks:{
+          label:c=>c.dataset.label+': '+fN(c.raw),
+          afterBody:items=>{
+            if(_tokIncludeCacheReads) return '';
+            const d=daily[items[0].dataIndex];
+            return d?('Cache read: '+fN(d.cache_read_tokens)+' (hidden)'):'';
+          }
+        }}
       }}
   });
 
@@ -3226,12 +3516,18 @@ function renderMode(mode) {
 
   /* ── Tool Usage ── */
   const toolData = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
+  const toolFulls = (isToday ? (D.today.tool_full_names||{}) : (D.tool_full_names||{}));
   upsertChart('tools', document.getElementById('cTools'),{
     type:'bar',
     data:{labels:Object.keys(toolData),datasets:[{data:Object.values(toolData),
       backgroundColor:'#1a4b8c60',borderColor:'#1a1a1a',borderWidth:2}]},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false}},
+      plugins:{legend:{display:false},
+        // MCP tools are display-named "server · tool"; the raw id lives here
+        tooltip:{callbacks:{afterBody:items=>{
+          const f=toolFulls[items[0].label];
+          return f?f.join(String.fromCharCode(10)):'';
+        }}}},
       scales:{
         x:{beginAtZero:true,grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
         y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
@@ -3244,20 +3540,26 @@ function renderMode(mode) {
   const pLabels = projSorted.map(p=>p.name);
   const pCost = projSorted.map(p=>isToday?p.cost:isRecent?p.recent_cost:p.cost);
   const pMin = projSorted.map(p=>isToday?p.minutes:isRecent?p.recent_minutes:p.minutes);
+  /* Cost-only bars — the old dual top/bottom x-axes overlaid two units on one
+     row and read as a single scale. Active time lives in the tooltip. */
   upsertChart('projects', document.getElementById('cProjects'),{
     type:'bar',
     data:{labels:pLabels,datasets:[
-      {label:'Cost',data:pCost,backgroundColor:'#e6332960',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x'},
-      {label:'Active Min',data:pMin,backgroundColor:'#1a4b8c40',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x2'}
+      {label:'Cost',data:pCost,backgroundColor:'#e6332960',borderColor:'#1a1a1a',borderWidth:2}
     ]},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
       plugins:{
-        legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.dataset.label==='Cost'?c.dataset.label+': '+fC(c.raw):c.dataset.label+': '+fN(c.raw)}}
+        legend:{display:false},
+        tooltip:{callbacks:{
+          label:c=>'Cost: '+fC(c.raw),
+          afterBody:items=>{
+            const m=pMin[items[0].dataIndex];
+            return m!=null?('Active: '+fT(m*60)):'';
+          }
+        }}
       },
       scales:{
-        x:{position:'top',beginAtZero:true,ticks:{callback:v=>'$'+v},title:{display:!isMobile(),text:'Cost',color:'#e63329',font:{size:10}},grid:{color:'#d8d4cc'},border:{display:false}},
-        x2:{position:'bottom',beginAtZero:true,grid:{display:false},title:{display:!isMobile(),text:'Active Minutes',color:'#1a4b8c',font:{size:10}},border:{color:'#1a1a1a',width:3}},
+        x:{beginAtZero:true,ticks:{callback:v=>'$'+v},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
         y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
       }}
   });
@@ -3429,8 +3731,12 @@ function initRateLimits(){
 
     var DAY_MS = 24 * 60 * 60 * 1000;
     var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    var grid = document.getElementById('rateLimitsGrid');
 
     // ── 7-day pace secondary detail ──
+    // Only rendered when there are NO OAuth gauges (enterprise / locked):
+    // with gauges present this panel duplicated "active this week" (P2-10) —
+    // the pace-chart trigger moves onto the Weekly Limit gauge instead.
     var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
 
     function fmtHM(totalMin) {
@@ -3439,24 +3745,30 @@ function initRateLimits(){
       return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
     }
 
-    var statsHtml = '<div class="rate-gauge-stats">'
-      + '<div class="rate-gauge-stat">'
-      + '<div class="rate-gauge-stat-value">' + fmtHM(weekActiveMin) + '</div>'
-      + '<div class="rate-gauge-stat-label">active · 7d</div>'
-      + '</div>'
-      + '</div>';
+    if (wb.oauth) {
+      pacePanel.style.display = 'none';
+      pacePanel.innerHTML = '';
+      if (grid) grid.style.gridTemplateColumns = '1fr';
+    } else {
+      pacePanel.style.display = '';
+      if (grid) grid.style.gridTemplateColumns = '';
+      var statsHtml = '<div class="rate-gauge-stats">'
+        + '<div class="rate-gauge-stat">'
+        + '<div class="rate-gauge-stat-value">' + fmtHM(weekActiveMin) + '</div>'
+        + '<div class="rate-gauge-stat-label">active · 7d</div>'
+        + '</div>'
+        + '</div>';
 
-    var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View 7-day pace">'
-      + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
-      + '</button>';
+      var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View 7-day pace">'
+        + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+        + '</button>';
 
-    var panelHtml = '<div class="rate-gauge-head">'
-      + '<span class="rate-gauge-label">7-Day Pace' + chartBtnHtml + '</span>'
-      + '<span class="rate-gauge-reset">rolling 7 days</span>'
-      + '</div>'
-      + statsHtml;
-
-    pacePanel.innerHTML = panelHtml;
+      pacePanel.innerHTML = '<div class="rate-gauge-head">'
+        + '<span class="rate-gauge-label">7-Day Pace' + chartBtnHtml + '</span>'
+        + '<span class="rate-gauge-reset">rolling 7 days</span>'
+        + '</div>'
+        + statsHtml;
+    }
 
   /* ── Personal OAuth limit gauges (present only when wb.oauth is set by server) ── */
   /* The server gates this key: enterprise scope or locked instance → no oauth key.  */
@@ -3588,6 +3900,9 @@ function initRateLimits(){
           + '</button>';
       }
 
+      var noteHtml = opts.note
+        ? '<div class="rate-gauge-projection">' + opts.note + '</div>' : '';
+
       return '<div class="rate-gauge">'
         + '<div class="rate-gauge-head">'
         + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
@@ -3601,6 +3916,7 @@ function initRateLimits(){
         + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
         + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
         + '</div>'
+        + noteHtml
         + projHtml
         + statsHtml2
         + '</div>';
@@ -3660,8 +3976,9 @@ function initRateLimits(){
         color: overUnder ? 'var(--red)' : 'var(--blue)'
       });
     }
-    weeklyStats.push({ value: fC(weekCost), label: 'spent this week' });
-    weeklyStats.push({ value: fmtHMg(weekActiveMin), label: 'active this week' });
+    // labels say "rolling 7d" — these do NOT reset with the limit window (P2-11)
+    weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
+    weeklyStats.push({ value: fmtHMg(weekActiveMin), label: 'active · rolling 7d' });
 
     var remainPct = 100 - wPct;
     if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
@@ -3672,11 +3989,20 @@ function initRateLimits(){
       weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
     }
 
+    // "0% · 100% remaining" next to nonzero rolling-7d stats reads as broken
+    // right after a window reset — say so explicitly (P2-11)
+    var weeklyNote = null;
+    if (wPct < 1 && (weekCost > 0 || weekActiveMin > 0)) {
+      weeklyNote = 'window just reset \u2014 the rolling-7d stats below carry over';
+    }
+
     var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
     gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
       dayLines: weeklyDayLines,
       projectedPct: weeklyProjected,
-      stats: weeklyStats
+      stats: weeklyStats,
+      note: weeklyNote,
+      chartBtn: true
     });
     gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected);
     gaugeHtml += '</div>';
@@ -4060,6 +4386,11 @@ function renderSessions(){
   const body = document.getElementById('sessionsBody');
   if(!body) return;
   const rows = D.recent_sessions || [];
+  // Skip rebuild when data unchanged — preserves expanded detail rows and
+  // scroll position inside .tbl-wrap across live refreshes (P2-24)
+  const key = JSON.stringify(rows);
+  if(body._renderKey === key) return;
+  body._renderKey = key;
   if(!rows.length){
     body.innerHTML = '<tr><td colspan="8" style="color:var(--gray-dim)">no recent sessions</td></tr>';
     return;
@@ -4158,9 +4489,10 @@ renderSessions();
   let pollTimer = null;
   const POLL_INTERVAL = 30000;
 
-  function showRefreshIndicator(){
+  function showRefreshIndicator(text){
     const el=document.getElementById('refreshIndicator');
     if(!el)return;
+    el.textContent = text || 'DATA UPDATED';
     el.classList.add('visible');
     setTimeout(()=>el.classList.remove('visible'), 2500);
   }
@@ -4194,7 +4526,10 @@ renderSessions();
       if(genLabel&&data.generation_time)genLabel.textContent='Generated '+data.generation_time;
       updateStatus();
       showRefreshIndicator();
-    }).catch(()=>{}).finally(()=>{isFetching=false;});
+    }).catch(()=>{
+      // Quiet inline error state — never silently swallow (house rules)
+      showRefreshIndicator('UPDATE FAILED \u00b7 RETRYING');
+    }).finally(()=>{isFetching=false;});
   }
 
   function checkForUpdate(){
