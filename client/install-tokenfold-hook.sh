@@ -193,6 +193,11 @@ marker = "usage-telemetry/hook.sh"
 group = {"hooks": [{"type": "command",
                     "command": '"$HOME/.claude/usage-telemetry/hook.sh"',
                     "timeout": 10}]}
+# Long turns can run for hours before Stop fires; PostToolUse + a 5-min
+# debounce (TOKENFOLD_MIN_INTERVAL in the wrapper) keeps data <=5 min stale.
+post_group = {"hooks": [{"type": "command",
+              "command": 'TOKENFOLD_MIN_INTERVAL=300 "$HOME/.claude/usage-telemetry/hook.sh"',
+              "timeout": 10}]}
 
 try:
     with open(path) as f:
@@ -204,15 +209,16 @@ except json.JSONDecodeError as e:
 
 hooks = dict(settings.get("hooks", {}))
 changed = False
-for event in ("Stop", "SessionEnd"):
+for event in ("Stop", "SessionEnd", "PostToolUse"):
     groups = list(hooks.get(event, []))
+    add = post_group if event == "PostToolUse" else group
     present = any(
         marker in (h.get("command", "") or "")
         for g in groups if isinstance(g, dict)
         for h in g.get("hooks", []) if isinstance(h, dict)
     )
     if not present:
-        groups = groups + [group]   # new list — never mutate the original
+        groups = groups + [add]    # new list — never mutate the original
         changed = True
     hooks[event] = groups
 

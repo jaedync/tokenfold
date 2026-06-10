@@ -40,6 +40,17 @@ TOKENFOLD_URL="$(cat "$URL_FILE")"
 export TOKENFOLD_API_KEY
 TOKENFOLD_API_KEY="$(cat "$TOKEN_FILE")"
 
+# Debounce (for high-frequency hooks like PostToolUse): when
+# TOKENFOLD_MIN_INTERVAL is set, skip if a push started in the last N seconds.
+# Stamp races are benign — the server dedups by uuid.
+if [ -n "$TOKENFOLD_MIN_INTERVAL" ]; then
+  STAMP="$HOME/.tokenfold-last-push"
+  now=$(date +%s)
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  [ $((now - last)) -lt "$TOKENFOLD_MIN_INTERVAL" ] && exit 0
+  echo "$now" > "$STAMP"
+fi
+
 # Detach so the hook returns immediately. setsid on Linux, nohup fallback on macOS.
 # Append to log file so auth failures (on stderr via the push script) are diagnosable.
 if command -v setsid >/dev/null 2>&1; then

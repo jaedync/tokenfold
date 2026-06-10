@@ -24,12 +24,14 @@ You need two inputs from the operator (neither is stored in this repo):
 | `~/.claude/usage-telemetry/hook.sh` | Stamps `TOKENFOLD_MACHINE=$(hostname -s)` and execs the wrapper. This is what the hook calls. |
 | `~/.config/notify-relay-url` | Server base URL. |
 | `~/.config/tokenfold-api-key` (mode `0600`) | The ingest token (`STATS_API_KEY`). **Never committed to git.** |
-| `~/.claude/settings.json` → `hooks.Stop` and `hooks.SessionEnd` | A new hook **group object** calling `hook.sh`. Appended, never merged into an existing group, so it can't disturb your other hooks. |
+| `~/.claude/settings.json` → `hooks.Stop`, `hooks.SessionEnd` and `hooks.PostToolUse` | A new hook **group object** calling `hook.sh`. Appended, never merged into an existing group, so it can't disturb your other hooks. |
 
 **Account attribution** is automatic: each push reads `~/.claude.json`'s `oauthAccount`
 (email, `organizationName`, `organizationType`, `organizationUuid`) and tags every event.
 Personal Max accounts report `organizationType=claude_max` → classified **personal**.
 Enterprise/Team orgs report `claude_enterprise`/`claude_team` → classified **enterprise**.
+**Freshness:** `Stop`/`SessionEnd` flush when a turn or session ends, but a single turn can run for hours — so the `PostToolUse` hook also fires (after every tool call) with a built-in **5-minute debounce** (`TOKENFOLD_MIN_INTERVAL=300`): data is never more than ~5 minutes stale during long runs, at most one push per 5 minutes.
+
 No secrets leave the machine — only those four identity fields.
 
 ---

@@ -52,3 +52,25 @@ class InstallerIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DebouncedPostToolUseTest(unittest.TestCase):
+    """Long turns run for hours before Stop fires; the PostToolUse hook with a
+    TOKENFOLD_MIN_INTERVAL debounce keeps server data <=5 min stale. Source-level
+    contract: the wrapper implements the debounce and the installer registers
+    the debounced PostToolUse group alongside Stop/SessionEnd."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        base = Path(__file__).resolve().parents[2] / "client"
+        cls.wrapper = (base / "tokenfold-usage-push.sh").read_text()
+        cls.installer = (base / "install-tokenfold-hook.sh").read_text()
+
+    def test_wrapper_debounces(self):
+        self.assertIn("TOKENFOLD_MIN_INTERVAL", self.wrapper)
+        self.assertIn(".tokenfold-last-push", self.wrapper)
+
+    def test_installer_registers_posttooluse(self):
+        self.assertIn('"PostToolUse"', self.installer)
+        self.assertIn("TOKENFOLD_MIN_INTERVAL=300", self.installer)
