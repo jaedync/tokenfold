@@ -224,7 +224,7 @@ def get_conn() -> sqlite3.Connection:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA busy_timeout=5000")
+        _conn.execute("PRAGMA busy_timeout=60000")
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
         _migrate(_conn)

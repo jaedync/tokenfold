@@ -51,8 +51,11 @@ def harvest():
     titles: dict = {}
     root = Path.home() / ".claude" / "projects"
     files = sorted(root.rglob("*.jsonl"))
-    print(f"scanning {len(files)} transcript files under {root}")
-    for path in files:
+    print(f"scanning {len(files)} transcript files under {root}", flush=True)
+    for idx, path in enumerate(files, 1):
+        if idx % 100 == 0:
+            print(f"  …{idx}/{len(files)} files scanned "
+                  f"({len(cache_tiers)} splits, {len(titles)} titles so far)", flush=True)
         try:
             with open(path, errors="ignore") as fh:
                 for line in fh:
@@ -89,7 +92,7 @@ def post(url, key, payload):
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "X-API-Key": key},
         method="POST")
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read())
 
 
@@ -119,7 +122,7 @@ def main():
         tot_titles += r["updated_titles"]
         days.update(r["touched_days"])
         print(f"  batch {i // BATCH + 1}: +{r['updated_events']} events, "
-              f"+{r['updated_titles']} titles")
+              f"+{r['updated_titles']} titles", flush=True)
     print(f"done: {tot_events} events repaired, {tot_titles} titles added, "
           f"{len(days)} days re-rolled")
 
