@@ -65,17 +65,17 @@ Add a slim sticky jump-nav (anchors per section) — the page is ~8,800px with n
 
 ## P3 — Polish
 
-- [ ] **P3-30 Brand mismatch.** `<title>` says TOKENFOLD, `<h1>` says CLAUDE CODE, footer says Tokenfold (`:6`, `:1875`, `:2308`). Pick one lockup (e.g., h1 TOKENFOLD, red band "Claude Code usage"); also `og:image` is SVG (`:19`) which Discord/Twitter won't render — export a PNG.
-- [ ] **P3-31 Four duration formatters + two number formatters** (`fT :2444`, `fmtHM :3123`, `fmtHMg :3327`, `dur :4030`, `rel :4024` rounds *up* hours; server `_fmt_*` in `dashboard.py:21-48`). Single shared util each side; this is the root of the formatting-consistency complaint.
-- [ ] **P3-32 Initial daily-table double render.** Server renders rows (`dashboard.py:110-120`), then `rebuildDailyTable()` immediately rebuilds identical DOM via `renderMode` (`:4003`). Skip the first rebuild unless mode ≠ all.
-- [ ] **P3-33 Decorative real estate.** Cost-hero side panel is 240px of pure decoration (`:514-553`) and the hero block is ~280px min — fine for the art direction, but consider slimming both ~30% so Limits move above the fold on laptops.
-- [ ] **P3-34 Empty chart states.** Charts with no data in window render bare axes (Today mode early morning). Render "no activity in this window" text instead of an empty canvas.
-- [ ] **P3-35 Benchmarks chart value.** ARC-AGI-2/OSWorld scores for models you don't run is marketing data; if kept (P2-16 accordion), filter to models present in `model_breakdown`.
-- [ ] **P3-36 "DATA UPDATED" indicator** (`:1908`) flashes 2.5s in the date bar where nobody is looking. Tie it to the status square (pulse) or briefly highlight changed cards instead.
-- [ ] **P3-37 Footer timestamp** "Generated 2026-06-10 11:38" — ambiguous TZ; add zone or use relative ("2m ago", it already live-updates).
-- [ ] **P3-38 Heatmap/hourly tooltips are mouse-only**; add `<title>` children to SVG rects as a free fallback for touch/AT.
-- [ ] **P3-39 Session `rel()` rounding**: `Math.round(s/3600)` shows "2h ago" at 1h31m; use `Math.floor` for ages.
-- [ ] **P3-40 Pricing table 1h-cache fallback** computes `p.input*2` client-side when `cache_write_1h` is null (`:2524`) — move fallback into `aggregator.py` so the client never invents prices.
+- [x] **P3-30 Brand mismatch.** `<title>` says TOKENFOLD, `<h1>` says CLAUDE CODE, footer says Tokenfold (`:6`, `:1875`, `:2308`). Pick one lockup (e.g., h1 TOKENFOLD, red band "Claude Code usage"); also `og:image` is SVG (`:19`) which Discord/Twitter won't render — export a PNG.
+- [x] **P3-31 Four duration formatters + two number formatters** (`fT :2444`, `fmtHM :3123`, `fmtHMg :3327`, `dur :4030`, `rel :4024` rounds *up* hours; server `_fmt_*` in `dashboard.py:21-48`). Single shared util each side; this is the root of the formatting-consistency complaint.
+- [x] **P3-32 Initial daily-table double render.** Server renders rows (`dashboard.py:110-120`), then `rebuildDailyTable()` immediately rebuilds identical DOM via `renderMode` (`:4003`). Skip the first rebuild unless mode ≠ all.
+- [x] **P3-33 Decorative real estate.** Cost-hero side panel is 240px of pure decoration (`:514-553`) and the hero block is ~280px min — fine for the art direction, but consider slimming both ~30% so Limits move above the fold on laptops.
+- [x] **P3-34 Empty chart states.** Charts with no data in window render bare axes (Today mode early morning). Render "no activity in this window" text instead of an empty canvas.
+- [x] **P3-35 Benchmarks chart value.** ARC-AGI-2/OSWorld scores for models you don't run is marketing data; if kept (P2-16 accordion), filter to models present in `model_breakdown`. *(already true: aggregator builds benchmarks only for models in model_stats)*
+- [x] **P3-36 "DATA UPDATED" indicator** (`:1908`) flashes 2.5s in the date bar where nobody is looking. Tie it to the status square (pulse) or briefly highlight changed cards instead.
+- [x] **P3-37 Footer timestamp** "Generated 2026-06-10 11:38" — ambiguous TZ; add zone or use relative ("2m ago", it already live-updates). *(generation_time already carries %Z; verified)*
+- [x] **P3-38 Heatmap/hourly tooltips are mouse-only**; add `<title>` children to SVG rects as a free fallback for touch/AT.
+- [x] **P3-39 Session `rel()` rounding**: `Math.round(s/3600)` shows "2h ago" at 1h31m; use `Math.floor` for ages.
+- [x] **P3-40 Pricing table 1h-cache fallback** computes `p.input*2` client-side when `cache_write_1h` is null (`:2524`) — move fallback into `aggregator.py` so the client never invents prices.
 
 ---
 

@@ -16,7 +16,7 @@
 <meta property="og:type" content="website">
 <meta property="og:title" content="Tokenfold / Usage Dashboard">
 <meta property="og:description" content="Real-time analytics, cost tracking, and productivity metrics for Claude Code sessions across all your machines.">
-<meta property="og:image" content="/static/og.svg">
+<meta property="og:image" content="/static/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 
@@ -24,7 +24,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Tokenfold / Usage Dashboard">
 <meta name="twitter:description" content="Real-time analytics, cost tracking, and productivity metrics for Claude Code sessions across all your machines.">
-<meta name="twitter:image" content="/static/og.svg">
+<meta name="twitter:image" content="/static/og.png">
 
 <meta name="theme-color" content="#e63329">
 
@@ -229,6 +229,8 @@ body {
 }
 
 .status-sq--active { background: var(--red); }
+@keyframes sqPulse { 0%{transform:scale(1)} 40%{transform:scale(1.8)} 100%{transform:scale(1)} }
+.status-sq--pulse { animation: sqPulse 0.6s ease 2; }
 .status-sq--idle { background: var(--gray-dim); }
 
 .status-text { color: var(--gray-dim); }
@@ -463,7 +465,7 @@ body {
   border-bottom: var(--border);
   display: grid;
   grid-template-columns: 1fr auto;
-  min-height: 280px;
+  min-height: 200px;
   position: relative;
   overflow: hidden;
 }
@@ -473,7 +475,7 @@ body {
   flex-direction: column;
   justify-content: center;
   align-items: flex-start;
-  padding: 2.5rem 3rem;
+  padding: 1.8rem 3rem;
   position: relative;
   z-index: 2;
 }
@@ -490,7 +492,7 @@ body {
 
 .cost-hero-value {
   font-family: var(--font-display);
-  font-size: 7.5rem;
+  font-size: 6.2rem;
   line-height: 1;
   letter-spacing: -0.03em;
   color: var(--black);
@@ -525,8 +527,8 @@ body {
 
 .cost-hero-circle {
   position: absolute;
-  width: 260px;
-  height: 260px;
+  width: 200px;
+  height: 200px;
   border-radius: 50%;
   background: var(--yellow);
   top: 50%;
@@ -539,7 +541,7 @@ body {
 .cost-hero-side {
   display: flex;
   border-left: var(--border);
-  width: 240px;
+  width: 180px;
 }
 
 .cost-hero-side-red {
@@ -1503,6 +1505,24 @@ body {
   width: 100%;
 }
 
+/* Empty windows say so instead of rendering bare axes (P3-34) */
+.chart-container.is-empty canvas, .chart-wrap.is-empty canvas { opacity: 0.12; }
+.chart-container.is-empty::after, .chart-wrap.is-empty::after {
+  content: 'no activity in this window';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  pointer-events: none;
+}
+
 .chart-container--bar {
   height: 320px;
 }
@@ -2097,9 +2117,9 @@ th[data-info]:focus::after { opacity: 1; }
 <header class="header">
   <div class="header-inner">
     <div class="header-title-area">
-      <h1 class="header-title">Claude Code</h1>
+      <h1 class="header-title">Tokenfold</h1>
       <div class="header-subtitle-band">
-        <span>Usage Dashboard</span>
+        <span>Claude Code Usage</span>
       </div>
       {% if scope_label %}
       <div class="header-enterprise-band">
@@ -2720,7 +2740,10 @@ function buildMachineColors(names){
 }
 
 function fN(n){if(n>=1e9)return(n/1e9).toFixed(2)+'B';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return n.toLocaleString();return n.toString()}
+/* THE duration formatter — every "Xh Ym" on the page goes through fT/fHM
+   so durations read identically everywhere (P3-31). */
 function fT(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?h+'h '+m+'m':m+'m'}
+function fHM(totalMin){return fT(Math.round(totalMin)*60)}
 function fC(n){return '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 
 function sizeWrap(id, items, axis) {
@@ -2800,7 +2823,7 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
       +'<td>'+fP(p.input)+'</td>'
       +'<td>'+fP(p.output)+'</td>'
       +'<td>'+fP(p.cache_write)+'</td>'
-      +'<td>'+fP(p.cache_write_1h != null ? p.cache_write_1h : p.input*2)+'</td>'
+      +'<td>'+fP(p.cache_write_1h)+'</td>'  /* always set by aggregator (P3-40) */
       +'<td>'+fP(p.cache_read)+'</td>'
       +'</tr>';
   });
@@ -2909,7 +2932,7 @@ function renderHeatmap(){
       const cost=d?(d.cost||0):0;
       const isPeak=cost>0&&cost===peakCost;
       const tip=dateStr+': '+fC(cost)+(isPeak?' · peak day':'');
-      svg+='<rect x="'+(DLW+wi*STEP)+'" y="'+(MLH+di*STEP)+'" width="'+CS+'" height="'+CS+'" fill="'+hmColor(cost)+'" data-tip="'+tip+'" style="cursor:default"/>';
+      svg+='<rect x="'+(DLW+wi*STEP)+'" y="'+(MLH+di*STEP)+'" width="'+CS+'" height="'+CS+'" fill="'+hmColor(cost)+'" data-tip="'+tip+'" style="cursor:default"><title>'+tip+'</title></rect>';
     });
   });
 
@@ -2962,7 +2985,7 @@ function renderHourly(){
     // every 3rd label keeps mobile squares anchored to a clock (P2-27)
     var lblCls = 'hourly-lbl' + (h.is_now ? ' hourly-lbl--now' : '') + (i % 3 === 0 ? ' hourly-lbl--key' : '');
     html += '<div class="hourly-cell">'
-      + '<div class="hourly-sq" style="background:' + bg + '" data-tip="' + tipParts.join(' \u00b7 ') + '"></div>'
+      + '<div class="hourly-sq" style="background:' + bg + '" data-tip="' + tipParts.join(' \u00b7 ') + '" title="' + tipParts.join(' \u00b7 ') + '"></div>'
       + '<div class="' + lblCls + '">' + h.label + '</div>'
       + '</div>';
   });
@@ -3004,6 +3027,11 @@ renderHourly();
 function rebuildDailyTable(){
   const tbody=document.querySelector('#dailyTable tbody');
   if(!tbody)return;
+  // Server already rendered identical rows; only rebuild when data changed
+  // (mode switches just toggle row visibility, P3-32 / P2-24)
+  const key=JSON.stringify(D.daily);
+  if(tbody._renderKey===key)return;
+  tbody._renderKey=key;
   const maxCost=Math.max(...D.daily.map(d=>d.cost||0),1.0);
   // Tint capped at 0.12 alpha — the old 0.38 made the most expensive rows the
   // hardest to read. (P2-25)
@@ -3115,6 +3143,12 @@ function renderMode(mode) {
   // Each mode-aware section names its window via a header chip (P2-18)
   const chipText = isToday ? 'today' : isRecent ? 'last 14 days' : 'all time';
   document.querySelectorAll('[data-mode-chip]').forEach(el => { el.textContent = chipText; });
+
+  // Empty windows label themselves instead of showing bare axes (P3-34)
+  function markEmpty(canvasId, isEmpty){
+    const cv = document.getElementById(canvasId);
+    if(cv && cv.parentElement) cv.parentElement.classList.toggle('is-empty', !!isEmpty);
+  }
   const todayMB = isToday ? (D.today.model_breakdown || []) : null;
   const cphFilterKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
   const activeMB = isToday
@@ -3227,6 +3261,11 @@ function renderMode(mode) {
       }
     }
   });
+
+  const dailyEmpty = !daily.some(d => d.prompts || d.cost || d.active_minutes || d.tool_calls);
+  markEmpty('cDaily', dailyEmpty);
+  markEmpty('cTokens', dailyEmpty);
+  markEmpty('cMachineDaily', dailyEmpty);
 
   /* ── Daily Activity chart ──
      Two axes max (prompts left, active minutes right). The old third axis
@@ -3517,6 +3556,7 @@ function renderMode(mode) {
   /* ── Tool Usage ── */
   const toolData = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
   const toolFulls = (isToday ? (D.today.tool_full_names||{}) : (D.tool_full_names||{}));
+  markEmpty('cTools', Object.keys(toolData).length === 0);
   upsertChart('tools', document.getElementById('cTools'),{
     type:'bar',
     data:{labels:Object.keys(toolData),datasets:[{data:Object.values(toolData),
@@ -3540,6 +3580,7 @@ function renderMode(mode) {
   const pLabels = projSorted.map(p=>p.name);
   const pCost = projSorted.map(p=>isToday?p.cost:isRecent?p.recent_cost:p.cost);
   const pMin = projSorted.map(p=>isToday?p.minutes:isRecent?p.recent_minutes:p.minutes);
+  markEmpty('cProjects', pLabels.length === 0);
   /* Cost-only bars — the old dual top/bottom x-axes overlaid two units on one
      row and read as a single scale. Active time lives in the tooltip. */
   upsertChart('projects', document.getElementById('cProjects'),{
@@ -3739,11 +3780,6 @@ function initRateLimits(){
     // the pace-chart trigger moves onto the Weekly Limit gauge instead.
     var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
 
-    function fmtHM(totalMin) {
-      var h = Math.floor(totalMin / 60);
-      var m = Math.round(totalMin % 60);
-      return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
-    }
 
     if (wb.oauth) {
       pacePanel.style.display = 'none';
@@ -3754,7 +3790,7 @@ function initRateLimits(){
       if (grid) grid.style.gridTemplateColumns = '';
       var statsHtml = '<div class="rate-gauge-stats">'
         + '<div class="rate-gauge-stat">'
-        + '<div class="rate-gauge-stat-value">' + fmtHM(weekActiveMin) + '</div>'
+        + '<div class="rate-gauge-stat-value">' + fHM(weekActiveMin) + '</div>'
         + '<div class="rate-gauge-stat-label">active · 7d</div>'
         + '</div>'
         + '</div>';
@@ -3959,11 +3995,6 @@ function initRateLimits(){
     var weekCost = wb.week_cost || 0;
     var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
 
-    function fmtHMg(totalMin) {
-      var h2 = Math.floor(totalMin / 60);
-      var m2 = Math.round(totalMin % 60);
-      return h2 > 0 ? h2 + 'h ' + m2 + 'm' : m2 + 'm';
-    }
 
     var weeklyStats = [];
     if(wExpected !== null && wExpected > 2) {
@@ -3971,20 +4002,20 @@ function initRateLimits(){
       var diffH = Math.abs(diffPct / 100 * 7 * 24);
       var overUnder = diffPct >= 0;
       weeklyStats.push({
-        value: (overUnder ? '+' : '−') + fmtHMg(diffH * 60),
+        value: (overUnder ? '+' : '−') + fHM(diffH * 60),
         label: overUnder ? 'over pace' : 'under pace',
         color: overUnder ? 'var(--red)' : 'var(--blue)'
       });
     }
     // labels say "rolling 7d" — these do NOT reset with the limit window (P2-11)
     weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
-    weeklyStats.push({ value: fmtHMg(weekActiveMin), label: 'active · rolling 7d' });
+    weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
 
     var remainPct = 100 - wPct;
     if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
       var parts = [];
       if(weekCost > 0) parts.push('~' + fC((weekCost / wPct) * remainPct));
-      if(weekActiveMin > 0) parts.push('~' + fmtHMg((weekActiveMin / wPct) * remainPct));
+      if(weekActiveMin > 0) parts.push('~' + fHM((weekActiveMin / wPct) * remainPct));
       var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow-text)' : null;
       weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
     }
@@ -4398,14 +4429,14 @@ function renderSessions(){
   const dot = '—';
   function rel(ts){
     const s = Math.max(0, Date.now()/1000 - ts);
-    if(s < 3600) return Math.round(s/60)+'m ago';
-    if(s < 86400) return Math.round(s/3600)+'h ago';
-    return Math.round(s/86400)+'d ago';
+    // floor, not round: "1h31m ago" must read 1h, not 2h (P3-39)
+    if(s < 3600) return Math.floor(s/60)+'m ago';
+    if(s < 86400) return Math.floor(s/3600)+'h ago';
+    return Math.floor(s/86400)+'d ago';
   }
   function dur(s){
     if(s < 60) return '<1m';
-    if(s < 3600) return Math.round(s/60)+'m';
-    return (s/3600).toFixed(1)+'h';
+    return fT(s);  // same "Xh Ym" shape as everywhere else (P3-31)
   }
   // machine-coded left border: same palette as the machine charts
   const sColors = buildMachineColors([...new Set(rows.map(s=>s.machine).filter(Boolean))]);
@@ -4495,6 +4526,9 @@ renderSessions();
     el.textContent = text || 'DATA UPDATED';
     el.classList.add('visible');
     setTimeout(()=>el.classList.remove('visible'), 2500);
+    // also pulse the status square — it's where the eye already rests (P3-36)
+    const sq=document.getElementById('statusSq');
+    if(sq){ sq.classList.remove('status-sq--pulse'); void sq.offsetWidth; sq.classList.add('status-sq--pulse'); }
   }
 
   function fetchAndApply(){
