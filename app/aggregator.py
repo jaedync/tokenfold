@@ -150,6 +150,14 @@ def get_cache_version() -> int:
 
 
 
+
+def _tiered_cw_cost(cw, c1h, p):
+    """Cache-write dollar component honoring the tier split: 1h tokens at 2x
+    base input, everything else (5m + unsplit legacy) at the 5m rate p[2]."""
+    c1h = min(c1h or 0, cw or 0)
+    return ((cw - c1h) * p[2] + c1h * p[0] * 2.0) / 1e6
+
+
 def _build_recent_sessions(conn, pred, limit=25):
     """Per-session rollup over the recent window: cost, tokens, wall duration,
     burn rate ($/hr). Titles come from desktop_sessions (Claude Desktop pushes
@@ -200,9 +208,13 @@ def _build_recent_sessions(conn, pred, limit=25):
         st["min_ts"] = min(st["min_ts"], r["min_ts"])
         st["max_ts"] = max(st["max_ts"], r["max_ts"])
 
-    titles = {r["cli_session_id"]: r["title"] for r in conn.execute(
+    # AI-assigned names (from ai-title transcript records) as the base layer;
+    # explicit Claude Desktop titles overlay them.
+    titles = {r["session_id"]: r["title"] for r in conn.execute(
+        "SELECT session_id, title FROM session_titles")}
+    titles.update({r["cli_session_id"]: r["title"] for r in conn.execute(
         "SELECT cli_session_id, title FROM desktop_sessions "
-        "WHERE title IS NOT NULL AND title != ''")}
+        "WHERE title IS NOT NULL AND title != ''")})
 
     project_names = _make_display_names(
         sorted({st["project_dir"] for st in sessions.values() if st["project_dir"]}))
@@ -255,7 +267,7 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
             "recent_subagent": 0, "recent_agent_runs": 0,
             "recent_thinking": 0, "recent_tool_execution": 0,
         },
-        "projects": [], "model_breakdown": [],
+        "projects": [], "recent_sessions": [], "model_breakdown": [],
         "total_cost": 0, "total_orch_cost": 0, "total_agent_cost": 0,
         "benchmarks": {}, "output_pricing": {}, "model_pricing": {},
         "cutoff_date": cutoff_date,
@@ -459,9 +471,11 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "all_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
             "output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
             "all_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
+            "cache_5m": md.get("cache_5m", 0),
+            "cache_1h": md.get("cache_1h", 0),
             "cost_input": round(inp * p[0] / 1e6, 2),
             "cost_output": round(out * p[1] / 1e6, 2),
-            "cost_cache_write": round(cw * p[2] / 1e6, 2),
+            "cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
             "cost_cache_read": round(cr * p[3] / 1e6, 2),
             # Today view uses the same keys as recent/all for compatibility
             "recent_cost": round(cost, 2),
@@ -472,7 +486,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "recent_active_hours": round(active_hours, 1),
             "recent_cost_input": round(inp * p[0] / 1e6, 2),
             "recent_cost_output": round(out * p[1] / 1e6, 2),
-            "recent_cost_cache_write": round(cw * p[2] / 1e6, 2),
+            "recent_cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
             "recent_cost_cache_read": round(cr * p[3] / 1e6, 2),
             "recent_input": inp, "recent_output": out,
             "recent_cache_write": cw, "recent_cache_read": cr,
@@ -552,6 +566,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     # ── Accumulators ──
     model_stats = defaultdict(lambda: {
         "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+        "cache_5m": 0, "cache_1h": 0, "recent_cache_5m": 0, "recent_cache_1h": 0,
         "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
         "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
         "gen_s": 0.0, "gen_out": 0,
@@ -636,6 +651,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             ms["input"] += md.get("input", 0)
             ms["output"] += md.get("output", 0)
             ms["cache_write"] += md.get("cache_write", 0)
+            ms["cache_5m"] += md.get("cache_5m", 0)
+            ms["cache_1h"] += md.get("cache_1h", 0)
             ms["cache_read"] += md.get("cache_read", 0)
             ms["api_calls"] += md.get("api_calls", 0)
             ms["main_api_calls"] += md.get("main_api_calls", 0)
@@ -650,6 +667,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
                 ms["recent_input"] += md.get("input", 0)
                 ms["recent_output"] += md.get("output", 0)
                 ms["recent_cache_write"] += md.get("cache_write", 0)
+                ms["recent_cache_5m"] += md.get("cache_5m", 0)
+                ms["recent_cache_1h"] += md.get("cache_1h", 0)
                 ms["recent_cache_read"] += md.get("cache_read", 0)
                 ms["recent_main_cost"] += md.get("main_cost", 0.0)
                 ms["recent_active_s"] += md.get("active_s", 0.0)
@@ -799,9 +818,11 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "active_hours": round(active_hours, 1),
             "cost_per_hour": round(cost_per_hour, 2) if cost_per_hour is not None else None,
             "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
+            "cache_5m": ms["cache_5m"], "cache_1h": ms["cache_1h"],
+            "recent_cache_5m": ms["recent_cache_5m"], "recent_cache_1h": ms["recent_cache_1h"],
             "cost_input": round(ms["input"] * p[0] / 1e6, 2),
             "cost_output": round(ms["output"] * p[1] / 1e6, 2),
-            "cost_cache_write": round(ms["cache_write"] * p[2] / 1e6, 2),
+            "cost_cache_write": round(_tiered_cw_cost(ms["cache_write"], ms["cache_1h"], p), 2),
             "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
             "last_seen": ms["last_seen"],
             "recent": ms["last_seen"] >= cutoff_date,
@@ -941,7 +962,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             for name in model_stats if MODEL_BENCHMARKS.get(name)
         },
         "output_pricing": {name: get_pricing(name)[1] for name in model_stats},
-        "model_pricing": {name: {"input": p[0], "output": p[1], "cache_write": p[2], "cache_read": p[3]}
+        "model_pricing": {name: {"input": p[0], "output": p[1], "cache_write": p[2],
+                                 "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]}
                           for name in model_stats for p in [get_pricing(name)]},
         "cutoff_date": cutoff_date,
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),

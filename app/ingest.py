@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn
-from .models import CursorState, IngestRequest, IngestResponse
+from .models import BackfillRequest, CursorState, IngestRequest, IngestResponse
 
 router = APIRouter()
 TZ = ZoneInfo(TZ_NAME)
@@ -305,7 +305,15 @@ async def ingest(req: IngestRequest):
         "org_type": req.org_type,
         "org_uuid": req.org_uuid,
     }
+    ai_titles: dict[str, str] = {}
     for raw in req.events:
+        # ai-title records carry the session's AI-assigned name but no
+        # uuid/timestamp — capture them here (last one in the batch wins).
+        if raw.get("type") == "ai-title":
+            sid, title = raw.get("sessionId"), raw.get("aiTitle")
+            if isinstance(sid, str) and sid and isinstance(title, str) and title:
+                ai_titles[sid] = title[:256]
+            continue
         row = _extract_event(raw, req.machine, req.project_dir, account)
         if row is None:
             continue
@@ -341,8 +349,14 @@ async def ingest(req: IngestRequest):
             except sqlite3.IntegrityError:
                 pass
 
-        # Update sync cursor
+        # Upsert AI session titles
         now = datetime.now(TZ).isoformat()
+        for sid, title in ai_titles.items():
+            cur.execute(
+                "INSERT OR REPLACE INTO session_titles(session_id, title, updated_at) "
+                "VALUES(?, ?, ?)", (sid, title, now))
+
+        # Update sync cursor
         new_line_num = req.cursor.last_line_num + len(req.events)
         last_ts = None
         if req.events:
@@ -370,6 +384,67 @@ async def ingest(req: IngestRequest):
         duplicates=duplicates,
         cursor=CursorState(last_line_num=req.cursor.last_line_num + len(req.events)),
     )
+
+
+@router.post("/api/backfill", dependencies=[Depends(require_api_key)])
+async def backfill(req: BackfillRequest):
+    """Repair historical rows from a machine's local transcripts: set the
+    cache-tier split on events where it is still unset (never clobbers real
+    data) and upsert AI session titles that predate ai-title capture (an
+    existing title wins — live ingest is fresher than a backfill). Re-rolls
+    every day whose events changed so stored costs correct themselves."""
+    conn = get_conn()
+    cur = conn.cursor()
+    updated_events = 0
+    touched_days: set[str] = set()
+    try:
+        for uuid, pair in req.cache_tiers.items():
+            if not (isinstance(pair, list) and len(pair) == 2):
+                continue
+            c5m, c1h = pair
+            if not all(isinstance(x, int) and 0 <= x < 10**12 for x in (c5m, c1h)):
+                continue
+            if c5m == 0 and c1h == 0:
+                continue
+            row = cur.execute(
+                "SELECT day FROM events WHERE uuid=? "
+                "AND COALESCE(cache_ephemeral_5m,0)=0 "
+                "AND COALESCE(cache_ephemeral_1h,0)=0", (uuid,)).fetchone()
+            if row is None:
+                continue
+            cur.execute(
+                "UPDATE events SET cache_ephemeral_5m=?, cache_ephemeral_1h=? "
+                "WHERE uuid=?", (c5m, c1h, uuid))
+            updated_events += 1
+            touched_days.add(row["day"])
+
+        updated_titles = 0
+        now = datetime.now(TZ).isoformat()
+        for sid, title in req.titles.items():
+            if not (isinstance(sid, str) and sid and isinstance(title, str) and title):
+                continue
+            cur.execute(
+                "INSERT INTO session_titles(session_id, title, updated_at) "
+                "VALUES(?, ?, ?) ON CONFLICT(session_id) DO NOTHING",
+                (sid, title[:256], now))
+            updated_titles += cur.rowcount if cur.rowcount > 0 else 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    if touched_days:
+        from .summarizer import summarize_days
+        summarize_days(sorted(touched_days))
+    if touched_days or updated_titles:
+        from .aggregator import trigger_eager_rebuild
+        trigger_eager_rebuild()
+
+    return {
+        "updated_events": updated_events,
+        "updated_titles": updated_titles,
+        "touched_days": sorted(touched_days),
+    }
 
 
 @router.post("/api/usage", dependencies=[Depends(require_api_key)])

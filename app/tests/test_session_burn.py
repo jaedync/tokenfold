@@ -107,3 +107,82 @@ class TemplateSessionsUITest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiTitleCaptureTest(TempDBTestCase):
+    """Claude Code writes {"type":"ai-title","aiTitle":...,"sessionId":...}
+    transcript records (no uuid/timestamp — the event extractor skips them).
+    Ingest must upsert them into session_titles, and the sessions rollup must
+    use them, with explicit desktop_sessions titles taking precedence."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ingest(self, events):
+        c = self.client()
+        r = c.post("/api/ingest", json={
+            "machine": "mac1", "project_dir": "projA", "session_file": "s.jsonl",
+            "cursor": {"last_line_num": 0}, "events": events,
+        }, headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200)
+
+    def _assistant(self, uuid, session):
+        return {
+            "uuid": uuid, "type": "assistant", "timestamp": "2026-06-09T12:00:00Z",
+            "sessionId": session, "requestId": "r-" + uuid,
+            "message": {"model": "claude-opus-4-8", "id": "m1",
+                        "usage": {"input_tokens": 1000000, "output_tokens": 1000}},
+        }
+
+    def test_ai_title_upserted_and_used(self):
+        self._ingest([
+            self._assistant("u1", "sessA"),
+            {"type": "ai-title", "aiTitle": "Fix the frobnicator", "sessionId": "sessA"},
+        ])
+        row = self.conn.execute(
+            "SELECT title FROM session_titles WHERE session_id='sessA'").fetchone()
+        self.assertEqual(row["title"], "Fix the frobnicator")
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        summarize_days(["2026-06-09"])
+        s = [x for x in build_dashboard_data("personal")["recent_sessions"]
+             if x["session_id"] == "sessA"][0]
+        self.assertEqual(s["title"], "Fix the frobnicator")
+
+    def test_later_ai_title_wins(self):
+        self._ingest([
+            self._assistant("u1", "sessA"),
+            {"type": "ai-title", "aiTitle": "old name", "sessionId": "sessA"},
+            {"type": "ai-title", "aiTitle": "new name", "sessionId": "sessA"},
+        ])
+        row = self.conn.execute(
+            "SELECT title FROM session_titles WHERE session_id='sessA'").fetchone()
+        self.assertEqual(row["title"], "new name")
+
+    def test_desktop_title_beats_ai_title(self):
+        self._ingest([
+            self._assistant("u1", "sessA"),
+            {"type": "ai-title", "aiTitle": "ai name", "sessionId": "sessA"},
+        ])
+        self.conn.execute(
+            "INSERT INTO desktop_sessions(cli_session_id, source_machine, title, "
+            "updated_at_ms) VALUES('sessA', 'mac1', 'human name', 0)")
+        self.conn.commit()
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        import app.aggregator as _agg
+        summarize_days(["2026-06-09"])
+        _agg._cached_data.clear()
+        s = [x for x in build_dashboard_data("personal")["recent_sessions"]
+             if x["session_id"] == "sessA"][0]
+        self.assertEqual(s["title"], "human name")
+
+    def test_malformed_ai_title_ignored(self):
+        self._ingest([
+            self._assistant("u1", "sessA"),
+            {"type": "ai-title", "aiTitle": {"nested": "junk"}, "sessionId": "sessA"},
+            {"type": "ai-title", "aiTitle": "ok", "sessionId": None},
+        ])
+        n = self.conn.execute("SELECT COUNT(*) c FROM session_titles").fetchone()["c"]
+        self.assertEqual(n, 0)

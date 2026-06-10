@@ -25,6 +25,14 @@ class IngestResponse(BaseModel):
     cursor: CursorState
 
 
+class BackfillRequest(BaseModel):
+    """Historical repair payload generated from a machine's local transcripts.
+    cache_tiers: uuid -> [ephemeral_5m, ephemeral_1h]; titles: session_id -> title.
+    Batches are capped — the client splits large backfills across requests."""
+    cache_tiers: dict[str, list[int]] = Field(default_factory=dict, max_length=20000)
+    titles: dict[str, str] = Field(default_factory=dict, max_length=20000)
+
+
 class DesktopSessionUpsert(BaseModel):
     cli_session_id: str
     desktop_session_id: str | None = None

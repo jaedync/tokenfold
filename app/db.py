@@ -151,6 +151,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_titles (
+    session_id  TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    updated_at  TEXT
+);
+
 """ + _DAILY_SUMMARY_DDL + """
 CREATE TABLE IF NOT EXISTS desktop_sessions (
     cli_session_id         TEXT PRIMARY KEY,

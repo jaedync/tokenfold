@@ -2140,11 +2140,11 @@ th[data-info]:hover::after { opacity: 1; }
     </div>
     <div class="tbl-wrap" style="margin-top:1.5rem">
       <table>
-        <thead><tr><th>Model</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache Write</th><th class="num">Cache Read</th></tr></thead>
+        <thead><tr><th>Model</th><th class="num">Input</th><th class="num">Output</th><th class="num" data-info="5-minute ephemeral cache writes: 1.25x base input">Cache 5m</th><th class="num" data-info="1-hour ephemeral cache writes: 2x base input">Cache 1h</th><th class="num">Cache Read</th></tr></thead>
         <tbody id="pricingBody"></tbody>
       </table>
     </div>
-    <div style="color:var(--gray-dim);font-size:.65rem;margin-top:8px;text-align:center;text-transform:uppercase;letter-spacing:.06em">Published Anthropic API rates (with 5-min prompt caching)</div>
+    <div style="color:var(--gray-dim);font-size:.65rem;margin-top:8px;text-align:center;text-transform:uppercase;letter-spacing:.06em">Published Anthropic API rates · 5m and 1h cache tiers billed at actual rates</div>
   </div>
   <div class="panel">
     <div class="section-header">
@@ -2516,6 +2516,7 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
       +'<td>'+fP(p.input)+'</td>'
       +'<td>'+fP(p.output)+'</td>'
       +'<td>'+fP(p.cache_write)+'</td>'
+      +'<td>'+fP(p.cache_write_1h != null ? p.cache_write_1h : p.input*2)+'</td>'
       +'<td>'+fP(p.cache_read)+'</td>'
       +'</tr>';
   });
@@ -3959,6 +3960,16 @@ function renderMode(mode) {
       +'<div class="mb-stat"><span class="mb-label">Input</span><span>'+fN(m[inKey] || 0)+'</span></div>'
       +'<div class="mb-stat"><span class="mb-label">Output</span><span>'+fN(m[outKey] || 0)+'</span></div>'
       +'<div class="mb-stat"><span class="mb-label">Cache Write</span><span>'+fN(m[cwTokKey] || 0)+'</span></div>'
+      +(function(){
+        // Tier split (5m @1.25x vs 1h @2x base). Only rendered when known —
+        // events ingested before split capture (or unreached by backfill)
+        // have no tier data and showing 0/0 would read as "no cache writes".
+        var c5 = m[isRecent ? 'recent_cache_5m' : 'cache_5m'] || 0;
+        var c1 = m[isRecent ? 'recent_cache_1h' : 'cache_1h'] || 0;
+        if (!(c5 || c1)) return '';
+        return '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;5m tier</span><span>'+fN(c5)+'</span></div>'
+             + '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;1h tier</span><span>'+fN(c1)+'</span></div>';
+      })()
       +'<div class="mb-stat"><span class="mb-label">Cache Read</span><span>'+fN(m[crTokKey] || 0)+'</span></div>'
       +'</div>'
       +'<div class="mb-group"><div class="mb-group-title">Cost</div>'

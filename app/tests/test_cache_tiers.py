@@ -129,3 +129,59 @@ class SummarizerCacheTierTest(TempDBTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CacheTierDisplayTest(TempDBTestCase):
+    """The dashboard differentiates 5m vs 1h cache writes everywhere it shows
+    pricing or cache-write usage: model_pricing carries cache_write_1h (2x
+    base), per-model breakdowns carry tier token counts, and the per-model
+    cache-write cost component prices each tier at its real rate."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ins(self, uuid, cw, c5m, c1h):
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+            "source_machine,project_dir,model,is_sidechain,agent_id,input_tokens,"
+            "output_tokens,cache_creation_tokens,cache_read_tokens,cache_ephemeral_5m,"
+            "cache_ephemeral_1h,is_human_prompt) "
+            "VALUES(?,'assistant','2026-06-09T12:00:00Z',1781000000.0,'2026-06-09',"
+            "'s1',?,'m1','proj','claude-opus-4-8',0,NULL,0,0,?,0,?,?,0)",
+            (uuid, "r-" + uuid, cw, c5m, c1h),
+        )
+        self.conn.commit()
+
+    def _build(self):
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        summarize_days(["2026-06-09"])
+        return build_dashboard_data("personal")
+
+    def test_model_pricing_includes_1h_rate(self):
+        self._ins("u1", 1_000_000, 0, 1_000_000)
+        data = self._build()
+        p = data["model_pricing"]["Opus 4.8"]
+        self.assertEqual(p["cache_write"], 6.25)
+        self.assertEqual(p["cache_write_1h"], 10.00)
+
+    def test_model_breakdown_carries_tier_tokens(self):
+        self._ins("u1", 1_000_000, 250_000, 750_000)
+        data = self._build()
+        m = [x for x in data["model_breakdown"] if x["model"] == "Opus 4.8"][0]
+        self.assertEqual(m["cache_5m"], 250_000)
+        self.assertEqual(m["cache_1h"], 750_000)
+
+    def test_cost_cache_write_component_tiered(self):
+        # 1 MTok all-1h: component must be $10, not $6.25
+        self._ins("u1", 1_000_000, 0, 1_000_000)
+        data = self._build()
+        m = [x for x in data["model_breakdown"] if x["model"] == "Opus 4.8"][0]
+        self.assertAlmostEqual(m["cost_cache_write"], 10.00, places=2)
+
+    def test_template_shows_both_tiers(self):
+        from pathlib import Path
+        tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
+        self.assertIn("cache_write_1h", tpl)
+        self.assertNotIn("with 5-min prompt caching", tpl)

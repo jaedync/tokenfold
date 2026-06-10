@@ -69,6 +69,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
             "subagent_s": 0.0, "agent_runs": 0, "cost": 0.0,
             "model": defaultdict(lambda: {
                 "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
+                "cache_5m": 0, "cache_1h": 0,
                 "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
                 "cost": 0.0,
                 "main_prompts": 0, "agent_invocations": 0,
@@ -109,6 +110,8 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         ms["input"] += inp
         ms["output"] += out
         ms["cache_write"] += cc
+        ms["cache_5m"] += r["c5m"] or 0
+        ms["cache_1h"] += r["c1h"] or 0
         ms["cache_read"] += cr
         ms["api_calls"] += 1
         ms["cost"] += req_cost
