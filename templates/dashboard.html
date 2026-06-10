@@ -31,7 +31,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<!-- Self-hosted Chart.js (no CDN single-point-of-failure). `defer` keeps it
+     off the critical path; the inline boot script guards `typeof Chart` so
+     tables/heatmaps still render if this file ever fails to load. -->
+<script defer src="/static/chart.umd.min.js"></script>
 <style>
 /* ============================================================
    BAUHAUS GEOMETRIC - CLAUDE CODE USAGE DASHBOARD
@@ -2171,23 +2174,11 @@ th[data-info]:hover::after { opacity: 1; }
   </div>
 </div>
 
-<!-- ======== MODEL USAGE + COST BY MODEL + TIME BREAKDOWN ======== -->
-<div class="content-grid-3col">
+<!-- ======== TIME BREAKDOWN + COST BY MACHINE ======== -->
+<!-- The Model Usage / Cost-by-Model donuts duplicated the stacked bar + table
+     above; the Prompts-by-Machine donut duplicated a table column. Deleted. -->
+<div class="content-grid-2col">
   <div class="panel panel--bordered-right">
-    <div class="section-header">
-      <div class="section-header-bar"></div>
-      <h2>Model Usage</h2>
-    </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cModels"></canvas></div>
-  </div>
-  <div class="panel panel--bordered-right">
-    <div class="section-header">
-      <div class="section-header-bar section-header-bar--yellow"></div>
-      <h2>Cost by Model</h2>
-    </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cCostDonut"></canvas></div>
-  </div>
-  <div class="panel">
     <div class="section-header">
       <div class="section-header-bar section-header-bar--blue"></div>
       <h2>Time Breakdown</h2>
@@ -2195,23 +2186,12 @@ th[data-info]:hover::after { opacity: 1; }
     <div class="chart-wrap chart-wrap--doughnut"><canvas id="cTime"></canvas></div>
     <div id="timeDetail" style="text-align:center;margin-top:8px;font-size:.78rem;color:var(--gray-dim)"></div>
   </div>
-</div>
-
-<!-- ======== MACHINE COST + MACHINE PROMPTS ======== -->
-<div class="content-grid-2col">
-  <div class="panel panel--bordered-right">
-    <div class="section-header">
-      <div class="section-header-bar"></div>
-      <h2>Usage by Machine</h2>
-    </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cMachineCost"></canvas></div>
-  </div>
   <div class="panel">
     <div class="section-header">
-      <div class="section-header-bar section-header-bar--yellow"></div>
-      <h2>Prompts by Machine</h2>
+      <div class="section-header-bar"></div>
+      <h2>Cost by Machine</h2>
     </div>
-    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cMachinePrompts"></canvas></div>
+    <div class="chart-wrap chart-wrap--doughnut"><canvas id="cMachineCost"></canvas></div>
   </div>
 </div>
 
@@ -2397,22 +2377,73 @@ function modelSort(a,b){
 }
 
 /* ---- Chart.js Global Defaults - Bauhaus ---- */
-Chart.defaults.font.family = "'DM Sans', sans-serif";
-Chart.defaults.font.size = 12;
-Chart.defaults.color = '#6b6860';
-Chart.defaults.borderColor = '#d8d4cc';
-Chart.defaults.elements.bar.borderWidth = 2;
-Chart.defaults.elements.bar.borderColor = '#1a1a1a';
-Chart.defaults.elements.bar.borderRadius = 0;
-Chart.defaults.elements.arc.borderWidth = 3;
-Chart.defaults.elements.arc.borderColor = '#1a1a1a';
-Chart.defaults.plugins.tooltip.backgroundColor = '#1a1a1a';
-Chart.defaults.plugins.tooltip.titleFont = { family: "'Archivo Black', sans-serif", size: 13 };
-Chart.defaults.plugins.tooltip.bodyFont = { family: "'DM Sans', sans-serif", size: 12 };
-Chart.defaults.plugins.tooltip.cornerRadius = 0;
-Chart.defaults.plugins.tooltip.borderColor = '#1a1a1a';
-Chart.defaults.plugins.tooltip.borderWidth = 2;
-Chart.defaults.plugins.tooltip.padding = 10;
+/* Chart.js is self-hosted + deferred; everything chart-shaped is guarded by
+   hasChart() so the dashboard's tables/heatmaps survive a missing library. */
+function hasChart(){ return typeof Chart !== 'undefined'; }
+
+function initChartGlobals(){
+  if(!hasChart()) return false;
+  Chart.defaults.font.family = "'DM Sans', sans-serif";
+  Chart.defaults.font.size = 12;
+  Chart.defaults.color = '#6b6860';
+  Chart.defaults.borderColor = '#d8d4cc';
+  /* No grow-from-zero animations: live refreshes repaint every 30s and the
+     replay both looks broken and leaves blank charts in screenshots. */
+  Chart.defaults.animation = false;
+  Chart.defaults.elements.bar.borderWidth = 2;
+  Chart.defaults.elements.bar.borderColor = '#1a1a1a';
+  Chart.defaults.elements.bar.borderRadius = 0;
+  Chart.defaults.elements.arc.borderWidth = 3;
+  Chart.defaults.elements.arc.borderColor = '#1a1a1a';
+  Chart.defaults.plugins.tooltip.backgroundColor = '#1a1a1a';
+  Chart.defaults.plugins.tooltip.titleFont = { family: "'Archivo Black', sans-serif", size: 13 };
+  Chart.defaults.plugins.tooltip.bodyFont = { family: "'DM Sans', sans-serif", size: 12 };
+  Chart.defaults.plugins.tooltip.cornerRadius = 0;
+  Chart.defaults.plugins.tooltip.borderColor = '#1a1a1a';
+  Chart.defaults.plugins.tooltip.borderWidth = 2;
+  Chart.defaults.plugins.tooltip.padding = 10;
+  return true;
+}
+
+/* ---- Chart registry: update-in-place instead of destroy/recreate ----
+   Live refreshes and mode switches reuse the existing Chart instance when the
+   shape (type + dataset count + per-dataset types) matches; data swaps in with
+   update('none') so nothing re-animates or flashes. Structural changes fall
+   back to destroy + create. */
+const _charts = {};
+function upsertChart(key, canvas, cfg){
+  if(!hasChart() || !canvas) return null;
+  const ex = _charts[key];
+  if(ex && ex.canvas === canvas
+      && (ex.config.type || '') === (cfg.type || '')
+      && ex.data.datasets.length === cfg.data.datasets.length
+      && ex.data.datasets.every((d, i) => (d.type || '') === (cfg.data.datasets[i].type || ''))){
+    ex.data.labels = cfg.data.labels;
+    cfg.data.datasets.forEach((ds, i) => { Object.assign(ex.data.datasets[i], ds); });
+    if(cfg.options) ex.options = cfg.options;
+    ex.update('none');
+    return ex;
+  }
+  if(ex) ex.destroy();
+  const c = new Chart(canvas, cfg);
+  _charts[key] = c;
+  return c;
+}
+function dropChart(key){
+  if(_charts[key]){ _charts[key].destroy(); delete _charts[key]; }
+}
+/* Reuse one canvas per dynamic wrapper so upsertChart can update in place. */
+function wrapCanvas(wrapId, cvId){
+  const wrap = document.getElementById(wrapId);
+  let cv = document.getElementById(cvId);
+  if(!cv || cv.parentNode !== wrap){
+    wrap.innerHTML = '';
+    cv = document.createElement('canvas');
+    cv.id = cvId;
+    wrap.appendChild(cv);
+  }
+  return cv;
+}
 
 function hashStr(s){let h=5381;for(let i=0;i<s.length;i++)h=(h*33)^s.charCodeAt(i);return h>>>0;}
 const BAUHAUS_PALETTE = ['#e63329','#1a4b8c','#f5c518','#1a1a1a','#8b8680','#d8d4cc','#6b6860'];
@@ -2527,11 +2558,12 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
   });
 })();
 
-/* ---- Benchmarks (static) ---- */
+/* ---- Benchmarks (static) — chart built at boot, after deferred Chart.js ---- */
+function renderBenchmarks(){
 const bench = D.benchmarks;
 const benchModels = Object.keys(bench).filter(m=>Object.keys(bench[m]).length>0);
 benchModels.sort((a,b)=>modelSort(a,b));
-if(benchModels.length){
+if(benchModels.length && hasChart()){
   sizeWrap('benchWrap', benchModels.length, 'y');
   const cv3=document.createElement('canvas');cv3.id='cBench';
   document.getElementById('benchWrap').appendChild(cv3);
@@ -2551,6 +2583,7 @@ if(benchModels.length){
         y:{grid:{display:false},ticks:{font:{weight:700,size:12},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
       }}
   });
+}
 }
 
 /* ---- Tooltip positioning (clamp to viewport) ---- */
@@ -2636,16 +2669,6 @@ function renderHeatmap(){
 
   const wrap=document.getElementById('activityHeatmap');
   wrap.innerHTML=svg;
-
-  const tip=document.getElementById('hmTip');
-  wrap.addEventListener('mouseover',function(e){
-    const r=e.target.closest('rect[data-tip]');
-    if(!r){tip.style.display='none';return;}
-    tip.textContent=r.getAttribute('data-tip');
-    tip.style.display='block';
-  });
-  wrap.addEventListener('mousemove',function(e){ positionTip(tip,e); });
-  wrap.addEventListener('mouseleave',function(){tip.style.display='none';});
 }
 renderHeatmap();
 
@@ -2679,18 +2702,27 @@ function renderHourly(){
       + '</div>';
   });
   wrap.innerHTML = html;
-
-  var tip = document.getElementById('hmTip');
-  wrap.addEventListener('mouseover', function(e){
-    var sq = e.target.closest('.hourly-sq[data-tip]');
-    if(!sq){tip.style.display='none';return;}
-    tip.textContent = sq.getAttribute('data-tip');
-    tip.style.display = 'block';
-  });
-  wrap.addEventListener('mousemove', function(e){ positionTip(tip,e); });
-  wrap.addEventListener('mouseleave', function(){tip.style.display='none';});
 }
 renderHourly();
+
+/* ---- Heatmap/hourly tooltips: attached ONCE via delegation ----
+   renderHeatmap/renderHourly only swap innerHTML; re-attaching listeners on
+   every render (incl. each 30s live refresh) leaked one set per render. */
+(function initTips(){
+  var tip = document.getElementById('hmTip');
+  ['activityHeatmap', 'hourlyHeatmap'].forEach(function(id){
+    var wrap = document.getElementById(id);
+    if(!wrap) return;
+    wrap.addEventListener('mouseover', function(e){
+      var t = e.target.closest('[data-tip]');
+      if(!t){ tip.style.display = 'none'; return; }
+      tip.textContent = t.getAttribute('data-tip');
+      tip.style.display = 'block';
+    });
+    wrap.addEventListener('mousemove', function(e){ positionTip(tip, e); });
+    wrap.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+  });
+})();
 
 /* ---- Rebuild Daily Table from D.daily ---- */
 function rebuildDailyTable(){
@@ -2719,9 +2751,58 @@ function rebuildDailyTable(){
   tbody.innerHTML=html;
 }
 
-/* ---- Mode Toggle ---- */
-let _tCharts = [];
+/* ---- Environmental info modal + comparisons chart (wired ONCE) ---- */
+var _envTotalW = 0;
+var _envCycleTimer = null;
+(function initEnvModal(){
+    var bar = document.getElementById('envBar');
+    var modal = document.getElementById('envModal');
+    var close = document.getElementById('envModalClose');
+    if(!bar||!modal)return;
+    bar.onclick = function(){
+      modal.classList.add('visible');
+      buildComparisons();
+    };
+    close.onclick = function(){ modal.classList.remove('visible'); };
+    modal.onclick = function(e){ if(e.target===modal) modal.classList.remove('visible'); };
+    // Escape-to-close handled by the single global keydown handler.
+    function buildComparisons(){
+      // rebuilt on every open — _envTotalW changes with live refreshes
+      var w = _envTotalW;
+      var el = document.getElementById('envComparisons');
+      if(!el||w<=0) return;
+      // Municipal water comparisons in mL (USGS, EPA)
+      var items = [
+        {label:'Your Claude usage', ml:w, color:'var(--red)', you:true},
+        {label:'10-min shower', ml:75000, color:'#4a90d9'},
+        {label:'Washing machine load', ml:50000, color:'var(--blue)'},
+        {label:'5-min dishwashing', ml:25000, color:'var(--yellow)'},
+        {label:'One toilet flush', ml:6000, color:'var(--gray-dim)'},
+        {label:'Brushing teeth (tap running)', ml:4000, color:'#5bb5e0'},
+        {label:'Glass of drinking water', ml:250, color:'#2ca02c'},
+      ];
+      // Scale: find max, but cap so tiny bars are still visible
+      var maxMl = Math.max.apply(null, items.map(function(x){return x.ml;}));
+      var html = '';
+      items.forEach(function(it){
+        var pct = Math.max(it.ml / maxMl * 100, 0.5);
+        var cls = it.you ? 'env-cmp-row env-cmp-you' : 'env-cmp-row';
+        var valStr;
+        if(it.ml >= 1000000) valStr = (it.ml/1000000).toFixed(1) + ' m\u00B3';
+        else if(it.ml >= 1000) valStr = (it.ml/1000).toFixed(1) + ' L';
+        else valStr = Math.round(it.ml) + ' mL';
+        html += '<div class="'+cls+'">'
+          +'<div class="env-cmp-label">'+it.label+'</div>'
+          +'<div class="env-cmp-track"><div class="env-cmp-fill" style="width:'+pct.toFixed(2)+'%;background:'+it.color+'"></div></div>'
+          +'<div class="env-cmp-value">'+valStr+'</div></div>';
+      });
+      html += '<p class="env-cmp-note">All figures are municipal/treated water &mdash; the same type used by data center cooling systems. '
+        +'Supply-chain water footprints (e.g. food production) are excluded as they are mostly rain, not comparable.</p>';
+      el.innerHTML = html;
+    }
+})();
 
+/* ---- Mode Toggle ---- */
 function setMode(mode) {
   localStorage.setItem('dashMode', mode);
   document.querySelectorAll('.mode-btn').forEach(b => {
@@ -2731,9 +2812,6 @@ function setMode(mode) {
 }
 
 function renderMode(mode) {
-  _tCharts.forEach(c => c.destroy());
-  _tCharts = [];
-
   const isRecent = mode === '14d';
   const isToday = mode === 'today';
   const todayMB = isToday ? (D.today.model_breakdown || []) : null;
@@ -2854,7 +2932,7 @@ function renderMode(mode) {
   const lnCfg = (color) => useLine
     ? {type:'line',borderColor:color,backgroundColor:'transparent',borderWidth:3,pointRadius:2,tension:.3}
     : {backgroundColor:color+'60',borderColor:'#1a1a1a',borderWidth:2,borderRadius:0};
-  _tCharts.push(new Chart(document.getElementById('cDaily'),{
+  upsertChart('daily', document.getElementById('cDaily'),{
     type:'bar',
     data:{labels:dates,datasets:[
       {label:'Tool Calls',data:daily.map(d=>d.tool_calls),...lnCfg('#e63329'),order:3},
@@ -2872,10 +2950,10 @@ function renderMode(mode) {
         legend:{position:'bottom',labels:{padding:10,font:{weight:700,size:10},color:'#1a1a1a'}},
         tooltip:{callbacks:{label:c=>c.dataset.label+': '+fN(c.raw)}}
       }}
-  }));
+  });
 
   /* ── Token Breakdown chart ── */
-  _tCharts.push(new Chart(document.getElementById('cTokens'),{
+  upsertChart('tokens', document.getElementById('cTokens'),{
     type:'bar',
     data:{labels:dates,datasets:[
       {label:'Cache Read',data:daily.map(d=>d.cache_read_tokens),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1},
@@ -2892,37 +2970,7 @@ function renderMode(mode) {
         legend:{position:'bottom',labels:{padding:10,font:{weight:700,size:10},color:'#1a1a1a'}},
         tooltip:{callbacks:{label:c=>c.dataset.label+': '+fN(c.raw)}}
       }}
-  }));
-
-  /* ── Model Usage doughnut ── */
-  const modelTokens = {};
-  activeMB.forEach(m => {
-    const t = isRecent ? m.recent_total_tokens : m.total_tokens;
-    if (t > 0) modelTokens[m.model] = t;
   });
-  _tCharts.push(new Chart(document.getElementById('cModels'),{
-    type:'doughnut',
-    data:{labels:Object.keys(modelTokens),datasets:[{data:Object.values(modelTokens),
-      backgroundColor:Object.keys(modelTokens).map(mColor),borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
-    options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
-      plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.label+': '+fN(c.raw)+' tokens'}}}}
-  }));
-
-  /* ── Cost by Model doughnut ── */
-  const modelCosts = {};
-  activeMB.forEach(m => {
-    const c = isRecent ? m.recent_cost : m.cost;
-    if (c > 0) modelCosts[m.model] = c;
-  });
-  _tCharts.push(new Chart(document.getElementById('cCostDonut'),{
-    type:'doughnut',
-    data:{labels:Object.keys(modelCosts),datasets:[{data:Object.values(modelCosts),
-      backgroundColor:Object.keys(modelCosts).map(mColor),borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
-    options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
-      plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.label+': '+fC(c.raw)}}}}
-  }));
 
   /* ── Cost banner ── */
   const totalCost = isToday ? activeMB.reduce((s,m)=>s+m.cost,0) : isRecent ? mb.reduce((s,m)=>s+m.recent_cost,0) : D.total_cost;
@@ -2945,7 +2993,6 @@ function renderMode(mode) {
   document.getElementById('costMeta').innerHTML = costParts.join('<br>');
 
   /* ── Environmental impact bar ── */
-  var _envTotalW = 0;
   (function(){
     var totalE = 0, totalW = 0;
     activeMB.forEach(function(m){
@@ -2984,8 +3031,11 @@ function renderMode(mode) {
 
       var idx = 0;
       eqVal.textContent = '\u2248 ' + comparisons[0];
+      // renderMode re-runs on every refresh/mode switch — clear the previous
+      // cycler or one extra interval leaks per render.
+      if (_envCycleTimer) { clearInterval(_envCycleTimer); _envCycleTimer = null; }
       if (comparisons.length > 1) {
-        setInterval(function(){
+        _envCycleTimer = setInterval(function(){
           eqVal.classList.add('fading');
           setTimeout(function(){
             idx = (idx + 1) % comparisons.length;
@@ -2997,103 +3047,28 @@ function renderMode(mode) {
     }
   })();
 
-  /* ── Environmental info modal + comparisons chart ── */
-  (function(){
-    var bar = document.getElementById('envBar');
-    var modal = document.getElementById('envModal');
-    var close = document.getElementById('envModalClose');
-    if(!bar||!modal)return;
-    bar.onclick = function(){
-      modal.classList.add('visible');
-      buildComparisons();
-    };
-    close.onclick = function(){ modal.classList.remove('visible'); };
-    modal.onclick = function(e){ if(e.target===modal) modal.classList.remove('visible'); };
-    document.addEventListener('keydown', function(e){ if(e.key==='Escape') modal.classList.remove('visible'); });
-
-    var cmpBuilt = false;
-    function buildComparisons(){
-      if(cmpBuilt) return;
-      cmpBuilt = true;
-      var w = _envTotalW;
-      var el = document.getElementById('envComparisons');
-      if(!el||w<=0) return;
-      // Municipal water comparisons in mL (USGS, EPA)
-      var items = [
-        {label:'Your Claude usage', ml:w, color:'var(--red)', you:true},
-        {label:'10-min shower', ml:75000, color:'#4a90d9'},
-        {label:'Washing machine load', ml:50000, color:'var(--blue)'},
-        {label:'5-min dishwashing', ml:25000, color:'var(--yellow)'},
-        {label:'One toilet flush', ml:6000, color:'var(--gray-dim)'},
-        {label:'Brushing teeth (tap running)', ml:4000, color:'#5bb5e0'},
-        {label:'Glass of drinking water', ml:250, color:'#2ca02c'},
-      ];
-      // Scale: find max, but cap so tiny bars are still visible
-      var maxMl = Math.max.apply(null, items.map(function(x){return x.ml;}));
-      var html = '';
-      items.forEach(function(it){
-        var pct = Math.max(it.ml / maxMl * 100, 0.5);
-        var cls = it.you ? 'env-cmp-row env-cmp-you' : 'env-cmp-row';
-        var valStr;
-        if(it.ml >= 1000000) valStr = (it.ml/1000000).toFixed(1) + ' m\u00B3';
-        else if(it.ml >= 1000) valStr = (it.ml/1000).toFixed(1) + ' L';
-        else valStr = Math.round(it.ml) + ' mL';
-        html += '<div class="'+cls+'">'
-          +'<div class="env-cmp-label">'+it.label+'</div>'
-          +'<div class="env-cmp-track"><div class="env-cmp-fill" style="width:'+pct.toFixed(2)+'%;background:'+it.color+'"></div></div>'
-          +'<div class="env-cmp-value">'+valStr+'</div></div>';
-      });
-      html += '<p class="env-cmp-note">All figures are municipal/treated water &mdash; the same type used by data center cooling systems. '
-        +'Supply-chain water footprints (e.g. food production) are excluded as they are mostly rain, not comparable.</p>';
-      el.innerHTML = html;
-    }
-  })();
 
   /* ── Month-to-date counter (from embedded D — no fetch dependency) ── */
   (function(){
     var section = document.getElementById('rateLimitsSection');
     if(!section) return;
 
-    // Render month hero immediately from embedded payload — hero is decoupled from fetch
     var monthCostEl = document.getElementById('monthCostValue');
     var monthLabelEl = document.getElementById('monthCostLabel');
-
     var rawMonthCost = (D && typeof D.month_cost === 'number' && !isNaN(D.month_cost))
       ? D.month_cost : 0;
     var monthLabelText = (D && D.month_label) ? D.month_label : '';
-
-    // Update the static label with scope-specific month label from payload
     if(monthLabelEl && monthLabelText) {
       monthLabelEl.textContent = 'MONTH TO DATE · ' + monthLabelText;
     }
-
-    // Animate counter 0 → rawMonthCost with ease-out (~900ms)
     if(monthCostEl) {
-      // Respect prefers-reduced-motion: skip animation, set final value immediately
       if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         monthCostEl.textContent = fC(rawMonthCost);
+        monthCostEl._animValue = rawMonthCost;
       } else {
-        var DURATION = 900; // ms
-        var start = null;
-        function animateCost(ts) {
-          if(!start) start = ts;
-          var elapsed = ts - start;
-          var progress = Math.min(elapsed / DURATION, 1);
-          // ease-out cubic: 1 - (1-t)^3
-          var eased = 1 - Math.pow(1 - progress, 3);
-          var current = rawMonthCost * eased;
-          monthCostEl.textContent = fC(current);
-          if(progress < 1) {
-            requestAnimationFrame(animateCost);
-          } else {
-            monthCostEl.textContent = fC(rawMonthCost);
-          }
-        }
-        if(rawMonthCost > 0) {
-          requestAnimationFrame(animateCost);
-        } else {
-          monthCostEl.textContent = fC(0);
-        }
+        // Shared animator interpolates from the CURRENT value, so live
+        // refreshes nudge the number instead of replaying 0 → total.
+        animateCardValue(monthCostEl, rawMonthCost, fC, 900, true);
       }
     }
 
@@ -3101,8 +3076,309 @@ function renderMode(mode) {
     section.style.display = '';
   })();
 
+
+  /* ── Cost by Model stacked bar ── */
+  const ciKey = isRecent ? 'recent_cost_input' : 'cost_input';
+  const coKey = isRecent ? 'recent_cost_output' : 'cost_output';
+  const cw5Key = isRecent ? 'recent_cost_cache_5m' : 'cost_cache_5m';
+  const cw1Key = isRecent ? 'recent_cost_cache_1h' : 'cost_cache_1h';
+  const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
+  const costModels = activeMB;
+  if(!costModels.length) {
+    dropChart('costByModel');
+    document.getElementById('costWrap').innerHTML = '';
+  } else {
+    sizeWrap('costWrap', costModels.length, 'y');
+    upsertChart('costByModel', wrapCanvas('costWrap', 'cCostByModel'),{
+      type:'bar',
+      data:{labels:costModels.map(m=>m.model),datasets:[
+        {label:'Input',data:costModels.map(m=>m[ciKey]),backgroundColor:'#1a4b8c80',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Output',data:costModels.map(m=>m[coKey]),backgroundColor:'#e6332980',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Cache 5m',data:costModels.map(m=>m[cw5Key]||0),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Cache 1h',data:costModels.map(m=>m[cw1Key]||0),backgroundColor:'#d9900080',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1}
+      ]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+        scales:{
+          x:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v.toFixed(0),font:{size:11},color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+          y:{stacked:true,grid:{display:false},ticks:{font:{weight:700,size:12},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
+        },
+        plugins:{
+          legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
+          tooltip:{callbacks:{label:c=>c.dataset.label+': '+fC(c.raw)}}
+        }}
+    });
+  }
+
+  /* ── Cost/Hr vs Throughput ── */
+  const cphKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
+  const tpsKey = isRecent ? 'recent_output_tok_per_s' : 'all_output_tok_per_s';
+  const hrsKey = isRecent ? 'recent_active_hours' : 'active_hours';
+  const cphModels = activeMB;
+  if(!cphModels.length) {
+    dropChart('cph');
+    document.getElementById('cphWrap').innerHTML = '';
+  } else {
+    sizeWrap('cphWrap', cphModels.length, 'x');
+    upsertChart('cph', wrapCanvas('cphWrap', 'cCPH'),{
+      data:{
+        labels:cphModels.map(m=>m.model),
+        datasets:[
+          {type:'bar',label:'Cost/hr',
+           data:cphModels.map(m=>m[cphKey]),
+           backgroundColor:cphModels.map(m=>mColor(m.model)+'90'),
+           borderColor:'#1a1a1a',
+           borderWidth:2,yAxisID:'y'},
+          {type:'line',label:'Tok/s',
+           data:cphModels.map(m=>m[tpsKey]||null),
+           borderColor:'#1a1a1a',backgroundColor:'transparent',
+           borderWidth:3,pointRadius:5,pointStyle:'circle',
+           pointBackgroundColor:'#f5c518',pointBorderColor:'#1a1a1a',pointBorderWidth:2,
+           tension:0.3,yAxisID:'y2'}
+        ]
+      },
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{
+          legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
+          tooltip:{mode:'index',callbacks:{label:c=>{
+            const m=cphModels[c.dataIndex];
+            if(c.dataset.label==='Cost/hr') return fC(c.raw)+'/hr ('+m[hrsKey].toFixed(1)+'h, $'+(outPriceMap[m.model]||'?')+'/MTok output)';
+            return c.raw+' tok/s effective output';
+          }}}
+        },
+        scales:{
+          x:{grid:{display:false},ticks:{font:{weight:700},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}},
+          y:{beginAtZero:true,position:'left',
+             title:{display:!isMobile(),text:'$/hr',color:'#6b6860',font:{size:10}},
+             ticks:{callback:v=>'$'+v,color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+          y2:{beginAtZero:true,position:'right',
+              title:{display:!isMobile(),text:'tok/s',color:'#1a1a1a',font:{size:10}},
+              ticks:{color:'#1a1a1a'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
+        }
+      }
+    });
+  }
+
+  /* ── Time Breakdown doughnut ── */
+  const tbThink = isToday ? D.today.time_breakdown.thinking : isRecent ? D.time_breakdown.recent_thinking : D.time_breakdown.thinking;
+  const tbTool = isToday ? D.today.time_breakdown.tool_execution : isRecent ? D.time_breakdown.recent_tool_execution : D.time_breakdown.tool_execution;
+  const tbSub = isToday ? (D.today.time_breakdown.subagent || 0) : isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
+  const tbLabels = ['Thinking / Generation','Tool Execution'];
+  const tbData = [tbThink, tbTool];
+  const tbColors = ['#1a4b8c','#e63329'];
+  if (tbSub > 0) {
+    tbLabels.push('Sub-agent');
+    tbData.push(tbSub);
+    tbColors.push('#f5c518');
+  }
+  upsertChart('time', document.getElementById('cTime'),{
+    type:'doughnut',
+    data:{labels:tbLabels,datasets:[{data:tbData,backgroundColor:tbColors,borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
+      plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
+        tooltip:{callbacks:{label:c=>c.label+': '+fT(c.raw)}}}}
+  });
+  const orchTotal = tbThink + tbTool;
+  const combinedTotal = orchTotal + tbSub;
+  const agentRuns = isToday ? (D.today.time_breakdown.agent_runs || 0) : isRecent ? (D.time_breakdown.recent_agent_runs || 0) : (D.time_breakdown.agent_runs || 0);
+  let timeDetail = fT(orchTotal) + ' orchestrator';
+  if (tbSub > 0) {
+    timeDetail += ' &nbsp;<span style="color:var(--gray-light)">|</span>&nbsp; ' + fT(tbSub) + ' sub-agent';
+    timeDetail += ' <span style="color:var(--gray-dim);font-size:.7rem">(' + fN(agentRuns) + ' runs)</span>';
+    timeDetail += ' &nbsp;<span style="color:var(--gray-light)">|</span>&nbsp; ' + fT(combinedTotal) + ' combined';
+  }
+  document.getElementById('timeDetail').innerHTML = timeDetail;
+
+  /* ── Tool Usage ── */
+  const toolData = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
+  upsertChart('tools', document.getElementById('cTools'),{
+    type:'bar',
+    data:{labels:Object.keys(toolData),datasets:[{data:Object.values(toolData),
+      backgroundColor:'#1a4b8c60',borderColor:'#1a1a1a',borderWidth:2}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{beginAtZero:true,grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
+      }}
+  });
+
+  /* ── Project Activity ── */
+  const projSource = isToday ? (D.today.projects||[]) : D.projects;
+  const projSorted = projSource.slice().sort((a,b)=>(isRecent?b.recent_cost:b.cost)-(isRecent?a.recent_cost:a.cost)).filter(p=>(isToday?p.cost:(isRecent?p.recent_cost:p.cost))>0);
+  const pLabels = projSorted.map(p=>p.name);
+  const pCost = projSorted.map(p=>isToday?p.cost:isRecent?p.recent_cost:p.cost);
+  const pMin = projSorted.map(p=>isToday?p.minutes:isRecent?p.recent_minutes:p.minutes);
+  upsertChart('projects', document.getElementById('cProjects'),{
+    type:'bar',
+    data:{labels:pLabels,datasets:[
+      {label:'Cost',data:pCost,backgroundColor:'#e6332960',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x'},
+      {label:'Active Min',data:pMin,backgroundColor:'#1a4b8c40',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x2'}
+    ]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{
+        legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
+        tooltip:{callbacks:{label:c=>c.dataset.label==='Cost'?c.dataset.label+': '+fC(c.raw):c.dataset.label+': '+fN(c.raw)}}
+      },
+      scales:{
+        x:{position:'top',beginAtZero:true,ticks:{callback:v=>'$'+v},title:{display:!isMobile(),text:'Cost',color:'#e63329',font:{size:10}},grid:{color:'#d8d4cc'},border:{display:false}},
+        x2:{position:'bottom',beginAtZero:true,grid:{display:false},title:{display:!isMobile(),text:'Active Minutes',color:'#1a4b8c',font:{size:10}},border:{color:'#1a1a1a',width:3}},
+        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
+      }}
+  });
+
+  /* ── Machine charts ── */
+  const mSummary = isToday ? (D.today.machine_summary || []) : isRecent ? (D.recent_machine_summary || []) : (D.machine_summary || []);
+  const mSummaryFiltered = mSummary.filter(m=>m.cost>0||m.prompts>0);
+  const mDailyCost = D.machine_daily_cost || {};
+  const _mc = buildMachineColors([...mSummaryFiltered.map(m=>m.machine),...Object.keys(mDailyCost)]);
+  if(mSummaryFiltered.length) {
+    upsertChart('machineCost', document.getElementById('cMachineCost'),{
+      type:'doughnut',
+      data:{labels:mSummaryFiltered.filter(m=>m.cost>0).map(m=>m.machine),datasets:[{data:mSummaryFiltered.filter(m=>m.cost>0).map(m=>m.cost),
+        backgroundColor:mSummaryFiltered.filter(m=>m.cost>0).map(m=>_mc[m.machine]),borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
+      options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
+        plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
+          tooltip:{callbacks:{label:c=>c.label+': '+fC(c.raw)}}}}
+    });
+    const mDailyDatasets = Object.keys(mDailyCost).map((machine)=>{
+      const allData = mDailyCost[machine];
+      return {
+        label:machine,
+        data:isToday ? allData.filter((_,j)=>D.daily[j].date===todayStr) : isRecent ? allData.filter((_,j)=>D.daily[j].date>=cutoff) : allData,
+        backgroundColor:_mc[machine]+'70',
+        borderColor:'#1a1a1a',
+        borderWidth:1
+      };
+    });
+    upsertChart('machineDaily', document.getElementById('cMachineDaily'),{
+      type:'bar',
+      data:{labels:dates,datasets:mDailyDatasets},
+      options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+        scales:{
+          x:{stacked:true,grid:{display:false},border:{color:'#1a1a1a',width:3}},
+          y:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}}
+        },
+        plugins:{
+          tooltip:{callbacks:{label:c=>c.dataset.label+': '+fC(c.raw)}},
+          legend:{position:'bottom',labels:{padding:8,font:{weight:700,size:10},color:'#1a1a1a'}}
+        }}
+    });
+  }
+
+  /* ── Machine Breakdown table ── */
+  const machineBody = document.getElementById('machineBody');
+  machineBody.innerHTML = '';
+  mSummary.forEach(ms => {
+    const costColor = ms.cost > 0 ? 'var(--red)' : 'var(--gray-dim)';
+    machineBody.innerHTML += '<tr><td>'+esc(ms.machine)+'</td>'
+      +'<td>'+fN(ms.prompts)+'</td>'
+      +'<td>'+fN(ms.api_calls)+'</td>'
+      +'<td>'+fN(ms.tool_calls)+'</td>'
+      +'<td>'+fN(ms.total_tokens)+'</td>'
+      +'<td style="color:'+costColor+'">'+fC(ms.cost)+'</td></tr>';
+  });
+
+  /* ── Model Breakdown table ── */
+  const dot = '<span style="color:var(--gray-light)">&#183;</span>';
+  const modelBody = document.getElementById('modelBody');
+  modelBody.innerHTML = '';
+  activeMB.forEach((m, i) => {
+    const tokKey = isRecent ? 'recent_total_tokens' : 'total_tokens';
+    const costVal = isRecent ? m.recent_cost : m.cost;
+    const hoursVal = isRecent ? m.recent_active_hours : m.active_hours;
+    const cphVal = isRecent ? m.recent_cost_per_hour : m.all_cost_per_hour;
+    const tpsVal = isRecent ? m.recent_output_tok_per_s : m.all_output_tok_per_s;
+    const orchCostVal = isRecent ? m.recent_main_cost : m.main_cost;
+    const agentCostVal = isRecent ? m.recent_agent_cost : m.agent_cost;
+    const hoursStr = hoursVal > 0 ? hoursVal.toFixed(1)+'h' : dot;
+    const cphStr = cphVal != null ? fC(cphVal) : dot;
+    const tpsStr = tpsVal != null ? Math.round(tpsVal).toString() : dot;
+    const costStr = costVal > 0 ? fC(costVal) : dot;
+    const row = document.createElement('tr');
+    row.className = 'mb-row';
+    row.onclick = function(){ toggleMB(i); };
+    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
+      +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
+      +'</div></td>'
+      +'<td>'+fN(m.api_calls)+'</td>'
+      +'<td>'+fN(m[tokKey])+'</td>'
+      +'<td>'+costStr+'</td>'
+      +'<td>'+hoursStr+'</td>'
+      +'<td>'+cphStr+'</td>'
+      +'<td>'+tpsStr+'</td>';
+    modelBody.appendChild(row);
+    const inKey = isRecent ? 'recent_input' : 'input';
+    const outKey = isRecent ? 'recent_output' : 'output';
+    const cwTokKey = isRecent ? 'recent_cache_write' : 'cache_write';
+    const crTokKey = isRecent ? 'recent_cache_read' : 'cache_read';
+    const cpt = m.avg_cost_per_turn != null ? fC(m.avg_cost_per_turn) : dot;
+    const cpa = m.avg_cost_per_agent != null ? fC(m.avg_cost_per_agent) : dot;
+    const orchStr = orchCostVal > 0 ? fC(orchCostVal) : dot;
+    const agentStr = agentCostVal > 0 ? fC(agentCostVal) : dot;
+    const prompts = m.main_prompts ? fN(m.main_prompts) : '0';
+    const agRuns = m.agent_invocations ? fN(m.agent_invocations) : '0';
+    const mEwh = isRecent ? m.recent_energy_wh : m.energy_wh;
+    const mWml = isRecent ? m.recent_water_ml : m.water_ml;
+    var eStr, wStr;
+    if (mEwh >= 1000) eStr = (mEwh/1000).toFixed(1)+' kWh';
+    else eStr = Math.round(mEwh)+' Wh';
+    if (mWml >= 1000) wStr = (mWml/1000).toFixed(2)+' L';
+    else wStr = Math.round(mWml)+' mL';
+    const detail = document.createElement('tr');
+    detail.className = 'mb-detail';
+    detail.id = 'mbd'+i;
+    detail.style.display = 'none';
+    detail.innerHTML = '<td colspan="7">'
+      +'<div class="mb-grid">'
+      +'<div class="mb-group"><div class="mb-group-title">Tokens</div>'
+      +'<div class="mb-stat"><span class="mb-label">Input</span><span>'+fN(m[inKey] || 0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Output</span><span>'+fN(m[outKey] || 0)+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Cache Write</span><span>'+fN(m[cwTokKey] || 0)+'</span></div>'
+      +(function(){
+        // Tier split (5m @1.25x vs 1h @2x base). Only rendered when known —
+        // events ingested before split capture (or unreached by backfill)
+        // have no tier data and showing 0/0 would read as "no cache writes".
+        var c5 = m[isRecent ? 'recent_cache_5m' : 'cache_5m'] || 0;
+        var c1 = m[isRecent ? 'recent_cache_1h' : 'cache_1h'] || 0;
+        if (!(c5 || c1)) return '';
+        return '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;5m tier</span><span>'+fN(c5)+'</span></div>'
+             + '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;1h tier</span><span>'+fN(c1)+'</span></div>';
+      })()
+      +'<div class="mb-stat"><span class="mb-label">Cache Read</span><span>'+fN(m[crTokKey] || 0)+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Cost</div>'
+      +'<div class="mb-stat"><span class="mb-label">Orchestrator</span><span>'+orchStr+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Sub-agent</span><span>'+agentStr+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Footprint</div>'
+      +'<div class="mb-stat"><span class="mb-label">Energy</span><span>'+eStr+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Water</span><span>'+wStr+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Orchestrator</div>'
+      +'<div class="mb-stat"><span class="mb-label">Prompts</span><span>'+prompts+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Avg/Prompt</span><span>'+cpt+'</span></div>'
+      +'</div>'
+      +'<div class="mb-group"><div class="mb-group-title">Sub-agent</div>'
+      +'<div class="mb-stat"><span class="mb-label">Agent Runs</span><span>'+agRuns+'</span></div>'
+      +'<div class="mb-stat"><span class="mb-label">Avg/Run</span><span>'+cpa+'</span></div>'
+      +'</div>'
+      +'</div></td>';
+    modelBody.appendChild(detail);
+  });
+
+  /* ── Daily table: rebuild + show/hide rows ── */
+  rebuildDailyTable();
+  document.querySelectorAll('#dailyTable tbody tr').forEach(tr => {
+    const date = tr.cells[0].textContent;
+    if (isToday) tr.style.display = date === todayStr ? '' : 'none';
+    else if (isRecent) tr.style.display = date < cutoff ? 'none' : '';
+    else tr.style.display = '';
+  });
+}
+
   /* ── Rate limits section secondary detail (async from /api/rate-limits) ── */
-  (function(){
+function initRateLimits(){
     var section = document.getElementById('rateLimitsSection');
     var pacePanel = document.getElementById('weekPacePanel');
     if(!section || !pacePanel) return;
@@ -3110,6 +3386,8 @@ function renderMode(mode) {
     // Staleness ticker id — lives OUTSIDE renderAllRateLimits so the 60s poll
     // can clear the previous interval before creating a new one (no leak).
     var staleIntervalId = null;
+    // Pace-chart instance persists across polls (one canvas, one chart).
+    var usageChart = null;
 
     function renderAllRateLimits(wb) {
     if(!wb) return; // month hero still stands; just leave pace panel empty
@@ -3438,19 +3716,23 @@ function renderMode(mode) {
     })();
   })();
 
-  /* ── Weekly usage pace chart (modal popup) ── */
+  /* ── Weekly usage pace chart (modal popup) ──
+     Re-runs on every 60s poll: the TRIGGER button is recreated with the panel
+     HTML so its listener must re-attach, but the overlay/close chrome is wired
+     once in initRateLimits and the chart instance persists across polls. */
   (function(){
     if(!wb || !wb.hourly_costs) return;
 
     var overlay = document.getElementById('usageChartOverlay');
-    var trigger = document.getElementById('usageChartTrigger');
-    var closeBtn = document.getElementById('usageChartClose');
+    var trigger = document.getElementById('usageChartTrigger') || document.getElementById('oauthChartTrigger');
     if(!overlay || !trigger) return;
 
-    var usageChart = null;
+    // New data invalidates the cached chart — rebuild on next open (or now if open)
+    if(usageChart){ usageChart.destroy(); usageChart = null; }
 
     function buildChart() {
       if(usageChart) return; // already built
+      if(!hasChart()) return;
 
       var canvas = document.getElementById('usageChartCanvas');
       if(!canvas) return;
@@ -3667,349 +3949,70 @@ function renderMode(mode) {
       setTimeout(buildChart, 50);
     });
 
-    function closeModal() {
-      overlay.classList.remove('visible');
-    }
-
-    if(closeBtn) closeBtn.addEventListener('click', closeModal);
-    overlay.addEventListener('click', function(e) {
-      if(e.target === overlay) closeModal();
-    });
-    document.addEventListener('keydown', function(e) {
-      if(e.key === 'Escape' && overlay.classList.contains('visible')) closeModal();
-    });
+    // If new data arrived while the modal is open, rebuild immediately
+    if(overlay.classList.contains('visible')) setTimeout(buildChart, 50);
   })();
 
     } // end renderAllRateLimits
 
+    // Modal chrome (close button / backdrop) — wired ONCE here; the previous
+    // version re-registered these on every 60s poll (listener leak).
+    (function(){
+      var overlay = document.getElementById('usageChartOverlay');
+      var closeBtn = document.getElementById('usageChartClose');
+      if(!overlay) return;
+      if(closeBtn) closeBtn.addEventListener('click', function(){ overlay.classList.remove('visible'); });
+      overlay.addEventListener('click', function(e) {
+        if(e.target === overlay) overlay.classList.remove('visible');
+      });
+      // Escape-to-close handled by the single global keydown handler.
+    })();
+
+    function showLimitsError(){
+      // Quiet inline state instead of silently-empty panel (house error rules)
+      if(!pacePanel.innerHTML){
+        pacePanel.innerHTML = '<div class="rate-gauge-head"><span class="rate-gauge-label">7-Day Pace</span>'
+          + '<span class="rate-gauge-reset">limits unavailable — retrying</span></div>';
+      }
+    }
+
     // Fetch rate limits from API (secondary detail only — month hero already shown).
     // Pass current scope so the server can gate oauth fields to personal scope.
     var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
-    fetch(rlUrl)
-      .then(function(r) { return r.json(); })
-      .then(function(data) { renderAllRateLimits(data.weekly_budget); })
-      .catch(function() { /* pace panel stays empty; month hero unaffected */ });
-
-    // Poll every 60s to keep pace panel fresh
-    setInterval(function() {
+    function pollLimits(){
       fetch(rlUrl)
-        .then(function(r) { return r.json(); })
+        .then(function(r) { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
         .then(function(data) { renderAllRateLimits(data.weekly_budget); })
-        .catch(function() {});
-    }, 60000);
-  })();
-
-  /* ── Cost by Model stacked bar ── */
-  const ciKey = isRecent ? 'recent_cost_input' : 'cost_input';
-  const coKey = isRecent ? 'recent_cost_output' : 'cost_output';
-  const cw5Key = isRecent ? 'recent_cost_cache_5m' : 'cost_cache_5m';
-  const cw1Key = isRecent ? 'recent_cost_cache_1h' : 'cost_cache_1h';
-  const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
-  const costModels = activeMB;
-  const costWrap = document.getElementById('costWrap');
-  costWrap.innerHTML = '';
-  if(costModels.length) {
-    sizeWrap('costWrap', costModels.length, 'y');
-    const cv = document.createElement('canvas');
-    costWrap.appendChild(cv);
-    _tCharts.push(new Chart(cv,{
-      type:'bar',
-      data:{labels:costModels.map(m=>m.model),datasets:[
-        {label:'Input',data:costModels.map(m=>m[ciKey]),backgroundColor:'#1a4b8c80',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Output',data:costModels.map(m=>m[coKey]),backgroundColor:'#e6332980',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Cache 5m',data:costModels.map(m=>m[cw5Key]||0),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Cache 1h',data:costModels.map(m=>m[cw1Key]||0),backgroundColor:'#d9900080',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1}
-      ]},
-      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-        scales:{
-          x:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v.toFixed(0),font:{size:11},color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-          y:{stacked:true,grid:{display:false},ticks:{font:{weight:700,size:12},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
-        },
-        plugins:{
-          legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
-          tooltip:{callbacks:{label:c=>c.dataset.label+': '+fC(c.raw)}}
-        }}
-    }));
-  }
-
-  /* ── Cost/Hr vs Throughput ── */
-  const cphKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
-  const tpsKey = isRecent ? 'recent_output_tok_per_s' : 'all_output_tok_per_s';
-  const hrsKey = isRecent ? 'recent_active_hours' : 'active_hours';
-  const cphModels = activeMB;
-  const cphWrap = document.getElementById('cphWrap');
-  cphWrap.innerHTML = '';
-  if(cphModels.length) {
-    sizeWrap('cphWrap', cphModels.length, 'x');
-    const cv2 = document.createElement('canvas'); cv2.id='cCPH';
-    cphWrap.appendChild(cv2);
-    _tCharts.push(new Chart(cv2,{
-      data:{
-        labels:cphModels.map(m=>m.model),
-        datasets:[
-          {type:'bar',label:'Cost/hr',
-           data:cphModels.map(m=>m[cphKey]),
-           backgroundColor:cphModels.map(m=>mColor(m.model)+'90'),
-           borderColor:'#1a1a1a',
-           borderWidth:2,yAxisID:'y'},
-          {type:'line',label:'Tok/s',
-           data:cphModels.map(m=>m[tpsKey]||null),
-           borderColor:'#1a1a1a',backgroundColor:'transparent',
-           borderWidth:3,pointRadius:5,pointStyle:'circle',
-           pointBackgroundColor:'#f5c518',pointBorderColor:'#1a1a1a',pointBorderWidth:2,
-           tension:0.3,yAxisID:'y2'}
-        ]
-      },
-      options:{responsive:true,maintainAspectRatio:false,
-        plugins:{
-          legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
-          tooltip:{mode:'index',callbacks:{label:c=>{
-            const m=cphModels[c.dataIndex];
-            if(c.dataset.label==='Cost/hr') return fC(c.raw)+'/hr ('+m[hrsKey].toFixed(1)+'h, $'+(outPriceMap[m.model]||'?')+'/MTok output)';
-            return c.raw+' tok/s effective output';
-          }}}
-        },
-        scales:{
-          x:{grid:{display:false},ticks:{font:{weight:700},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}},
-          y:{beginAtZero:true,position:'left',
-             title:{display:!isMobile(),text:'$/hr',color:'#6b6860',font:{size:10}},
-             ticks:{callback:v=>'$'+v,color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-          y2:{beginAtZero:true,position:'right',
-              title:{display:!isMobile(),text:'tok/s',color:'#1a1a1a',font:{size:10}},
-              ticks:{color:'#1a1a1a'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
-        }
-      }
-    }));
-  }
-
-  /* ── Time Breakdown doughnut ── */
-  const tbThink = isToday ? D.today.time_breakdown.thinking : isRecent ? D.time_breakdown.recent_thinking : D.time_breakdown.thinking;
-  const tbTool = isToday ? D.today.time_breakdown.tool_execution : isRecent ? D.time_breakdown.recent_tool_execution : D.time_breakdown.tool_execution;
-  const tbSub = isToday ? (D.today.time_breakdown.subagent || 0) : isRecent ? (D.time_breakdown.recent_subagent || 0) : (D.time_breakdown.subagent || 0);
-  const tbLabels = ['Thinking / Generation','Tool Execution'];
-  const tbData = [tbThink, tbTool];
-  const tbColors = ['#1a4b8c','#e63329'];
-  if (tbSub > 0) {
-    tbLabels.push('Sub-agent');
-    tbData.push(tbSub);
-    tbColors.push('#f5c518');
-  }
-  _tCharts.push(new Chart(document.getElementById('cTime'),{
-    type:'doughnut',
-    data:{labels:tbLabels,datasets:[{data:tbData,backgroundColor:tbColors,borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
-    options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
-      plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.label+': '+fT(c.raw)}}}}
-  }));
-  const orchTotal = tbThink + tbTool;
-  const combinedTotal = orchTotal + tbSub;
-  const agentRuns = isToday ? (D.today.time_breakdown.agent_runs || 0) : isRecent ? (D.time_breakdown.recent_agent_runs || 0) : (D.time_breakdown.agent_runs || 0);
-  let timeDetail = fT(orchTotal) + ' orchestrator';
-  if (tbSub > 0) {
-    timeDetail += ' &nbsp;<span style="color:var(--gray-light)">|</span>&nbsp; ' + fT(tbSub) + ' sub-agent';
-    timeDetail += ' <span style="color:var(--gray-dim);font-size:.7rem">(' + fN(agentRuns) + ' runs)</span>';
-    timeDetail += ' &nbsp;<span style="color:var(--gray-light)">|</span>&nbsp; ' + fT(combinedTotal) + ' combined';
-  }
-  document.getElementById('timeDetail').innerHTML = timeDetail;
-
-  /* ── Tool Usage ── */
-  const toolData = isToday ? (D.today.tools||{}) : isRecent ? (D.recent_tools||D.tools) : D.tools;
-  _tCharts.push(new Chart(document.getElementById('cTools'),{
-    type:'bar',
-    data:{labels:Object.keys(toolData),datasets:[{data:Object.values(toolData),
-      backgroundColor:'#1a4b8c60',borderColor:'#1a1a1a',borderWidth:2}]},
-    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{beginAtZero:true,grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
-      }}
-  }));
-
-  /* ── Project Activity ── */
-  const projSource = isToday ? (D.today.projects||[]) : D.projects;
-  const projSorted = projSource.slice().sort((a,b)=>(isRecent?b.recent_cost:b.cost)-(isRecent?a.recent_cost:a.cost)).filter(p=>(isToday?p.cost:(isRecent?p.recent_cost:p.cost))>0);
-  const pLabels = projSorted.map(p=>p.name);
-  const pCost = projSorted.map(p=>isToday?p.cost:isRecent?p.recent_cost:p.cost);
-  const pMin = projSorted.map(p=>isToday?p.minutes:isRecent?p.recent_minutes:p.minutes);
-  _tCharts.push(new Chart(document.getElementById('cProjects'),{
-    type:'bar',
-    data:{labels:pLabels,datasets:[
-      {label:'Cost',data:pCost,backgroundColor:'#e6332960',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x'},
-      {label:'Active Min',data:pMin,backgroundColor:'#1a4b8c40',borderColor:'#1a1a1a',borderWidth:2,xAxisID:'x2'}
-    ]},
-    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      plugins:{
-        legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
-        tooltip:{callbacks:{label:c=>c.dataset.label==='Cost'?c.dataset.label+': '+fC(c.raw):c.dataset.label+': '+fN(c.raw)}}
-      },
-      scales:{
-        x:{position:'top',beginAtZero:true,ticks:{callback:v=>'$'+v},title:{display:!isMobile(),text:'Cost',color:'#e63329',font:{size:10}},grid:{color:'#d8d4cc'},border:{display:false}},
-        x2:{position:'bottom',beginAtZero:true,grid:{display:false},title:{display:!isMobile(),text:'Active Minutes',color:'#1a4b8c',font:{size:10}},border:{color:'#1a1a1a',width:3}},
-        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
-      }}
-  }));
-
-  /* ── Machine charts ── */
-  const mSummary = isToday ? (D.today.machine_summary || []) : isRecent ? (D.recent_machine_summary || []) : (D.machine_summary || []);
-  const mSummaryFiltered = mSummary.filter(m=>m.cost>0||m.prompts>0);
-  const mDailyCost = D.machine_daily_cost || {};
-  const _mc = buildMachineColors([...mSummaryFiltered.map(m=>m.machine),...Object.keys(mDailyCost)]);
-  if(mSummaryFiltered.length) {
-    _tCharts.push(new Chart(document.getElementById('cMachineCost'),{
-      type:'doughnut',
-      data:{labels:mSummaryFiltered.filter(m=>m.cost>0).map(m=>m.machine),datasets:[{data:mSummaryFiltered.filter(m=>m.cost>0).map(m=>m.cost),
-        backgroundColor:mSummaryFiltered.filter(m=>m.cost>0).map(m=>_mc[m.machine]),borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
-      options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
-        plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
-          tooltip:{callbacks:{label:c=>c.label+': '+fC(c.raw)}}}}
-    }));
-    _tCharts.push(new Chart(document.getElementById('cMachinePrompts'),{
-      type:'doughnut',
-      data:{labels:mSummaryFiltered.filter(m=>m.prompts>0).map(m=>m.machine),datasets:[{data:mSummaryFiltered.filter(m=>m.prompts>0).map(m=>m.prompts),
-        backgroundColor:mSummaryFiltered.filter(m=>m.prompts>0).map(m=>_mc[m.machine]),borderColor:'#1a1a1a',borderWidth:3,hoverOffset:6}]},
-      options:{responsive:true,maintainAspectRatio:false,cutout:'55%',
-        plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
-          tooltip:{callbacks:{label:c=>c.label+': '+fN(c.raw)+' prompts'}}}}
-    }));
-    const mDailyDatasets = Object.keys(mDailyCost).map((machine)=>{
-      const allData = mDailyCost[machine];
-      return {
-        label:machine,
-        data:isToday ? allData.filter((_,j)=>D.daily[j].date===todayStr) : isRecent ? allData.filter((_,j)=>D.daily[j].date>=cutoff) : allData,
-        backgroundColor:_mc[machine]+'70',
-        borderColor:'#1a1a1a',
-        borderWidth:1
-      };
-    });
-    _tCharts.push(new Chart(document.getElementById('cMachineDaily'),{
-      type:'bar',
-      data:{labels:dates,datasets:mDailyDatasets},
-      options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-        scales:{
-          x:{stacked:true,grid:{display:false},border:{color:'#1a1a1a',width:3}},
-          y:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}}
-        },
-        plugins:{
-          tooltip:{callbacks:{label:c=>c.dataset.label+': '+fC(c.raw)}},
-          legend:{position:'bottom',labels:{padding:8,font:{weight:700,size:10},color:'#1a1a1a'}}
-        }}
-    }));
-  }
-
-  /* ── Machine Breakdown table ── */
-  const machineBody = document.getElementById('machineBody');
-  machineBody.innerHTML = '';
-  mSummary.forEach(ms => {
-    const costColor = ms.cost > 0 ? 'var(--red)' : 'var(--gray-dim)';
-    machineBody.innerHTML += '<tr><td>'+esc(ms.machine)+'</td>'
-      +'<td>'+fN(ms.prompts)+'</td>'
-      +'<td>'+fN(ms.api_calls)+'</td>'
-      +'<td>'+fN(ms.tool_calls)+'</td>'
-      +'<td>'+fN(ms.total_tokens)+'</td>'
-      +'<td style="color:'+costColor+'">'+fC(ms.cost)+'</td></tr>';
-  });
-
-  /* ── Model Breakdown table ── */
-  const dot = '<span style="color:var(--gray-light)">&#183;</span>';
-  const modelBody = document.getElementById('modelBody');
-  modelBody.innerHTML = '';
-  activeMB.forEach((m, i) => {
-    const tokKey = isRecent ? 'recent_total_tokens' : 'total_tokens';
-    const costVal = isRecent ? m.recent_cost : m.cost;
-    const hoursVal = isRecent ? m.recent_active_hours : m.active_hours;
-    const cphVal = isRecent ? m.recent_cost_per_hour : m.all_cost_per_hour;
-    const tpsVal = isRecent ? m.recent_output_tok_per_s : m.all_output_tok_per_s;
-    const orchCostVal = isRecent ? m.recent_main_cost : m.main_cost;
-    const agentCostVal = isRecent ? m.recent_agent_cost : m.agent_cost;
-    const hoursStr = hoursVal > 0 ? hoursVal.toFixed(1)+'h' : dot;
-    const cphStr = cphVal != null ? fC(cphVal) : dot;
-    const tpsStr = tpsVal != null ? Math.round(tpsVal).toString() : dot;
-    const costStr = costVal > 0 ? fC(costVal) : dot;
-    const row = document.createElement('tr');
-    row.className = 'mb-row';
-    row.onclick = function(){ toggleMB(i); };
-    row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
-      +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
-      +'</div></td>'
-      +'<td>'+fN(m.api_calls)+'</td>'
-      +'<td>'+fN(m[tokKey])+'</td>'
-      +'<td>'+costStr+'</td>'
-      +'<td>'+hoursStr+'</td>'
-      +'<td>'+cphStr+'</td>'
-      +'<td>'+tpsStr+'</td>';
-    modelBody.appendChild(row);
-    const inKey = isRecent ? 'recent_input' : 'input';
-    const outKey = isRecent ? 'recent_output' : 'output';
-    const cwTokKey = isRecent ? 'recent_cache_write' : 'cache_write';
-    const crTokKey = isRecent ? 'recent_cache_read' : 'cache_read';
-    const cpt = m.avg_cost_per_turn != null ? fC(m.avg_cost_per_turn) : dot;
-    const cpa = m.avg_cost_per_agent != null ? fC(m.avg_cost_per_agent) : dot;
-    const orchStr = orchCostVal > 0 ? fC(orchCostVal) : dot;
-    const agentStr = agentCostVal > 0 ? fC(agentCostVal) : dot;
-    const prompts = m.main_prompts ? fN(m.main_prompts) : '0';
-    const agRuns = m.agent_invocations ? fN(m.agent_invocations) : '0';
-    const mEwh = isRecent ? m.recent_energy_wh : m.energy_wh;
-    const mWml = isRecent ? m.recent_water_ml : m.water_ml;
-    var eStr, wStr;
-    if (mEwh >= 1000) eStr = (mEwh/1000).toFixed(1)+' kWh';
-    else eStr = Math.round(mEwh)+' Wh';
-    if (mWml >= 1000) wStr = (mWml/1000).toFixed(2)+' L';
-    else wStr = Math.round(mWml)+' mL';
-    const detail = document.createElement('tr');
-    detail.className = 'mb-detail';
-    detail.id = 'mbd'+i;
-    detail.style.display = 'none';
-    detail.innerHTML = '<td colspan="7">'
-      +'<div class="mb-grid">'
-      +'<div class="mb-group"><div class="mb-group-title">Tokens</div>'
-      +'<div class="mb-stat"><span class="mb-label">Input</span><span>'+fN(m[inKey] || 0)+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Output</span><span>'+fN(m[outKey] || 0)+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Cache Write</span><span>'+fN(m[cwTokKey] || 0)+'</span></div>'
-      +(function(){
-        // Tier split (5m @1.25x vs 1h @2x base). Only rendered when known —
-        // events ingested before split capture (or unreached by backfill)
-        // have no tier data and showing 0/0 would read as "no cache writes".
-        var c5 = m[isRecent ? 'recent_cache_5m' : 'cache_5m'] || 0;
-        var c1 = m[isRecent ? 'recent_cache_1h' : 'cache_1h'] || 0;
-        if (!(c5 || c1)) return '';
-        return '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;5m tier</span><span>'+fN(c5)+'</span></div>'
-             + '<div class="mb-stat"><span class="mb-label">&nbsp;&nbsp;1h tier</span><span>'+fN(c1)+'</span></div>';
-      })()
-      +'<div class="mb-stat"><span class="mb-label">Cache Read</span><span>'+fN(m[crTokKey] || 0)+'</span></div>'
-      +'</div>'
-      +'<div class="mb-group"><div class="mb-group-title">Cost</div>'
-      +'<div class="mb-stat"><span class="mb-label">Orchestrator</span><span>'+orchStr+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Sub-agent</span><span>'+agentStr+'</span></div>'
-      +'</div>'
-      +'<div class="mb-group"><div class="mb-group-title">Footprint</div>'
-      +'<div class="mb-stat"><span class="mb-label">Energy</span><span>'+eStr+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Water</span><span>'+wStr+'</span></div>'
-      +'</div>'
-      +'<div class="mb-group"><div class="mb-group-title">Orchestrator</div>'
-      +'<div class="mb-stat"><span class="mb-label">Prompts</span><span>'+prompts+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Avg/Prompt</span><span>'+cpt+'</span></div>'
-      +'</div>'
-      +'<div class="mb-group"><div class="mb-group-title">Sub-agent</div>'
-      +'<div class="mb-stat"><span class="mb-label">Agent Runs</span><span>'+agRuns+'</span></div>'
-      +'<div class="mb-stat"><span class="mb-label">Avg/Run</span><span>'+cpa+'</span></div>'
-      +'</div>'
-      +'</div></td>';
-    modelBody.appendChild(detail);
-  });
-
-  /* ── Daily table: rebuild + show/hide rows ── */
-  rebuildDailyTable();
-  document.querySelectorAll('#dailyTable tbody tr').forEach(tr => {
-    const date = tr.cells[0].textContent;
-    if (isToday) tr.style.display = date === todayStr ? '' : 'none';
-    else if (isRecent) tr.style.display = date < cutoff ? 'none' : '';
-    else tr.style.display = '';
-  });
+        .catch(function() { showLimitsError(); });
+    }
+    pollLimits();
+    // Single 60s poll — created once at boot (initRateLimits is no longer
+    // inside renderMode, which used to spawn one extra poller per render).
+    setInterval(pollLimits, 60000);
 }
 
-setMode(localStorage.getItem('dashMode') || '14d');
+/* ---- Single global Escape handler for all modals (was 1 listener per render) ---- */
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  document.querySelectorAll('.env-modal-overlay.visible, .usage-chart-overlay.visible')
+    .forEach(function(el){ el.classList.remove('visible'); });
+});
+
+/* ---- Boot ----
+   Chart.js loads deferred (executes before DOMContentLoaded); everything that
+   may draw a chart starts here. If the library failed to load, initChartGlobals
+   is false and all chart builds no-op — cards, tables and heatmaps still work. */
+function boot(){
+  initChartGlobals();
+  setMode(localStorage.getItem('dashMode') || '14d');
+  renderBenchmarks();
+  initRateLimits();
+}
+if(document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
 
 /* ---- Recent Sessions (burn rate per task) ---- */
 function renderSessions(){
