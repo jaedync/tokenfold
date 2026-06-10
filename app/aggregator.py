@@ -149,6 +149,84 @@ def get_cache_version() -> int:
         return _cache_version
 
 
+
+def _build_recent_sessions(conn, pred, limit=25):
+    """Per-session rollup over the recent window: cost, tokens, wall duration,
+    burn rate ($/hr). Titles come from desktop_sessions (Claude Desktop pushes
+    those); CLI sessions show their project instead. Scope-partitioned via pred.
+
+    Burn rate needs >= 5 min of wall time — extrapolating a one-shot session
+    to an hourly rate produces absurd numbers."""
+    cutoff_epoch = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).timestamp()
+    rows = conn.execute(
+        "SELECT session_id, model, speed, inference_geo, "
+        "MIN(first_ts) as min_ts, MAX(last_ts) as max_ts, "
+        "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
+        "SUM(c5m) as c5m, SUM(c1h) as c1h, "
+        "MAX(machine) as machine, MAX(project_dir) as project_dir "
+        "FROM ("
+        "  SELECT session_id, model, request_id, "
+        "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
+        "  MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts, "
+        "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
+        "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
+        "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
+        "  MAX(source_machine) as machine, MAX(project_dir) as project_dir "
+        "  FROM events WHERE type='assistant' AND model IS NOT NULL "
+        "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        "  AND session_id IS NOT NULL "
+        f"  AND {pred} AND ts_epoch >= ? "
+        "  GROUP BY session_id, model, request_id"
+        ") GROUP BY session_id, model, speed, inference_geo",
+        (cutoff_epoch,),
+    ).fetchall()
+
+    sessions: dict = {}
+    for r in rows:
+        sid = r["session_id"]
+        st = sessions.setdefault(sid, {
+            "session_id": sid, "cost": 0.0, "total_tokens": 0,
+            "min_ts": r["min_ts"], "max_ts": r["max_ts"],
+            "machine": r["machine"], "project_dir": r["project_dir"],
+            "_model_cost": {},
+        })
+        dm = display_model(r["model"])
+        c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
+                         r["cr"] or 0, r["speed"], r["inference_geo"],
+                         cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0)
+        st["cost"] += c
+        st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
+        st["total_tokens"] += (r["inp"] or 0) + (r["outp"] or 0) + (r["cc"] or 0) + (r["cr"] or 0)
+        st["min_ts"] = min(st["min_ts"], r["min_ts"])
+        st["max_ts"] = max(st["max_ts"], r["max_ts"])
+
+    titles = {r["cli_session_id"]: r["title"] for r in conn.execute(
+        "SELECT cli_session_id, title FROM desktop_sessions "
+        "WHERE title IS NOT NULL AND title != ''")}
+
+    project_names = _make_display_names(
+        sorted({st["project_dir"] for st in sessions.values() if st["project_dir"]}))
+
+    out = []
+    for st in sorted(sessions.values(), key=lambda x: -x["max_ts"])[:limit]:
+        duration_s = max(0.0, st["max_ts"] - st["min_ts"])
+        burn = round(st["cost"] / (duration_s / 3600), 2) if duration_s >= 300 else None
+        primary_model = max(st["_model_cost"], key=st["_model_cost"].get) if st["_model_cost"] else None
+        out.append({
+            "session_id": st["session_id"],
+            "title": titles.get(st["session_id"]),
+            "project": project_names.get(st["project_dir"], st["project_dir"]),
+            "machine": st["machine"],
+            "model": primary_model,
+            "cost": round(st["cost"], 2),
+            "total_tokens": st["total_tokens"],
+            "duration_s": round(duration_s),
+            "burn_per_hr": burn,
+            "last_ts": st["max_ts"],
+        })
+    return out
+
+
 def build_dashboard_data(scope: str = DEFAULT_SCOPE) -> dict:
     """Return cached dashboard data for the given scope, rebuilding if missing."""
     with _cache_lock:
@@ -813,6 +891,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     # ── Hourly (live query) ──
     hourly_list = _build_hourly(conn, pred)
 
+    # ── Recent sessions (burn rate per task) ──
+    recent_sessions = _build_recent_sessions(conn, pred)
+
     # ── Project display names ──
     _top_project_dirs = sorted(project_cost, key=lambda x: -project_cost[x])[:15]
     _proj_display = _make_display_names(_top_project_dirs)
@@ -849,6 +930,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_tool_execution": round(tot["recent_tool_exec_s"]),
         },
         "projects": _projects_list,
+        "recent_sessions": recent_sessions,
         "model_breakdown": model_breakdown,
         "unpriced_models": sorted(m["model"] for m in model_breakdown if m["unpriced"]),
         "total_cost": round(total_cost, 2),

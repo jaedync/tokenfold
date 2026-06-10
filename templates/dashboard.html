@@ -2261,7 +2261,22 @@ th[data-info]:hover::after { opacity: 1; }
       <tbody id="modelBody"></tbody>
     </table>
   </div>
-  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Cost estimated using published Anthropic API rates with 5-minute prompt caching. Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Cost estimated using published Anthropic API rates (5m and 1h prompt-cache tiers billed at their actual rates). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
+</div>
+
+<!-- ======== SESSIONS / BURN RATE ======== -->
+<div class="table-panel">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--yellow"></div>
+    <h2>Recent Sessions</h2>
+  </div>
+  <div class="tbl-wrap" style="margin-top:1.5rem">
+    <table>
+      <thead><tr><th>Session</th><th>Machine</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th><th class="num" data-info="Cost divided by wall-clock duration (first to last API call). Needs at least 5 minutes of activity.">$/hr</th><th class="num">Last Active</th></tr></thead>
+      <tbody id="sessionsBody"></tbody>
+    </table>
+  </div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window. Titled rows come from Claude Desktop; untitled sessions show their project.</div>
 </div>
 
 <!-- ======== DAILY BREAKDOWN TABLE ======== -->
@@ -3978,6 +3993,44 @@ function renderMode(mode) {
 
 setMode(localStorage.getItem('dashMode') || '14d');
 
+/* ---- Recent Sessions (burn rate per task) ---- */
+function renderSessions(){
+  const body = document.getElementById('sessionsBody');
+  if(!body) return;
+  const rows = D.recent_sessions || [];
+  if(!rows.length){
+    body.innerHTML = '<tr><td colspan="8" style="color:var(--gray-dim)">no recent sessions</td></tr>';
+    return;
+  }
+  const dot = '—';
+  function rel(ts){
+    const s = Math.max(0, Date.now()/1000 - ts);
+    if(s < 3600) return Math.round(s/60)+'m ago';
+    if(s < 86400) return Math.round(s/3600)+'h ago';
+    return Math.round(s/86400)+'d ago';
+  }
+  function dur(s){
+    if(s < 60) return '<1m';
+    if(s < 3600) return Math.round(s/60)+'m';
+    return (s/3600).toFixed(1)+'h';
+  }
+  body.innerHTML = rows.map(s=>{
+    const label = s.title ? esc(s.title) : '<span style="color:var(--gray-dim)">'+esc(s.project||'unknown')+'</span>';
+    const burn = s.burn_per_hr != null ? fC(s.burn_per_hr) : dot;
+    return '<tr>'
+      +'<td title="'+esc(s.session_id)+'">'+label+'</td>'
+      +'<td>'+esc(s.machine||dot)+'</td>'
+      +'<td>'+esc(s.model||dot)+'</td>'
+      +'<td class="num">'+fN(s.total_tokens)+'</td>'
+      +'<td class="num" style="color:'+(s.cost>0?'var(--red)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
+      +'<td class="num">'+dur(s.duration_s)+'</td>'
+      +'<td class="num">'+burn+'</td>'
+      +'<td class="num">'+rel(s.last_ts)+'</td>'
+      +'</tr>';
+  }).join('');
+}
+renderSessions();
+
 /* ---- Scroll Animations ---- */
 (function(){
   var obs = new IntersectionObserver(function(entries){
@@ -4041,6 +4094,7 @@ setMode(localStorage.getItem('dashMode') || '14d');
       renderMode(mode);
       renderHeatmap();
       renderHourly();
+      renderSessions();
       // Update footer timestamp — target the label span only; rewriting all of
       // .footer-right would destroy the ingest-key reveal button next to it.
       const genLabel=document.getElementById('genTimeLabel');
