@@ -589,6 +589,136 @@ body {
   white-space: nowrap;
 }
 
+.rate-limits-updated--stale {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* Gauge track + fill (personal OAuth limit gauges) */
+.rate-gauge-track {
+  position: relative;
+  height: 22px;
+  background: var(--gray-light);
+  border: 3px solid var(--black);
+}
+
+.rate-gauge-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rate-gauge-marker {
+  position: absolute;
+  top: -8px;
+  bottom: 0;
+  width: 0;
+  border-left: 2px solid var(--black);
+  opacity: 0.55;
+  z-index: 2;
+  pointer-events: none;
+  transition: left 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rate-gauge-marker::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid var(--black);
+}
+
+.rate-gauge-marker-label {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-body);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  white-space: nowrap;
+}
+
+.rate-gauge-dayline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px solid var(--black);
+  opacity: 0.15;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.rate-gauge-dayline-label {
+  position: absolute;
+  bottom: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-body);
+  font-size: 0.42rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.rate-gauge-projection {
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+  margin-top: 0.15rem;
+  letter-spacing: 0.02em;
+}
+
+.rate-gauge-projection strong {
+  font-weight: 700;
+  color: var(--black);
+}
+
+.rate-gauge-projection .proj-warn {
+  color: var(--red);
+}
+
+.rate-gauge-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 0.4rem;
+}
+
+.rate-gauge-pct {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.rate-gauge-remaining {
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--gray-dim);
+  letter-spacing: 0.02em;
+}
+
+/* OAuth gauge panel — hidden by default, shown only when wb.oauth is present */
+#oauthGaugesPanel {
+  display: none;
+}
+
 .rate-limits-grid {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -1872,6 +2002,8 @@ th[data-info]:hover::after { opacity: 1; }
     <!-- Secondary: 7-day pace stats + chart trigger (populated by fetch) -->
     <div id="weekPacePanel" class="rate-gauge"></div>
   </div>
+  <!-- Personal-scope OAuth limit gauges (hidden until wb.oauth arrives) -->
+  <div id="oauthGaugesPanel"></div>
 </div>
 
 <!-- Weekly usage chart modal -->
@@ -2915,6 +3047,292 @@ function renderMode(mode) {
 
     pacePanel.innerHTML = panelHtml;
 
+  /* ── Personal OAuth limit gauges (present only when wb.oauth is set by server) ── */
+  /* The server gates this key: enterprise scope or locked instance → no oauth key.  */
+  /* JS needs zero scope logic — presence of wb.oauth is the full gate.              */
+  (function(){
+    var oauthPanel = document.getElementById('oauthGaugesPanel');
+    if(!oauthPanel) return;
+
+    var oauth = wb && wb.oauth;
+    if(!oauth) {
+      oauthPanel.style.display = 'none';
+      return;
+    }
+
+    oauthPanel.style.display = '';
+
+    var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+    var DAY_MS  = 24 * 60 * 60 * 1000;
+    var FIVE_HR_MS = 5 * 60 * 60 * 1000;
+    var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+    // Color based on pace (how usage compares to expected position in window)
+    function barColor(pct, expectedPct) {
+      if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
+        var ratio = pct / expectedPct;
+        if(ratio <= 1.1) return 'var(--blue)';
+        if(ratio <= 1.35) return 'var(--yellow)';
+        return 'var(--red)';
+      }
+      if(pct < 50) return 'var(--blue)';
+      if(pct < 80) return 'var(--yellow)';
+      return 'var(--red)';
+    }
+
+    function fmtReset(iso) {
+      if(!iso) return '';
+      try {
+        var d = new Date(iso);
+        var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        var h = d.getHours(), m = d.getMinutes();
+        var ampm = h >= 12 ? 'p' : 'a';
+        h = h % 12 || 12;
+        return 'resets ' + days[d.getDay()] + ' ' + h + (m > 0 ? ':' + String(m).padStart(2,'0') : '') + ampm;
+      } catch(e) { return ''; }
+    }
+
+    function calcExpectedPct(resetIso, periodMs) {
+      if(!resetIso) return null;
+      try {
+        var resetTime = new Date(resetIso).getTime();
+        var now = Date.now();
+        var elapsed = periodMs - (resetTime - now);
+        if(elapsed < 0) elapsed = 0;
+        if(elapsed > periodMs) elapsed = periodMs;
+        return (elapsed / periodMs) * 100;
+      } catch(e) { return null; }
+    }
+
+    function buildGauge(label, pct, resetLabel, expectedPct, opts) {
+      opts = opts || {};
+      var clamp = Math.min(pct, 100);
+      var color = barColor(pct, expectedPct);
+      var innerHtml = '';
+
+      if(opts.dayLines) {
+        for(var i = 0; i < opts.dayLines.length; i++) {
+          var dl = opts.dayLines[i];
+          innerHtml += '<div class="rate-gauge-dayline" style="left:' + dl.pct.toFixed(2) + '%">'
+            + '<span class="rate-gauge-dayline-label">' + dl.label + '</span>'
+            + '</div>';
+        }
+      }
+
+      if(expectedPct !== null && expectedPct >= 0 && expectedPct <= 100) {
+        innerHtml += '<div class="rate-gauge-marker" style="left:' + expectedPct.toFixed(1) + '%">'
+          + '<span class="rate-gauge-marker-label">expected</span>'
+          + '</div>';
+      }
+
+      var projHtml = '';
+      if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
+        var projRound = Math.round(opts.projectedPct);
+        var projClass = projRound > 100 ? 'proj-warn' : '';
+        projHtml = '<div class="rate-gauge-projection">'
+          + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
+          + '</div>';
+      }
+
+      var statsHtml2 = '';
+      if(opts.stats && opts.stats.length) {
+        statsHtml2 = '<div class="rate-gauge-stats">';
+        for(var si = 0; si < opts.stats.length; si++) {
+          var st = opts.stats[si];
+          var valStyle = st.color ? ' style="color:' + st.color + '"' : '';
+          statsHtml2 += '<div class="rate-gauge-stat">'
+            + '<div class="rate-gauge-stat-value"' + valStyle + '>' + st.value + '</div>'
+            + '<div class="rate-gauge-stat-label">' + st.label + '</div>'
+            + '</div>';
+        }
+        statsHtml2 += '</div>';
+      }
+
+      var fillHtml = '';
+      if(expectedPct !== null && expectedPct > 0 && expectedPct <= 100 && clamp > 0) {
+        if(clamp > expectedPct) {
+          fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
+            + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
+        } else {
+          fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
+            + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
+        }
+      } else {
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
+      }
+
+      var chartBtnHtml2 = '';
+      if(opts.chartBtn) {
+        chartBtnHtml2 = '<button class="rate-gauge-chart-btn" id="oauthChartTrigger" title="View usage pace chart">'
+          + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+          + '</button>';
+      }
+
+      return '<div class="rate-gauge">'
+        + '<div class="rate-gauge-head">'
+        + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
+        + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
+        + '</div>'
+        + '<div class="rate-gauge-track" style="' + (opts.dayLines ? 'margin-bottom:10px' : '') + '">'
+        + fillHtml
+        + innerHtml
+        + '</div>'
+        + '<div class="rate-gauge-foot">'
+        + '<span class="rate-gauge-pct" style="color:' + color + '">' + Math.round(pct) + '%</span>'
+        + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
+        + '</div>'
+        + projHtml
+        + statsHtml2
+        + '</div>';
+    }
+
+    var wPct = oauth.weekly_pct || 0;
+    var hPct = oauth.five_hour_pct || 0;
+    var wExpected = calcExpectedPct(oauth.weekly_resets_at, WEEK_MS);
+    var hExpected = calcExpectedPct(oauth.five_hour_resets_at, FIVE_HR_MS);
+
+    // Build day boundary lines at actual midnight within the weekly window
+    var weeklyDayLines = [];
+    if(oauth.weekly_resets_at) {
+      try {
+        var resetTime = new Date(oauth.weekly_resets_at).getTime();
+        var weekStart = resetTime - WEEK_MS;
+        var cstOff = -6 * 60;
+        var startLocal = new Date(weekStart + cstOff * 60000);
+        var firstMidnight = new Date(Date.UTC(
+          startLocal.getUTCFullYear(), startLocal.getUTCMonth(), startLocal.getUTCDate()
+        ));
+        var firstBoundaryUTC = firstMidnight.getTime() - cstOff * 60000;
+        if(firstBoundaryUTC <= weekStart) firstBoundaryUTC += DAY_MS;
+        for(var bt = firstBoundaryUTC; bt < resetTime; bt += DAY_MS) {
+          var pctLine = ((bt - weekStart) / WEEK_MS) * 100;
+          if(pctLine > 0.5 && pctLine < 99.5) {
+            var cstDate = new Date(bt + cstOff * 60000);
+            weeklyDayLines.push({ pct: pctLine, label: DAY_NAMES[cstDate.getUTCDay()] });
+          }
+        }
+      } catch(e) {}
+    }
+
+    var weeklyProjected = null;
+    if(wExpected > 2 && wPct > 0) {
+      weeklyProjected = (wPct / wExpected) * 100;
+    }
+
+    // Weekly stats: cost + active time from wb (these stay in wb, not oauth)
+    var weekCost = wb.week_cost || 0;
+    var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
+
+    function fmtHMg(totalMin) {
+      var h2 = Math.floor(totalMin / 60);
+      var m2 = Math.round(totalMin % 60);
+      return h2 > 0 ? h2 + 'h ' + m2 + 'm' : m2 + 'm';
+    }
+
+    var weeklyStats = [];
+    if(wExpected !== null && wExpected > 2) {
+      var diffPct = wPct - wExpected;
+      var diffH = Math.abs(diffPct / 100 * 7 * 24);
+      var overUnder = diffPct >= 0;
+      weeklyStats.push({
+        value: (overUnder ? '+' : '−') + fmtHMg(diffH * 60),
+        label: overUnder ? 'over pace' : 'under pace',
+        color: overUnder ? 'var(--red)' : 'var(--blue)'
+      });
+    }
+    weeklyStats.push({ value: '$' + weekCost.toFixed(2), label: 'spent this week' });
+    weeklyStats.push({ value: fmtHMg(weekActiveMin), label: 'active this week' });
+
+    var remainPct = 100 - wPct;
+    if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
+      var parts = [];
+      if(weekCost > 0) parts.push('~$' + ((weekCost / wPct) * remainPct).toFixed(2));
+      if(weekActiveMin > 0) parts.push('~' + fmtHMg((weekActiveMin / wPct) * remainPct));
+      var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow)' : null;
+      weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
+    }
+
+    var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
+    gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
+      dayLines: weeklyDayLines,
+      projectedPct: weeklyProjected,
+      stats: weeklyStats
+    });
+    gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected);
+    gaugeHtml += '</div>';
+
+    // Per-model rows (Opus / Sonnet) if present
+    var modelRowsHtml = '';
+    if(oauth.opus_pct !== null && oauth.opus_pct !== undefined) {
+      modelRowsHtml += '<div class="rate-gauge" style="border-top:var(--border)">'
+        + '<div class="rate-gauge-head"><span class="rate-gauge-label">Opus · 7-Day</span></div>'
+        + '<div class="rate-gauge-track">'
+        + '<div class="rate-gauge-fill" style="width:' + Math.min(oauth.opus_pct, 100).toFixed(1) + '%;background:var(--black)"></div>'
+        + '</div>'
+        + '<div class="rate-gauge-foot">'
+        + '<span class="rate-gauge-pct">' + Math.round(oauth.opus_pct) + '%</span>'
+        + '<span class="rate-gauge-remaining">' + (100 - Math.round(oauth.opus_pct)) + '% remaining</span>'
+        + '</div></div>';
+    }
+    if(oauth.sonnet_pct !== null && oauth.sonnet_pct !== undefined) {
+      modelRowsHtml += '<div class="rate-gauge" style="border-top:var(--border)">'
+        + '<div class="rate-gauge-head"><span class="rate-gauge-label">Sonnet · 7-Day</span></div>'
+        + '<div class="rate-gauge-track">'
+        + '<div class="rate-gauge-fill" style="width:' + Math.min(oauth.sonnet_pct, 100).toFixed(1) + '%;background:var(--blue)"></div>'
+        + '</div>'
+        + '<div class="rate-gauge-foot">'
+        + '<span class="rate-gauge-pct" style="color:var(--blue)">' + Math.round(oauth.sonnet_pct) + '%</span>'
+        + '<span class="rate-gauge-remaining">' + (100 - Math.round(oauth.sonnet_pct)) + '% remaining</span>'
+        + '</div></div>';
+    }
+
+    // Extra usage block (if enabled)
+    var extraHtml = '';
+    if(oauth.extra_usage && oauth.extra_usage.enabled) {
+      var eu = oauth.extra_usage;
+      var euPct = eu.pct || 0;
+      var euLimit = eu.monthly_limit_cents ? ('$' + (eu.monthly_limit_cents / 100).toFixed(2)) : '—';
+      var euUsed  = eu.used_cents ? ('$' + (eu.used_cents / 100).toFixed(2)) : '$0.00';
+      extraHtml = '<div class="rate-gauge" style="border-top:var(--border)">'
+        + '<div class="rate-gauge-head">'
+        + '<span class="rate-gauge-label">Extra Usage</span>'
+        + '<span class="rate-gauge-reset">limit ' + euLimit + ' / mo · used ' + euUsed + '</span>'
+        + '</div>'
+        + '<div class="rate-gauge-track">'
+        + '<div class="rate-gauge-fill" style="width:' + Math.min(euPct, 100).toFixed(1) + '%;background:var(--yellow)"></div>'
+        + '</div>'
+        + '<div class="rate-gauge-foot">'
+        + '<span class="rate-gauge-pct" style="color:var(--yellow)">' + Math.round(euPct) + '%</span>'
+        + '<span class="rate-gauge-remaining">' + (100 - Math.round(euPct)) + '% remaining</span>'
+        + '</div></div>';
+    }
+
+    oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;
+
+    // Staleness indicator — tied to oauth.updated_at_epoch
+    (function(){
+      var updatedEl = document.getElementById('rateLimitsUpdated');
+      if(!updatedEl || !oauth.updated_at_epoch) return;
+      var STALE_S = 3600;
+      function updateStale() {
+        var ageSec = (Date.now() / 1000) - oauth.updated_at_epoch;
+        var text;
+        if(ageSec < 60) text = 'updated just now';
+        else if(ageSec < 3600) text = 'updated ' + Math.floor(ageSec / 60) + 'm ago';
+        else if(ageSec < 86400) {
+          var hh = Math.floor(ageSec / 3600);
+          var mm = Math.floor((ageSec % 3600) / 60);
+          text = 'updated ' + hh + 'h' + (mm > 0 ? ' ' + mm + 'm' : '') + ' ago';
+        } else text = 'updated ' + Math.floor(ageSec / 86400) + 'd ago';
+        var stale = ageSec > STALE_S;
+        updatedEl.textContent = stale ? '⚠ ' + text : text;
+        updatedEl.classList.toggle('rate-limits-updated--stale', stale);
+      }
+      updateStale();
+      setInterval(updateStale, 30000);
+    })();
+  })();
+
   /* ── Weekly usage pace chart (modal popup) ── */
   (function(){
     if(!wb || !wb.hourly_costs) return;
@@ -3159,15 +3577,17 @@ function renderMode(mode) {
 
     } // end renderAllRateLimits
 
-    // Fetch rate limits from API (secondary detail only — month hero already shown)
-    fetch('/api/rate-limits')
+    // Fetch rate limits from API (secondary detail only — month hero already shown).
+    // Pass current scope so the server can gate oauth fields to personal scope.
+    var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
+    fetch(rlUrl)
       .then(function(r) { return r.json(); })
       .then(function(data) { renderAllRateLimits(data.weekly_budget); })
       .catch(function() { /* pace panel stays empty; month hero unaffected */ });
 
     // Poll every 60s to keep pace panel fresh
     setInterval(function() {
-      fetch('/api/rate-limits')
+      fetch(rlUrl)
         .then(function(r) { return r.json(); })
         .then(function(data) { renderAllRateLimits(data.weekly_budget); })
         .catch(function() {});

@@ -117,19 +117,121 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self.assertAlmostEqual(rl["week_cost"], 5.0, places=2)
 
     def test_rate_limits_no_personal_gauge_fields(self):
-        """Response must contain NONE of the personal-Max gauge keys."""
+        """Enterprise /api/rate-limits response must contain NONE of the personal-Max
+        gauge keys — neither in weekly_budget directly nor in any nested oauth sub-object.
+
+        Contract: enterprise scope (or no scope, which defaults to enterprise) NEVER
+        returns the 'oauth' key or any of its children.  The template JS contains these
+        property names as source-code strings, so this assertion intentionally targets
+        the API JSON response, NOT the raw HTML source.
+        """
         now = time.time()
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
+        # Seed an oauth_usage row — it must still be suppressed for enterprise scope.
+        self._seed_oauth_usage(now + 3600)
         self.conn.commit()
         c = self.client()
+        # Default (no scope param) resolves to enterprise.
         body = c.get("/api/rate-limits").json()
         wb = body.get("weekly_budget", {})
+        # Top-level oauth key must be absent.
+        self.assertNotIn("oauth", wb,
+                         "'oauth' key must not appear in enterprise rate-limits response")
+        # Belt-and-suspenders: none of the gauge field names in the raw JSON text.
+        import json as _json
+        raw = _json.dumps(body)
         for forbidden in ("weekly_pct", "five_hour_pct", "weekly_resets_at",
                           "five_hour_resets_at", "opus_pct", "sonnet_pct",
                           "extra_usage"):
-            self.assertNotIn(forbidden, wb,
-                             f"personal gauge field '{forbidden}' must not appear in response")
+            self.assertNotIn(f'"{forbidden}"', raw,
+                             f"personal gauge field '{forbidden}' must not appear in "
+                             f"enterprise /api/rate-limits response JSON")
+
+    def test_rate_limits_personal_has_oauth_gauges(self):
+        """Personal /api/rate-limits with a seeded oauth_usage row must return the
+        'oauth' sub-object with all required gauge fields."""
+        now = time.time()
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "proj", "sC", inp=1_000_000, ts=now - 3600)
+        self._seed_oauth_usage(now + 3600)
+        self.conn.commit()
+        import app.aggregator as agg
+        agg._cached_data.clear()
+        c = self.client()
+        body = c.get("/api/rate-limits?scope=personal").json()
+        wb = body.get("weekly_budget", {})
+        self.assertIn("oauth", wb,
+                      "personal scope with oauth_usage row must return 'oauth' key")
+        oauth = wb["oauth"]
+        for required in ("weekly_pct", "five_hour_pct", "weekly_resets_at",
+                         "five_hour_resets_at", "updated_at"):
+            self.assertIn(required, oauth,
+                          f"oauth block must contain '{required}'")
+        # Values from seeded row: utilization=50 for both windows
+        self.assertEqual(oauth["weekly_pct"], 50)
+        self.assertEqual(oauth["five_hour_pct"], 50)
+
+    def test_rate_limits_personal_no_oauth_row_no_oauth_key(self):
+        """Personal /api/rate-limits with NO oauth_usage meta row must NOT return the
+        'oauth' key — no error, no empty object, simply absent."""
+        now = time.time()
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "proj", "sC", inp=1_000_000, ts=now - 3600)
+        # No oauth_usage row seeded
+        self.conn.commit()
+        c = self.client()
+        body = c.get("/api/rate-limits?scope=personal").json()
+        wb = body.get("weekly_budget", {})
+        self.assertIsNotNone(wb, "weekly_budget must not be None")
+        self.assertNotIn("oauth", wb,
+                         "'oauth' key must be absent when no oauth_usage row exists")
+
+    def test_rate_limits_enterprise_locked_no_oauth_key(self):
+        """Enterprise-locked instance must never return the 'oauth' key even if an
+        oauth_usage row is present — belt-and-suspenders lock enforcement."""
+        now = time.time()
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "proj", "sC", inp=1_000_000, ts=now - 3600)
+        self._seed_oauth_usage(now + 3600)
+        self.conn.commit()
+        import app.config as cfg
+        from unittest.mock import patch
+        with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
+            c = self.client()
+            # Locked enterprise — any personal request returns 403
+            body = c.get("/api/rate-limits").json()
+        wb = body.get("weekly_budget", {})
+        self.assertNotIn("oauth", wb,
+                         "'oauth' key must not appear when LOCKED_SCOPE='enterprise'")
+
+    def test_dashboard_data_json_never_contains_gauge_fields(self):
+        """The embedded data_json (aggregator payload served in /) must never contain
+        oauth gauge fields in ANY scope — gauges come from /api/rate-limits, not the
+        aggregator payload."""
+        now = time.time()
+        ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
+            "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
+        ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
+            "personal-mbp", "proj", "sC", inp=1_000_000, ts=now - 1800)
+        self._seed_oauth_usage(now + 3600)
+        self.conn.commit()
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data.clear()
+        c = self.client()
+        # Check both scopes
+        for scope in ("enterprise", "personal"):
+            html = c.get(f"/?scope={scope}").text
+            import re as _re
+            m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
+            if m:
+                data_blob = m.group(1)
+                for field in ("weekly_pct", "opus_pct", "five_hour_pct", "extra_usage"):
+                    self.assertNotIn(f'"{field}"', data_blob,
+                                     f"'{field}' must not be in embedded data_json "
+                                     f"(scope={scope})")
 
     def test_aggregator_exposes_scope_not_org_name(self):
         """build_dashboard_data must expose 'scope', NOT org_name or plan_scope."""
@@ -162,7 +264,17 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
 
     def test_dashboard_html_enterprise_badge_no_consumer_strings(self):
         """Dashboard HTML must show ENTERPRISE scope label; must NOT show Acme org name;
-        no consumer strings; no personal-gauge JS field names."""
+        no consumer strings; the embedded data_json payload must not contain oauth gauge
+        field values (gauges are rendered client-side from /api/rate-limits, not embedded).
+
+        NOTE: The template's JS source now legitimately contains the string literals
+        'weekly_pct', 'opus_pct', etc. as property names in the oauth gauge renderer.
+        The old assertions checking for their absence in the full HTML source have been
+        moved to the API-response level: see test_rate_limits_no_personal_gauge_fields
+        (enterprise /api/rate-limits must never return these keys) and
+        test_rate_limits_personal_has_oauth_gauges (personal scope must return them when
+        an oauth_usage meta row is present).
+        """
         now = time.time()
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
@@ -183,9 +295,18 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self.assertNotIn("me@gmail.com", html)
         self.assertNotIn("personal-mbp", html)
         self.assertNotIn("secret-side-project", html)
-        # personal-gauge field names must not appear in served JS
-        self.assertNotIn("weekly_pct", html)
-        self.assertNotIn("opus_pct", html)
+        # The embedded data_json (D = {...}) is the aggregator payload — must NOT contain
+        # oauth gauge values.  Extract just the embedded JSON blob and check it.
+        # (The surrounding template JS source contains the property name strings as code,
+        # so we cannot check full HTML; we check the data payload specifically.)
+        import re as _re
+        m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
+        if m:
+            data_blob = m.group(1)
+            self.assertNotIn('"weekly_pct"', data_blob,
+                             "weekly_pct must not appear in embedded data payload")
+            self.assertNotIn('"opus_pct"', data_blob,
+                             "opus_pct must not appear in embedded data payload")
 
 
 class EnterprisePredicateUnattributedTest(TempDBTestCase):

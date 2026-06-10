@@ -1,8 +1,11 @@
 """GET /api/stats — returns dashboard JSON blob.
 GET /api/rate-limits — returns scope-filtered weekly spend (rolling 7-day window).
+Personal scope additionally returns oauth gauge fields when available.
 """
 
+import json
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +17,25 @@ from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import compute_cost, display_model
+
+
+def _scrub_to_minute(iso_str: str) -> str:
+    """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
+
+    Removes subsecond and second precision so a per-account microsecond
+    offset can't fingerprint the account across responses.
+
+    Returns the input unchanged if empty or unparseable.
+    """
+    if not iso_str:
+        return iso_str
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return iso_str
+    return (
+        dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    )
 
 
 def _resolve_scope(requested):
@@ -135,5 +157,52 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         "hourly_costs": hourly_costs,
         "updated_at_epoch": now,
     }
+
+    # ── Personal-scope OAuth gauge fields ──────────────────────────────────
+    # Only attach when this is a personal request on an instance that is NOT
+    # enterprise-locked.  Enterprise scope (or locked instance): NO oauth key.
+    import sys
+    _cfg = sys.modules["app.config"]
+    if effective == "personal" and _cfg.LOCKED_SCOPE != "enterprise":
+        oauth_row = conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'"
+        ).fetchone()
+        if oauth_row:
+            try:
+                stored = json.loads(oauth_row["value"])
+                usage = stored.get("data", {})
+                updated_at = stored.get("updated_at", "")
+
+                seven_day = usage.get("seven_day") or {}
+                five_hour = usage.get("five_hour") or {}
+                seven_day_sonnet = usage.get("seven_day_sonnet") or {}
+                seven_day_opus = usage.get("seven_day_opus") or {}
+                extra = usage.get("extra_usage") or {}
+
+                oauth_block = {
+                    "weekly_pct": seven_day.get("utilization", 0),
+                    "weekly_resets_at": _scrub_to_minute(seven_day.get("resets_at", "")),
+                    "five_hour_pct": five_hour.get("utilization", 0),
+                    "five_hour_resets_at": _scrub_to_minute(five_hour.get("resets_at", "")),
+                    "sonnet_pct": seven_day_sonnet.get("utilization", 0) if seven_day_sonnet else None,
+                    "opus_pct": seven_day_opus.get("utilization", 0) if seven_day_opus else None,
+                    "extra_usage": {
+                        "enabled": extra.get("is_enabled", False),
+                        "monthly_limit_cents": extra.get("monthly_limit", 0),
+                        "used_cents": extra.get("used_credits", 0),
+                        "pct": extra.get("utilization", 0),
+                    } if extra else None,
+                    "updated_at": updated_at,
+                }
+                if updated_at:
+                    try:
+                        oauth_block["updated_at_epoch"] = datetime.fromisoformat(
+                            updated_at.replace("Z", "+00:00")
+                        ).timestamp()
+                    except (ValueError, TypeError):
+                        pass
+                weekly_budget["oauth"] = oauth_block
+            except (ValueError, KeyError, TypeError):
+                pass  # malformed row — no oauth key
 
     return JSONResponse(content={"weekly_budget": weekly_budget})
