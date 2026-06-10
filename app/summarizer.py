@@ -393,16 +393,17 @@ def summarize_days(days: list[str] | None = None):
     # cross-day lexicographic-MAX from poisoning earlier/later days' plan stamp.
     acct_day_rows = conn.execute(
         f"SELECT day, COALESCE(account_email,'unknown') AS acct, "
-        f"MAX(plan) AS plan, MAX(org_name) AS org "
+        f"MAX(plan) AS plan, MAX(org_name) AS org, "
+        f"MAX(org_type) AS org_type, MAX(org_uuid) AS org_uuid "
         f"FROM events WHERE day IN ({placeholders}) GROUP BY day, acct",
         days,
     ).fetchall()
 
-    # Build (day, acct) -> (plan, org) lookup and unique account set
+    # Build (day, acct) -> (plan, org, org_type, org_uuid) lookup and unique account set
     day_acct_meta: dict[tuple, tuple] = {}
     accounts_set: set[str] = set()
     for r in acct_day_rows:
-        day_acct_meta[(r["day"], r["acct"])] = (r["plan"], r["org"])
+        day_acct_meta[(r["day"], r["acct"])] = (r["plan"], r["org"], r["org_type"], r["org_uuid"])
         accounts_set.add(r["acct"])
     accounts = list(accounts_set)
 
@@ -424,10 +425,11 @@ def summarize_days(days: list[str] | None = None):
             if (dd["cost"] == 0 and dd["sessions"] == 0 and dd["human_prompts"] == 0
                     and dd["tool_calls"] == 0 and dd["active_s"] == 0):
                 continue
-            # Use per-day plan/org (not cross-day MAX)
-            plan, org = day_acct_meta.get((d, account), (None, None))
+            # Use per-day plan/org/org_type/org_uuid (not cross-day MAX)
+            plan, org, org_type, org_uuid = day_acct_meta.get(
+                (d, account), (None, None, None, None))
             rows.append((
-                d, account, plan, org,
+                d, account, plan, org, org_type, org_uuid,
                 dd["sessions"], dd["human_prompts"],
                 dd["tool_calls"], dd["input_tokens"], dd["output_tokens"],
                 dd["cache_creation_tokens"], dd["cache_read_tokens"],
@@ -444,12 +446,12 @@ def summarize_days(days: list[str] | None = None):
 
     conn.executemany(
         "INSERT INTO daily_summary "
-        "(day, account_email, plan, org_name, sessions, "
+        "(day, account_email, plan, org_name, org_type, org_uuid, sessions, "
         "human_prompts, tool_calls, input_tokens, output_tokens, "
         "cache_creation_tokens, cache_read_tokens, "
         "active_s, thinking_s, tool_exec_s, subagent_s, agent_runs, cost, "
         "model_json, project_json, machine_json, tool_json, prompt_model_json, "
-        "gen_json, updated_at) VALUES (" + ",".join("?" * 24) + ")",
+        "gen_json, updated_at) VALUES (" + ",".join("?" * 26) + ")",
         rows,
     )
     conn.commit()

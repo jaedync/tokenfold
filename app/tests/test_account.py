@@ -27,7 +27,8 @@ class ReadAccountTest(unittest.TestCase):
             with mock.patch.object(push.Path, "home", staticmethod(lambda: home)):
                 acct = push.read_account(home / ".claude")
             self.assertEqual(acct, {"account_email": "me@x.com", "org_name": "Acme",
-                                    "plan": "max", "rate_limit_tier": "max_20x"})
+                                    "plan": "max", "rate_limit_tier": "max_20x",
+                                    "org_type": None, "org_uuid": None})
 
     def test_missing_files_return_nones(self):
         with tempfile.TemporaryDirectory() as h:
@@ -35,7 +36,8 @@ class ReadAccountTest(unittest.TestCase):
             with mock.patch.object(push.Path, "home", staticmethod(lambda: home)):
                 acct = push.read_account(home / ".claude")
             self.assertEqual(acct, {"account_email": None, "org_name": None,
-                                    "plan": None, "rate_limit_tier": None})
+                                    "plan": None, "rate_limit_tier": None,
+                                    "org_type": None, "org_uuid": None})
 
 
 if __name__ == "__main__":

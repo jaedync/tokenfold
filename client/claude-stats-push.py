@@ -282,8 +282,15 @@ def push_batch(project_dir: str, session_file: str, cursor_line: int,
 
 def read_account(claude_dir):
     """Local read of account identity. Sends NO secrets — only email / org / plan /
-    rate-limit tier. Ported from claude-usage-telemetry's read_account()."""
-    acct = {"account_email": None, "org_name": None, "plan": None, "rate_limit_tier": None}
+    rate-limit tier / org_type / org_uuid. Ported from claude-usage-telemetry's read_account()."""
+    acct = {
+        "account_email": None,
+        "org_name": None,
+        "plan": None,
+        "rate_limit_tier": None,
+        "org_type": None,
+        "org_uuid": None,
+    }
     cj = Path.home() / ".claude.json"
     try:
         root = json.loads(cj.read_text())
@@ -291,6 +298,8 @@ def read_account(claude_dir):
         if isinstance(oa, dict):
             acct["account_email"] = oa.get("emailAddress")
             acct["org_name"] = oa.get("organizationName")
+            acct["org_type"] = oa.get("organizationType")
+            acct["org_uuid"] = oa.get("organizationUuid")
     except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     cred = claude_dir / ".credentials.json"

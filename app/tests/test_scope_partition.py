@@ -38,6 +38,20 @@ def ins_null_plan(conn, uuid, req, machine, project, session,
     conn.commit()
 
 
+def ins_with_org_type(conn, uuid, req, acct, plan, org, org_type, machine, project, session,
+                      model="claude-haiku-4-5", day="2026-06-09", ts=1781000000.0, inp=0):
+    """Insert a row with explicit org_type (and optional plan)."""
+    conn.execute(
+        "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+        "source_machine,project_dir,model,is_sidechain,agent_id,input_tokens,"
+        "output_tokens,cache_creation_tokens,cache_read_tokens,account_email,plan,"
+        "org_name,org_type,is_human_prompt,user_type) VALUES "
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (uuid, "assistant", "2026-06-09T12:00:00Z", ts, day, session, req, machine,
+         project, model, 0, None, inp, 0, 0, 0, acct, plan, org, org_type, 0, None))
+    conn.commit()
+
+
 class PartitionCompletenessTest(TempDBTestCase):
     """The keystone test: ent + per = blended, NULL row lands in personal (not lost)."""
 
@@ -117,6 +131,56 @@ class PartitionCompletenessTest(TempDBTestCase):
         # Row C (all-NULL) also lands in personal (not lost).
         self.assertIn("mC", per_blob, "all-NULL row C must appear in personal")
         self.assertNotIn("mC", ent_blob, "all-NULL row C must NOT appear in enterprise")
+
+    def test_org_type_enterprise_signal_partition(self):
+        """Rows classified by org_type (not plan) also satisfy partition completeness.
+
+        Seed:
+          E: org_type='claude_enterprise', plan=NULL, valid account → enterprise via org_type
+          P: org_type='claude_max', plan=NULL, valid account → personal (not an ent org_type)
+        Both land on their correct side; ent + per = blended.
+        """
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+
+        # E: Haiku 4.5, 1M input = $1, org_type signals enterprise; plan is NULL
+        ins_with_org_type(
+            self.conn, "eE", "rE", "ent@corp.io", None, "Corp", "claude_enterprise",
+            "mE", "proj-e", "sE", model="claude-haiku-4-5", inp=1_000_000, ts=1781000000.0)
+        # P: Haiku 4.5, 1M input = $1, org_type is personal Max; plan is NULL
+        ins_with_org_type(
+            self.conn, "eP", "rP", "per@max.io", None, "MaxOrg", "claude_max",
+            "mP", "proj-p", "sP", model="claude-haiku-4-5", inp=1_000_000, ts=1781000100.0)
+
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        ent = agg.build_dashboard_data("enterprise")
+        per = agg.build_dashboard_data("personal")
+
+        row = self.conn.execute("SELECT SUM(cost) as t FROM daily_summary").fetchone()
+        blended = round(row["t"] or 0.0, 2)
+
+        # E row ($1) → enterprise; P row ($1) → personal; blended = $2
+        self.assertAlmostEqual(ent["total_cost"], 1.0, places=2,
+                               msg=f"org_type=claude_enterprise row must be in enterprise ($1), got {ent['total_cost']}")
+        self.assertAlmostEqual(per["total_cost"], 1.0, places=2,
+                               msg=f"org_type=claude_max row must be in personal ($1), got {per['total_cost']}")
+        self.assertAlmostEqual(blended, 2.0, places=2,
+                               msg=f"blended must be $2, got {blended}")
+        self.assertAlmostEqual(ent["total_cost"] + per["total_cost"], blended, places=2,
+                               msg="ent + per must equal blended (partition completeness)")
+
+        ent_blob = json.dumps(ent)
+        per_blob = json.dumps(per)
+        self.assertIn("mE", ent_blob,
+                      "org_type=claude_enterprise row must appear in enterprise")
+        self.assertNotIn("mE", per_blob,
+                         "org_type=claude_enterprise row must NOT appear in personal")
+        self.assertIn("mP", per_blob,
+                      "org_type=claude_max row must appear in personal")
+        self.assertNotIn("mP", ent_blob,
+                         "org_type=claude_max row must NOT appear in enterprise")
 
     def test_scope_key_in_payload(self):
         """Both scopes must include 'scope' key in their payload, no org_name key."""

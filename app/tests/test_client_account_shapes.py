@@ -16,7 +16,10 @@ _spec = importlib.util.spec_from_file_location(
 push = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(push)
 
-_EMPTY = {"account_email": None, "org_name": None, "plan": None, "rate_limit_tier": None}
+_EMPTY = {
+    "account_email": None, "org_name": None, "plan": None,
+    "rate_limit_tier": None, "org_type": None, "org_uuid": None,
+}
 
 
 def _make_env(home, claude_json_content=None, credentials_content=None):
@@ -100,6 +103,8 @@ class ReadAccountShapeTest(unittest.TestCase):
                 claude_json_content={"oauthAccount": {
                     "emailAddress": "jane@example.com",
                     "organizationName": "ExampleCorp",
+                    "organizationType": "claude_enterprise",
+                    "organizationUuid": "aaaabbbb-1234-5678-abcd-000000000000",
                 }},
                 credentials_content={"claudeAiOauth": {
                     "subscriptionType": "pro",
@@ -112,6 +117,8 @@ class ReadAccountShapeTest(unittest.TestCase):
             "org_name": "ExampleCorp",
             "plan": "pro",
             "rate_limit_tier": "default",
+            "org_type": "claude_enterprise",
+            "org_uuid": "aaaabbbb-1234-5678-abcd-000000000000",
         })
 
     def test_case7_security_no_tokens_in_result(self):

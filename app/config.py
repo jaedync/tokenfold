@@ -9,19 +9,46 @@ STATS_OWNER = os.environ.get("STATS_OWNER", "")
 IDLE_THRESHOLD_S = 300
 RECENCY_DAYS = 14
 
-# Verified-enterprise membership as a TOTAL boolean (never NULL under SQL 3-valued
-# logic), so PERSONAL_PRED = NOT(ENTERPRISE_PRED) is a true partition: every row is
-# in exactly one scope and the two scopes' totals sum to the blended total. NULL/empty
-# plan, org, or account => NOT enterprise => personal. (Plan is the signal; non-empty
-# org + a real account email are defense-in-depth — an unattributed 'enterprise' row
-# is personal.) Logically identical TRUE-set to the prior predicate (NULL and FALSE
-# both fail a WHERE), so existing enterprise results are unchanged.
+
+def _csv_env(name, default=""):
+    return tuple(x.strip() for x in os.environ.get(name, default).split(",") if x.strip())
+
+
+# Enterprise signals (all optional, OR'd). Fail-closed: anything not positively
+# matched is PERSONAL. Configurable per-instance without code changes.
+#
+# ENTERPRISE_PRED is a TOTAL boolean (never NULL under SQL 3-valued logic), so
+# PERSONAL_PRED = NOT(ENTERPRISE_PRED) is a true partition: every row is in exactly
+# one scope and the two scopes' totals sum to the blended total. NULL/empty plan,
+# org_type, org_uuid, or account => NOT enterprise => personal.
+#
+# The old org_name != '' guard is intentionally DROPPED: org_name is populated
+# even on personal accounts (it is not a reliable enterprise signal). The
+# account_email guard stays — an unattributed 'enterprise' row is still personal.
+ENTERPRISE_ORG_TYPES = _csv_env("ENTERPRISE_ORG_TYPES", "claude_enterprise,claude_team")
+ENTERPRISE_ORG_UUIDS = _csv_env("ENTERPRISE_ORG_UUIDS")
+ENTERPRISE_EMAIL_DOMAINS = _csv_env("ENTERPRISE_EMAIL_DOMAINS")
+
+
+def _sql_in(col, values):
+    quoted = ",".join("'" + v.replace("'", "''") + "'" for v in values)
+    return f"COALESCE({col},'') IN ({quoted})"
+
+
+_signals = ["COALESCE(plan,'') = 'enterprise'"]
+if ENTERPRISE_ORG_TYPES:
+    _signals.append(_sql_in("org_type", ENTERPRISE_ORG_TYPES))
+if ENTERPRISE_ORG_UUIDS:
+    _signals.append(_sql_in("org_uuid", ENTERPRISE_ORG_UUIDS))
+for _dom in ENTERPRISE_EMAIL_DOMAINS:
+    _d = _dom.lstrip("@").replace("'", "''")
+    _signals.append(f"COALESCE(account_email,'') LIKE '%@{_d}'")
+
 ENTERPRISE_PRED = (
-    "COALESCE(plan,'') = 'enterprise' "
-    "AND COALESCE(org_name,'') != '' "
-    "AND COALESCE(account_email,'') NOT IN ('', 'unknown')"
+    "(COALESCE(account_email,'') NOT IN ('', 'unknown') AND ("
+    + " OR ".join(_signals) + "))"
 )
-PERSONAL_PRED = "NOT (" + ENTERPRISE_PRED + ")"
+PERSONAL_PRED = "NOT " + ENTERPRISE_PRED
 
 VALID_SCOPES = ("enterprise", "personal")
 # Which scope the dashboard lands on / APIs fall back to. Configurable per-instance:

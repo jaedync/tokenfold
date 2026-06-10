@@ -15,6 +15,8 @@ class IngestRequest(BaseModel):
     org_name: str | None = Field(None, max_length=256)
     plan: str | None = Field(None, max_length=64)
     rate_limit_tier: str | None = Field(None, max_length=64)
+    org_type: str | None = Field(None, max_length=64)
+    org_uuid: str | None = Field(None, max_length=64)
 
 
 class IngestResponse(BaseModel):

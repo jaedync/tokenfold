@@ -81,6 +81,8 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
         "org_name": (account or {}).get("org_name"),
         "plan": (account or {}).get("plan"),
         "rate_limit_tier": (account or {}).get("rate_limit_tier"),
+        "org_type": (account or {}).get("org_type"),
+        "org_uuid": (account or {}).get("org_uuid"),
         "model": None,
         "message_id": None,
         "request_id": rec.get("requestId"),
@@ -248,7 +250,7 @@ EVENT_COLS = [
     "session_id", "parent_uuid", "is_sidechain", "user_type",
     "cwd", "git_branch", "version", "slug", "agent_id", "permission_mode",
     "source_machine", "project_dir",
-    "account_email", "org_name", "plan", "rate_limit_tier",
+    "account_email", "org_name", "plan", "rate_limit_tier", "org_type", "org_uuid",
     "model", "message_id", "request_id", "stop_reason", "api_error", "is_api_error",
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
     "cache_ephemeral_5m", "cache_ephemeral_1h", "service_tier", "speed", "inference_geo",
@@ -287,8 +289,14 @@ async def ingest(req: IngestRequest):
     event_rows = []
     tool_rows = []
 
-    account = {"account_email": req.account_email, "org_name": req.org_name,
-               "plan": req.plan, "rate_limit_tier": req.rate_limit_tier}
+    account = {
+        "account_email": req.account_email,
+        "org_name": req.org_name,
+        "plan": req.plan,
+        "rate_limit_tier": req.rate_limit_tier,
+        "org_type": req.org_type,
+        "org_uuid": req.org_uuid,
+    }
     for raw in req.events:
         row = _extract_event(raw, req.machine, req.project_dir, account)
         if row is None:

@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     account_email     TEXT NOT NULL,
     plan              TEXT,
     org_name          TEXT,
+    org_type          TEXT,
+    org_uuid          TEXT,
     sessions          INTEGER DEFAULT 0,
     human_prompts     INTEGER DEFAULT 0,
     tool_calls        INTEGER DEFAULT 0,
@@ -78,6 +80,8 @@ CREATE TABLE IF NOT EXISTS events (
     org_name          TEXT,
     plan              TEXT,
     rate_limit_tier   TEXT,
+    org_type          TEXT,
+    org_uuid          TEXT,
 
     has_text          INTEGER DEFAULT 0,
     has_thinking      INTEGER DEFAULT 0,
@@ -182,6 +186,7 @@ _ADDED_COLUMNS = {
         "speed": "TEXT", "inference_geo": "TEXT",
         "account_email": "TEXT", "org_name": "TEXT",
         "plan": "TEXT", "rate_limit_tier": "TEXT",
+        "org_type": "TEXT", "org_uuid": "TEXT",
     },
 }
 
@@ -193,10 +198,13 @@ def _migrate(conn) -> None:
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
-    # daily_summary is a derived rollup — if it exists in the old shape (no
-    # account_email column), drop and recreate it from _DAILY_SUMMARY_DDL.
+    # daily_summary is a derived rollup — if it exists in a stale shape (missing
+    # account_email or missing org_type), drop and recreate from _DAILY_SUMMARY_DDL.
+    # Both columns are load-bearing: account_email is the PK component; org_type is
+    # required for the config-driven enterprise predicate. The table is fully derived
+    # from events, so a drop+recreate is safe — startup backfill rebuilds it.
     ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)")}
-    if ds_cols and "account_email" not in ds_cols:
+    if ds_cols and ("account_email" not in ds_cols or "org_type" not in ds_cols):
         conn.execute("DROP TABLE daily_summary")   # derived rollup — rebuilt from events
         conn.executescript(_DAILY_SUMMARY_DDL)
 
