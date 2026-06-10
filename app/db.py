@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS events (
     cache_read_tokens     INTEGER DEFAULT 0,
     cache_ephemeral_5m    INTEGER DEFAULT 0,
     cache_ephemeral_1h    INTEGER DEFAULT 0,
+    web_search_requests   INTEGER DEFAULT 0,
+    web_fetch_requests    INTEGER DEFAULT 0,
     service_tier          TEXT,
     speed             TEXT,
     inference_geo     TEXT,
@@ -117,6 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_machine);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_dir);
 CREATE INDEX IF NOT EXISTS idx_events_human ON events(is_human_prompt) WHERE is_human_prompt = 1;
 CREATE INDEX IF NOT EXISTS idx_events_session_ts ON events(session_id, ts_epoch);
+CREATE INDEX IF NOT EXISTS idx_events_billable_ts ON events(ts_epoch)
+    WHERE type='assistant' AND request_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS tool_uses (
     tool_use_id       TEXT PRIMARY KEY,
@@ -193,6 +197,8 @@ _ADDED_COLUMNS = {
         "account_email": "TEXT", "org_name": "TEXT",
         "plan": "TEXT", "rate_limit_tier": "TEXT",
         "org_type": "TEXT", "org_uuid": "TEXT",
+        "web_search_requests": "INTEGER DEFAULT 0",
+        "web_fetch_requests": "INTEGER DEFAULT 0",
     },
 }
 

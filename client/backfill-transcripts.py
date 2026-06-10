@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Backfill tokenfold history from this machine's local Claude Code transcripts.
 
-Repairs two things the server couldn't know at original ingest time:
+Repairs three things the server couldn't know at original ingest time:
   1. cache-tier split (5m vs 1h ephemeral cache writes) — events ingested
      before the nested `usage.cache_creation` shape was parsed have it as 0
      and were billed at the cheaper 5m rate
-  2. AI session titles — `ai-title` transcript records predating server capture
+  2. server-tool request counts (usage.server_tool_use) — web search bills
+     $10/1k requests; events ingested before capture have the counts as 0
+  3. AI session titles — `ai-title` transcript records predating server capture
 
 Performance notes (transcript trees run to GBs):
   - files are scanned in PARALLEL (one process per CPU) and lines are
@@ -37,10 +39,15 @@ from pathlib import Path
 
 BATCH = 20_000  # server-side cap per request
 CACHE_PATH = Path.home() / ".tokenfold-backfill-cache.json"
+# Bump whenever harvest_file gains a NEW field: a cache written before the
+# field existed marks files "done" that were never scanned for it, silently
+# skipping all history on incremental re-runs. v2 = server_tool_use counts.
+CACHE_VERSION = 2
 
-# bytes-level prefilters: a line without either marker can't contribute
+# bytes-level prefilters: a line without any marker can't contribute
 _B_CACHE = b'"cache_creation"'
 _B_TITLE = b'"ai-title"'
+_B_STU = b'"server_tool_use"'
 
 
 def read_config():
@@ -62,16 +69,18 @@ def read_config():
 
 
 def harvest_file(path_str):
-    """Scan ONE transcript. Returns (cache_tiers, titles) for that file.
+    """Scan ONE transcript. Returns (cache_tiers, server_tools, titles).
     Top-level function so it pickles for the process pool (Windows spawn)."""
     cache_tiers = {}
+    server_tools = {}
     titles = {}
     try:
         with open(path_str, "rb") as fh:
             for line in fh:  # binary iteration: no decode cost on skipped lines
                 has_cache = _B_CACHE in line
                 has_title = _B_TITLE in line
-                if not (has_cache or has_title):
+                has_stu = _B_STU in line
+                if not (has_cache or has_title or has_stu):
                     continue
                 try:
                     rec = json.loads(line)
@@ -82,28 +91,53 @@ def harvest_file(path_str):
                     sid, t = rec.get("sessionId"), rec.get("aiTitle")
                     if isinstance(sid, str) and sid and isinstance(t, str) and t:
                         titles[sid] = t[:256]  # last one per session wins
-                elif has_cache and rtype == "assistant":
+                elif rtype == "assistant":
                     uuid = rec.get("uuid")
-                    usage = (rec.get("message") or {}).get("usage") or {}
-                    cc = usage.get("cache_creation")
-                    if not (uuid and isinstance(cc, dict)):
+                    if not uuid:
                         continue
-                    c5m = cc.get("ephemeral_5m_input_tokens", 0)
-                    c1h = cc.get("ephemeral_1h_input_tokens", 0)
-                    if isinstance(c5m, int) and isinstance(c1h, int) and (c5m or c1h):
-                        cache_tiers[uuid] = [c5m, c1h]
+                    usage = (rec.get("message") or {}).get("usage") or {}
+                    if has_cache:
+                        cc = usage.get("cache_creation")
+                        if isinstance(cc, dict):
+                            c5m = cc.get("ephemeral_5m_input_tokens", 0)
+                            c1h = cc.get("ephemeral_1h_input_tokens", 0)
+                            if (isinstance(c5m, int) and isinstance(c1h, int)
+                                    and (c5m or c1h)):
+                                cache_tiers[uuid] = [c5m, c1h]
+                    if has_stu:
+                        stu = usage.get("server_tool_use")
+                        if isinstance(stu, dict):
+                            ws = stu.get("web_search_requests", 0)
+                            wf = stu.get("web_fetch_requests", 0)
+                            # all-zero is the common case — no repair value,
+                            # and the server treats 0 as unset anyway
+                            if (isinstance(ws, int) and isinstance(wf, int)
+                                    and (ws or wf)):
+                                server_tools[uuid] = [ws, wf]
     except OSError:
         pass  # unreadable file: skip; it stays out of the cache and retries next run
-    return cache_tiers, titles
+    return cache_tiers, server_tools, titles
 
 
 def _load_cache(full):
     if full or not CACHE_PATH.exists():
         return {}
     try:
-        return json.loads(CACHE_PATH.read_text())
+        data = json.loads(CACHE_PATH.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
+    # Legacy flat {path: sig} caches and older versions force a full rescan.
+    if not isinstance(data, dict) or data.get("v") != CACHE_VERSION:
+        return {}
+    files = data.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def _save_cache(sigs):
+    try:
+        CACHE_PATH.write_text(json.dumps({"v": CACHE_VERSION, "files": sigs}))
+    except OSError:
+        pass
 
 
 def _file_sig(st):
@@ -111,7 +145,8 @@ def _file_sig(st):
 
 
 def harvest(full=False, serial=False):
-    """Walk all transcripts (parallel); return (cache_tiers, titles, scanned_sigs)."""
+    """Walk all transcripts (parallel);
+    return (cache_tiers, server_tools, titles, scanned_sigs)."""
     root = Path.home() / ".claude" / "projects"
     cache = _load_cache(full)
     todo, skipped, sigs = [], 0, {}
@@ -129,19 +164,21 @@ def harvest(full=False, serial=False):
     print(f"{len(todo)} files to scan ({skipped} unchanged, skipped via cache)",
           flush=True)
 
-    cache_tiers, titles = {}, {}
+    cache_tiers, server_tools, titles = {}, {}, {}
     started = time.time()
     done = 0
 
     def progress():
         if done % 100 == 0:
             print(f"  …{done}/{len(todo)} files ({len(cache_tiers)} splits, "
-                  f"{len(titles)} titles, {time.time()-started:.0f}s)", flush=True)
+                  f"{len(server_tools)} server-tool, {len(titles)} titles, "
+                  f"{time.time()-started:.0f}s)", flush=True)
 
     if serial or len(todo) < 8:
         for key in todo:
-            ct, tt = harvest_file(key)
+            ct, st, tt = harvest_file(key)
             cache_tiers.update(ct)
+            server_tools.update(st)
             titles.update(tt)
             done += 1
             progress()
@@ -149,13 +186,14 @@ def harvest(full=False, serial=False):
         with ProcessPoolExecutor() as pool:
             futures = {pool.submit(harvest_file, key): key for key in todo}
             for fut in as_completed(futures):
-                ct, tt = fut.result()
+                ct, st, tt = fut.result()
                 cache_tiers.update(ct)
+                server_tools.update(st)
                 titles.update(tt)
                 done += 1
                 progress()
     print(f"scan finished in {time.time()-started:.1f}s", flush=True)
-    return cache_tiers, titles, sigs
+    return cache_tiers, server_tools, titles, sigs
 
 
 def post(url, key, payload):
@@ -173,15 +211,17 @@ def main():
     full = "--full" in sys.argv
     serial = "--serial" in sys.argv
     url, key = read_config()
-    cache_tiers, titles, sigs = harvest(full=full, serial=serial)
+    cache_tiers, server_tools, titles, sigs = harvest(full=full, serial=serial)
     print(f"harvested: {len(cache_tiers)} events with cache split, "
+          f"{len(server_tools)} with server-tool counts, "
           f"{len(titles)} session titles", flush=True)
     if dry:
         print("dry run — nothing sent")
         return
 
     items = list(cache_tiers.items())
-    tot_events = tot_titles = 0
+    st_items = list(server_tools.items())
+    tot_events = tot_titles = tot_st = 0
     days = set()
     # Data batches defer the expensive server-side day re-roll (reroll=false);
     # titles ride along with the first batch (they're small).
@@ -201,6 +241,19 @@ def main():
         print(f"  batch {i // BATCH + 1}: +{r['updated_events']} events, "
               f"+{r['updated_titles']} titles", flush=True)
 
+    # Server-tool counts in their own batches (same deferred-re-roll protocol).
+    # .get(): a server that predates this field ignores it and won't echo it.
+    for i in range(0, len(st_items), BATCH):
+        chunk = dict(st_items[i:i + BATCH])
+        try:
+            r = post(url, key, {"server_tools": chunk, "reroll": False})
+        except Exception as e:
+            sys.exit(f"server-tool batch failed at offset {i}: {e}")
+        tot_st += r.get("updated_server_tools", 0)
+        days.update(r["touched_days"])
+        print(f"  server-tool batch {i // BATCH + 1}: "
+              f"+{r.get('updated_server_tools', 0)} events", flush=True)
+
     if days:
         print(f"re-rolling {len(days)} affected days (single final pass)…", flush=True)
         try:
@@ -210,12 +263,9 @@ def main():
             sys.exit(f"final re-roll failed: {e} — re-run to retry")
 
     # only now is it safe to remember these files as fully processed
-    try:
-        CACHE_PATH.write_text(json.dumps(sigs))
-    except OSError:
-        pass
-    print(f"done: {tot_events} events repaired, {tot_titles} titles added, "
-          f"{len(days)} days re-rolled")
+    _save_cache(sigs)
+    print(f"done: {tot_events} events repaired, {tot_st} server-tool counts, "
+          f"{tot_titles} titles added, {len(days)} days re-rolled")
 
 
 if __name__ == "__main__":

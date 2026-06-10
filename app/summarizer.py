@@ -50,6 +50,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"MAX(input_tokens) as inp, MAX(output_tokens) as out, "
         f"MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         f"MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
+        f"MAX(web_search_requests) as ws, MAX(web_fetch_requests) as wf, "
         f"MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
         f"FROM events "
         f"WHERE type='assistant' AND model IS NOT NULL AND model != '<synthetic>' "
@@ -70,6 +71,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
             "model": defaultdict(lambda: {
                 "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
                 "cache_5m": 0, "cache_1h": 0,
+                "web_search": 0, "web_fetch": 0,
                 "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
                 "cost": 0.0,
                 "main_prompts": 0, "agent_invocations": 0,
@@ -102,7 +104,8 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         dd["cache_read_tokens"] += cr
 
         req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"], r["inference_geo"],
-                                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0)
+                                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                                web_search=r["ws"] or 0)
         dd["cost"] += req_cost
         dd["project"][r["project_dir"]]["cost"] += req_cost
 
@@ -112,6 +115,8 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         ms["cache_write"] += cc
         ms["cache_5m"] += r["c5m"] or 0
         ms["cache_1h"] += r["c1h"] or 0
+        ms["web_search"] += r["ws"] or 0
+        ms["web_fetch"] += r["wf"] or 0
         ms["cache_read"] += cr
         ms["api_calls"] += 1
         ms["cost"] += req_cost

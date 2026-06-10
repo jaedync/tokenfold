@@ -56,6 +56,11 @@ FAST_OPUS_BASE = {
 }
 GEO_US_MULT = 1.1
 
+# Server tools: web search bills a flat $10 per 1,000 requests ON TOP of token
+# cost (web fetch is free — its fetched-content tokens are already in usage).
+# Model-independent, and per-request fees take no geo/fast multipliers.
+WEB_SEARCH_PER_1K = 10.0
+
 # Canonical model sort order: Opus > Sonnet > Haiku, then version descending
 MODEL_ORDER = list(MODEL_PRICING.keys())
 
@@ -194,7 +199,7 @@ def get_pricing(model_name: str) -> tuple:
 
 def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
                  speed: str | None = None, inference_geo: str | None = None,
-                 cw_5m: int = 0, cw_1h: int = 0) -> float:
+                 cw_5m: int = 0, cw_1h: int = 0, web_search: int = 0) -> float:
     """List-price cost. Optional speed='fast' (Opus only) and inference_geo='us'
     modifiers layer on the LiteLLM-or-static base rate; defaults reproduce prior
     pricing exactly. Mirrors claude-usage-telemetry's effective_rates().
@@ -203,7 +208,11 @@ def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
     split when known. 5m writes bill at 1.25x base input (the cw_p rate), 1h
     writes at 2x base input. Any unsplit remainder — and all legacy rows that
     predate split capture — bills at the 5m rate (the historical behavior).
-    A split that exceeds cw is untrusted transcript input and is ignored."""
+    A split that exceeds cw is untrusted transcript input and is ignored.
+
+    web_search is the request COUNT (not tokens): flat WEB_SEARCH_PER_1K fee,
+    charged even for unpriced models — the fee is confirmed, model-independent
+    pricing, unlike token rates which are $0 when unconfirmed."""
     base_in, out_p, cw_p, cr_p = get_pricing(model_name)
     if (speed or "").lower() == "fast" and model_name in FAST_OPUS_BASE:
         b_in, b_out = FAST_OPUS_BASE[model_name]
@@ -215,4 +224,5 @@ def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
     cache_write = cw * cw_p
     if cw_1h > 0 and (cw_5m or 0) + cw_1h <= cw:
         cache_write += cw_1h * (cw_1h_p - cw_p)  # premium over the 5m rate
-    return (inp * base_in + out * out_p + cache_write + cr * cr_p) / 1_000_000
+    return ((inp * base_in + out * out_p + cache_write + cr * cr_p) / 1_000_000
+            + web_search * (WEB_SEARCH_PER_1K / 1000.0))

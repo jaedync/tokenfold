@@ -91,7 +91,13 @@ def _cost_from_usage(entry: dict) -> float:
     if not cache:
         cw = entry.get("cache_creation_input_tokens", 0)
 
-    return compute_cost(dname, inp, out, cw, cr)
+    # Web-search fee ($10/1k requests) — entries are transcript-usage-shaped.
+    stu = entry.get("server_tool_use") or {}
+    ws = stu.get("web_search_requests", 0) if isinstance(stu, dict) else 0
+    if not (isinstance(ws, int) and ws > 0):
+        ws = 0
+
+    return compute_cost(dname, inp, out, cw, cr, web_search=ws)
 
 
 def _build_ha_payload(data: dict) -> dict:

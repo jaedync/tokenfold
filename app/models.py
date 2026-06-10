@@ -27,9 +27,12 @@ class IngestResponse(BaseModel):
 
 class BackfillRequest(BaseModel):
     """Historical repair payload generated from a machine's local transcripts.
-    cache_tiers: uuid -> [ephemeral_5m, ephemeral_1h]; titles: session_id -> title.
+    cache_tiers: uuid -> [ephemeral_5m, ephemeral_1h];
+    server_tools: uuid -> [web_search_requests, web_fetch_requests];
+    titles: session_id -> title.
     Batches are capped — the client splits large backfills across requests."""
     cache_tiers: dict[str, list[int]] = Field(default_factory=dict, max_length=20000)
+    server_tools: dict[str, list[int]] = Field(default_factory=dict, max_length=20000)
     titles: dict[str, str] = Field(default_factory=dict, max_length=20000)
     # Multi-batch protocol: data batches send reroll=False (server defers the
     # expensive day re-roll and just reports touched days); the client then

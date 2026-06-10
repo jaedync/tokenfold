@@ -85,7 +85,8 @@ class MonthCostAggregatorTest(TempDBTestCase):
         d = agg.build_dashboard_data("enterprise")
 
         self.assertIn("month_label", d, "month_label must be present in payload")
-        expected_label = now.strftime("%B %Y")
+        # Anthropic accounting runs on UTC months — the label says so.
+        expected_label = datetime.now(timezone.utc).strftime("%B %Y") + " · UTC"
         self.assertEqual(d["month_label"], expected_label,
                          f"Expected '{expected_label}', got '{d['month_label']}'")
 
@@ -114,7 +115,6 @@ class MonthCostAggregatorTest(TempDBTestCase):
 
     def test_empty_dashboard_has_month_cost(self):
         """_empty_dashboard must include month_cost=0.0 and a valid month_label."""
-        TZ = _make_tz()
         import app.aggregator as agg
 
         empty = agg._empty_dashboard("2026-01-01")
@@ -122,8 +122,66 @@ class MonthCostAggregatorTest(TempDBTestCase):
         self.assertIn("month_cost", empty)
         self.assertEqual(empty["month_cost"], 0.0)
         self.assertIn("month_label", empty)
-        expected_label = datetime.now(TZ).strftime("%B %Y")
+        expected_label = datetime.now(timezone.utc).strftime("%B %Y") + " · UTC"
         self.assertEqual(empty["month_label"], expected_label)
+
+
+class MonthCostUTCBoundaryTest(TempDBTestCase):
+    """Anthropic bills on UTC days: UTC midnight = the previous EVENING in
+    America/Chicago. The month counter must bucket by UTC, not by the
+    Chicago-local `day` column, or the dashboard disagrees with the Claude
+    account page for everything used after ~6-7pm Chicago on month edges.
+
+    Only the month-to-date metric uses UTC — heatmap/daily tables stay local
+    (Jaedyn's call, 2026-06-10)."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _seed_at(self, uuid, dt_utc, inp=1_000_000):
+        """Insert an enterprise Opus event at an absolute UTC instant, with the
+        `day` column stamped the way ingest stamps it: in America/Chicago."""
+        chicago_day = dt_utc.astimezone(_make_tz()).strftime("%Y-%m-%d")
+        ins(self.conn, uuid, "re-" + uuid, "jaedyn@acme.io", "enterprise",
+            "Acme", "mA", "proj", "s-" + uuid, inp=inp,
+            day=chicago_day, ts=dt_utc.timestamp())
+
+    def test_includes_event_in_utc_month_but_prior_chicago_month(self):
+        """An event seconds after UTC month start lands on the PREVIOUS
+        month's last Chicago day — it must still count (Anthropic bills it
+        in the current month)."""
+        now_utc = datetime.now(timezone.utc)
+        month_start = now_utc.replace(day=1, hour=0, minute=0,
+                                      second=0, microsecond=0)
+        # A few seconds into the UTC month, but never in the future even if
+        # the suite runs moments after a month rollover.
+        delta_s = min(60.0, max(1.0, (now_utc - month_start).total_seconds() / 2))
+        self._seed_at("e1", month_start + timedelta(seconds=delta_s))
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        d = agg.build_dashboard_data("enterprise")
+        self.assertAlmostEqual(d["month_cost"], 5.0, places=2,
+                               msg="event inside the UTC month must count even "
+                                   "when its Chicago day is in the prior month")
+
+    def test_excludes_event_before_utc_month_start(self):
+        now_utc = datetime.now(timezone.utc)
+        month_start = now_utc.replace(day=1, hour=0, minute=0,
+                                      second=0, microsecond=0)
+        self._seed_at("e1", month_start - timedelta(hours=1))
+
+        from app.summarizer import summarize_days
+        import app.aggregator as agg
+        summarize_days(None)
+        agg._cached_data.clear()
+
+        d = agg.build_dashboard_data("enterprise")
+        self.assertAlmostEqual(d["month_cost"], 0.0, places=2)
 
 
 class MonthCostUIWiringTest(TempDBTestCase):

@@ -13,15 +13,20 @@ import threading
 import time as _time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from datetime import timezone as _timezone
 from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
+from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import (
-    MODEL_BENCHMARKS, MODEL_ORDER, compute_cost, display_model, get_pricing,
-    is_priced, load_pricing, model_sort_key,
+    MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
+    display_model, get_pricing, is_priced, load_pricing, model_sort_key,
 )
 from .water import compute_energy_wh, compute_water_ml
+
+# Per-request web-search fee for the cost-component breakdowns.
+_WS_FEE = WEB_SEARCH_PER_1K / 1000.0
 
 TZ = ZoneInfo(TZ_NAME)
 
@@ -259,7 +264,7 @@ def _build_recent_sessions(conn, pred, limit=25):
         "SELECT session_id, model, speed, inference_geo, COUNT(*) as reqs, "
         "MIN(first_ts) as min_ts, MAX(last_ts) as max_ts, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
-        "SUM(c5m) as c5m, SUM(c1h) as c1h, "
+        "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws, "
         "MAX(machine) as machine, MAX(project_dir) as project_dir "
         "FROM ("
         "  SELECT session_id, model, request_id, "
@@ -268,6 +273,7 @@ def _build_recent_sessions(conn, pred, limit=25):
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
+        "  MAX(web_search_requests) as ws, "
         "  MAX(source_machine) as machine, MAX(project_dir) as project_dir "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
@@ -292,7 +298,8 @@ def _build_recent_sessions(conn, pred, limit=25):
         dm = display_model(r["model"])
         c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
                          r["cr"] or 0, r["speed"], r["inference_geo"],
-                         cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0)
+                         cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                         web_search=r["ws"] or 0)
         st["cost"] += c
         st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
         st["total_tokens"] += (r["inp"] or 0) + (r["outp"] or 0) + (r["cc"] or 0) + (r["cr"] or 0)
@@ -391,7 +398,7 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
         }, "tools": {}, "projects": [], "machine_summary": []},
         "scope": scope,
         "month_cost": 0.0,
-        "month_label": now.strftime("%B %Y"),
+        "month_label": datetime.now(_timezone.utc).strftime("%B %Y") + " · UTC",
     }
 
 
@@ -486,13 +493,14 @@ def _build_hourly(conn, pred: str) -> list[dict]:
     for r in conn.execute(
         f"SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
-        "SUM(c5m) as c5m, SUM(c1h) as c1h "
+        "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws "
         "FROM ("
         f"  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
-        "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h "
+        "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
+        "  MAX(web_search_requests) as ws "
         f"  FROM events WHERE type='assistant' AND model IS NOT NULL "
         f"  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
@@ -507,7 +515,8 @@ def _build_hourly(conn, pred: str) -> list[dict]:
             hourly_list[idx]["cost"] += compute_cost(
                 dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
                 r["speed"], r["inference_geo"],
-                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0)
+                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                web_search=r["ws"] or 0)
 
     for hl in hourly_list:
         hl["cost"] = round(hl["cost"], 2)
@@ -587,6 +596,9 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
             "cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
             "cost_cache_read": round(cr * p[3] / 1e6, 2),
+            "web_search": md.get("web_search", 0),
+            "web_fetch": md.get("web_fetch", 0),
+            "cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
             # Today view uses the same keys as recent/all for compatibility
             "recent_cost": round(cost, 2),
             "recent_main_cost": round(main_cost, 2),
@@ -600,6 +612,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "recent_cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
             "recent_cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
             "recent_cost_cache_read": round(cr * p[3] / 1e6, 2),
+            "recent_cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
             "recent_input": inp, "recent_output": out,
             "recent_cache_write": cw, "recent_cache_read": cr,
             "recent_total_tokens": inp + out + cw + cr,
@@ -692,6 +705,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     model_stats = defaultdict(lambda: {
         "input": 0, "output": 0, "cache_write": 0, "cache_read": 0,
         "cache_5m": 0, "cache_1h": 0, "recent_cache_5m": 0, "recent_cache_1h": 0,
+        "web_search": 0, "web_fetch": 0, "recent_web_search": 0,
         "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
         "main_prompts": 0, "agent_invocations": 0, "active_s": 0.0,
         "gen_s": 0.0, "gen_out": 0,
@@ -778,6 +792,8 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             ms["cache_write"] += md.get("cache_write", 0)
             ms["cache_5m"] += md.get("cache_5m", 0)
             ms["cache_1h"] += md.get("cache_1h", 0)
+            ms["web_search"] += md.get("web_search", 0)
+            ms["web_fetch"] += md.get("web_fetch", 0)
             ms["cache_read"] += md.get("cache_read", 0)
             ms["api_calls"] += md.get("api_calls", 0)
             ms["main_api_calls"] += md.get("main_api_calls", 0)
@@ -794,6 +810,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
                 ms["recent_cache_write"] += md.get("cache_write", 0)
                 ms["recent_cache_5m"] += md.get("cache_5m", 0)
                 ms["recent_cache_1h"] += md.get("cache_1h", 0)
+                ms["recent_web_search"] += md.get("web_search", 0)
                 ms["recent_cache_read"] += md.get("cache_read", 0)
                 ms["recent_main_cost"] += md.get("main_cost", 0.0)
                 ms["recent_active_s"] += md.get("active_s", 0.0)
@@ -952,6 +969,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "cost_cache_5m": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[0], 2),
             "cost_cache_1h": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[1], 2),
             "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
+            "web_search": ms["web_search"],
+            "web_fetch": ms["web_fetch"],
+            "cost_web_search": round(ms["web_search"] * _WS_FEE, 2),
             "last_seen": ms["last_seen"],
             "recent": ms["last_seen"] >= cutoff_date,
             "recent_input": ms["recent_input"], "recent_output": ms["recent_output"],
@@ -966,6 +986,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_cost_cache_5m": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[0], 2),
             "recent_cost_cache_1h": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[1], 2),
             "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
+            "recent_cost_web_search": round(ms["recent_web_search"] * _WS_FEE, 2),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
             "recent_output_tok_per_s": round(recent_output_tok_per_s, 1) if recent_output_tok_per_s is not None else None,
@@ -1013,11 +1034,19 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             series.append(round(mach_daily_cost.get(m_name, {}).get(d, 0.0), 2))
         machine_daily_series[m_name] = series
 
-    # ── Month-to-date cost (scope-aware, since daily_map is already scoped) ──
-    _cur_month = datetime.now(TZ).strftime("%Y-%m")
-    month_cost = round(sum(dm["cost"] for day, dm in daily_map.items()
-                           if day[:7] == _cur_month), 2)
-    month_label = datetime.now(TZ).strftime("%B %Y")
+    # ── Month-to-date cost: UTC month boundaries, to match Anthropic billing ──
+    # Anthropic accounts on UTC days (UTC midnight = ~7pm America/Chicago), so
+    # bucketing by the local `day` column made this counter disagree with the
+    # Claude account page for evening usage on month edges. Computed from raw
+    # events via the shared window-cost path (request dedup + full pricing,
+    # incl. server-tool fees). ONLY this metric is UTC — heatmap/daily tables
+    # stay local by design.
+    _now_utc = datetime.now(_timezone.utc)
+    _month_start_utc = _now_utc.replace(day=1, hour=0, minute=0,
+                                        second=0, microsecond=0)
+    month_cost = round(compute_window_cost(
+        conn, _month_start_utc.timestamp(), _now_utc.timestamp() + 1, scope), 2)
+    month_label = _now_utc.strftime("%B %Y") + " · UTC"
 
     # ── Last active timestamp (global + per machine) ──
     # daily_summary can't answer "active in last 15 minutes" — needs minute-grain

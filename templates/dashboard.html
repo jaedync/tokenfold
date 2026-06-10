@@ -3621,6 +3621,7 @@ function renderMode(mode) {
   const cw5Key = isRecent ? 'recent_cost_cache_5m' : 'cost_cache_5m';
   const cw1Key = isRecent ? 'recent_cost_cache_1h' : 'cost_cache_1h';
   const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
+  const wsKey = isRecent ? 'recent_cost_web_search' : 'cost_web_search';
   const costModels = activeMB;
   if(!costModels.length) {
     dropChart('costByModel');
@@ -3634,7 +3635,8 @@ function renderMode(mode) {
         {label:'Output',data:costModels.map(m=>m[coKey]),backgroundColor:'#e6332980',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache 5m',data:costModels.map(m=>m[cw5Key]||0),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache 1h',data:costModels.map(m=>m[cw1Key]||0),backgroundColor:'#d9900080',borderColor:'#1a1a1a',borderWidth:1},
-        {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1}
+        {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Web Search',data:costModels.map(m=>m[wsKey]||0),backgroundColor:'#2e7d4f80',borderColor:'#1a1a1a',borderWidth:1}
       ]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
         scales:{

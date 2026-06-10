@@ -124,12 +124,14 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         "SELECT CAST((first_ts - ?) / 3600 AS INTEGER) as h, "
         "model, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, "
-        "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h "
+        "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
+        "SUM(ws) as ws "
         "FROM ("
         "  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
+        "  MAX(web_search_requests) as ws, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
@@ -144,7 +146,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
             dm, r["inp"] or 0, r["outp"] or 0,
             r["cc"] or 0, r["cr"] or 0,
             r["speed"], r["inference_geo"],
-            cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0)
+            cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+            web_search=r["ws"] or 0)
         if c > 0:
             h_idx = r["h"]
             found = False

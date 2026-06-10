@@ -96,6 +96,8 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
         "cache_read_tokens": 0,
         "cache_ephemeral_5m": 0,
         "cache_ephemeral_1h": 0,
+        "web_search_requests": 0,
+        "web_fetch_requests": 0,
         "service_tier": None,
         "speed": None,
         "inference_geo": None,
@@ -145,6 +147,18 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
             else:
                 row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
                 row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
+            # Server-tool usage: usage.server_tool_use = {web_search_requests,
+            # web_fetch_requests}. Web search bills $10/1k requests on top of
+            # token cost; fetch is free but tracked. Counts are untrusted —
+            # a non-int would raise at the sqlite bind and 500 the batch.
+            _stu = usage.get("server_tool_use")
+            if isinstance(_stu, dict):
+                _ws = _stu.get("web_search_requests")
+                _wf = _stu.get("web_fetch_requests")
+                if isinstance(_ws, int) and 0 <= _ws < 10**9:
+                    row["web_search_requests"] = _ws
+                if isinstance(_wf, int) and 0 <= _wf < 10**9:
+                    row["web_fetch_requests"] = _wf
             # service_tier/speed/inference_geo come from untrusted transcript JSON:
             # coerce non-strings to NULL (a dict/list would raise at sqlite bind
             # and 500 the whole batch) and truncate to a sane length.
@@ -262,7 +276,9 @@ EVENT_COLS = [
     "account_email", "org_name", "plan", "rate_limit_tier", "org_type", "org_uuid",
     "model", "message_id", "request_id", "stop_reason", "api_error", "is_api_error",
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
-    "cache_ephemeral_5m", "cache_ephemeral_1h", "service_tier", "speed", "inference_geo",
+    "cache_ephemeral_5m", "cache_ephemeral_1h",
+    "web_search_requests", "web_fetch_requests",
+    "service_tier", "speed", "inference_geo",
     "has_text", "has_thinking", "has_tool_use", "has_tool_result", "has_image",
     "is_human_prompt", "text_length", "thinking_length",
     "level", "duration_ms", "error_status", "retry_attempt", "max_retries",
@@ -393,13 +409,15 @@ async def ingest(req: IngestRequest):
 @router.post("/api/backfill", dependencies=[Depends(require_api_key)])
 async def backfill(req: BackfillRequest):
     """Repair historical rows from a machine's local transcripts: set the
-    cache-tier split on events where it is still unset (never clobbers real
-    data) and upsert AI session titles that predate ai-title capture (an
-    existing title wins — live ingest is fresher than a backfill). Re-rolls
-    every day whose events changed so stored costs correct themselves."""
+    cache-tier split and server-tool request counts on events where they are
+    still unset (never clobbers real data) and upsert AI session titles that
+    predate ai-title capture (an existing title wins — live ingest is fresher
+    than a backfill). Re-rolls every day whose events changed so stored costs
+    correct themselves."""
     conn = get_conn()
     cur = conn.cursor()
     updated_events = 0
+    updated_server_tools = 0
     touched_days: set[str] = set()
     try:
         for uuid, pair in req.cache_tiers.items():
@@ -420,6 +438,28 @@ async def backfill(req: BackfillRequest):
                 "UPDATE events SET cache_ephemeral_5m=?, cache_ephemeral_1h=? "
                 "WHERE uuid=?", (c5m, c1h, uuid))
             updated_events += 1
+            touched_days.add(row["day"])
+
+        # Server-tool request counts: same fill-only-unset contract as the
+        # cache-tier split above.
+        for uuid, pair in req.server_tools.items():
+            if not (isinstance(pair, list) and len(pair) == 2):
+                continue
+            ws, wf = pair
+            if not all(isinstance(x, int) and 0 <= x < 10**9 for x in (ws, wf)):
+                continue
+            if ws == 0 and wf == 0:
+                continue
+            row = cur.execute(
+                "SELECT day FROM events WHERE uuid=? "
+                "AND COALESCE(web_search_requests,0)=0 "
+                "AND COALESCE(web_fetch_requests,0)=0", (uuid,)).fetchone()
+            if row is None:
+                continue
+            cur.execute(
+                "UPDATE events SET web_search_requests=?, web_fetch_requests=? "
+                "WHERE uuid=?", (ws, wf, uuid))
+            updated_server_tools += 1
             touched_days.add(row["day"])
 
         updated_titles = 0
@@ -450,6 +490,7 @@ async def backfill(req: BackfillRequest):
 
     return {
         "updated_events": updated_events,
+        "updated_server_tools": updated_server_tools,
         "updated_titles": updated_titles,
         "touched_days": sorted(touched_days),
     }
