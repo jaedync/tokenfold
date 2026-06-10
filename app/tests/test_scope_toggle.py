@@ -106,3 +106,24 @@ class ScopeToggleJSWiringTest(TempDBTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoRefreshScopePinnedTest(unittest.TestCase):
+    """Source-level regression for live-update scope bleed: the 30s version-poll
+    refetch MUST request the page's own scope. A bare fetch('/api/stats') falls
+    back to the server's DEFAULT_SCOPE (personal on ms01) and repaints an
+    enterprise view with personal data until manual reload. The footer refresh
+    must also not clobber the ingest-key button by rewriting .footer-right."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        cls.tpl = (Path(__file__).resolve().parents[2]
+                   / "templates" / "dashboard.html").read_text()
+
+    def test_stats_refetch_pins_scope(self):
+        self.assertIn("'/api/stats?scope='", self.tpl)
+        self.assertNotIn("fetch('/api/stats')", self.tpl)
+
+    def test_footer_timestamp_update_preserves_ingest_key(self):
+        self.assertNotIn("footerRight.textContent", self.tpl)

@@ -2297,7 +2297,7 @@ th[data-info]:hover::after { opacity: 1; }
       data-ingest-key="{{ ingest_key|e }}"
       title="Reveal + copy the ingest key (STATS_API_KEY) for setting up new machines">Ingest Key</button></span>
     <span aria-hidden="true">·</span>
-    {% endif %}<span>Generated {{ gen_time|e }}</span>
+    {% endif %}<span id="genTimeLabel">Generated {{ gen_time|e }}</span>
   </div>
 </footer>
 {% if ingest_key %}
@@ -4022,7 +4022,10 @@ setMode(localStorage.getItem('dashMode') || '14d');
   function fetchAndApply(){
     if(isFetching)return;
     isFetching=true;
-    fetch('/api/stats').then(r=>r.json()).then(data=>{
+    // Pin the refetch to THIS page's scope. A bare /api/stats falls back to the
+    // server's default scope and would repaint an enterprise view with personal
+    // data (scope bleed) on every live update.
+    fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE)).then(r=>r.json()).then(data=>{
       knownVersion=data.version||0;
       // Update D in-place (const can't be reassigned)
       Object.keys(data).forEach(k=>{D[k]=data[k];});
@@ -4038,9 +4041,10 @@ setMode(localStorage.getItem('dashMode') || '14d');
       renderMode(mode);
       renderHeatmap();
       renderHourly();
-      // Update footer timestamp
-      const footerRight=document.querySelector('.footer-right');
-      if(footerRight&&data.generation_time)footerRight.textContent='Generated '+data.generation_time;
+      // Update footer timestamp — target the label span only; rewriting all of
+      // .footer-right would destroy the ingest-key reveal button next to it.
+      const genLabel=document.getElementById('genTimeLabel');
+      if(genLabel&&data.generation_time)genLabel.textContent='Generated '+data.generation_time;
       updateStatus();
       showRefreshIndicator();
     }).catch(()=>{}).finally(()=>{isFetching=false;});
