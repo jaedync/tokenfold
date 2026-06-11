@@ -22,6 +22,7 @@ You need two inputs from the operator (neither is stored in this repo):
 | `~/.claude/usage-telemetry/tokenfold-push.py` | The pusher: reads new lines from `~/.claude/projects/**/*.jsonl`, batches them, POSTs to `/api/ingest`. Incremental (cursor at `~/.tokenfold-cursor.json`); server-side dedup makes re-runs safe. |
 | `~/.claude/usage-telemetry/tokenfold-usage-push.sh` | Detaching wrapper — returns instantly so the hook never blocks your session. |
 | `~/.claude/usage-telemetry/hook.sh` | Stamps `TOKENFOLD_MACHINE=$(hostname -s)` and execs the wrapper. This is what the hook calls. |
+| `~/.claude/usage-telemetry/tokenfold-update.sh` | **Self-updater.** Spawned detached after each debounced push: compares the latest GitHub commit touching `client/` against a local stamp (`.client-sha`) and, on change, downloads that exact commit's tarball and re-runs the downloaded installer. After this lands once, the machine tracks `main` with **no further manual installs**. Logs to `update.log`; disable with `TOKENFOLD_NO_UPDATE=1`. |
 | `~/.config/notify-relay-url` | Server base URL. |
 | `~/.config/tokenfold-api-key` (mode `0600`) | The ingest token (`STATS_API_KEY`). **Never committed to git.** |
 | `~/.claude/settings.json` → `hooks.Stop`, `hooks.SessionEnd` and `hooks.PostToolUse` | A new hook **group object** calling `hook.sh`. Appended, never merged into an existing group, so it can't disturb your other hooks. |
@@ -33,6 +34,14 @@ Enterprise/Team orgs report `claude_enterprise`/`claude_team` → classified **e
 **Freshness:** `Stop`/`SessionEnd` flush when a turn or session ends, but a single turn can run for hours — so the `PostToolUse` hook also fires (after every tool call) with a built-in **5-minute debounce** (`TOKENFOLD_MIN_INTERVAL=300`): data is never more than ~5 minutes stale during long runs, at most one push per 5 minutes.
 
 No secrets leave the machine — only those four identity fields.
+
+**Auto-update:** pushing to `main` on GitHub is the release channel. Active
+machines pick up client changes within one push cycle (the updater checks the
+GitHub API at most once per debounced push, ≤12/hr, and no-ops in under a
+second when nothing changed). The stamp only advances when the re-run
+installer exits 0, so a failed update retries on the next push while the
+existing scripts keep working. Machines installed before the updater existed
+need **one** manual re-run of the installer to start tracking.
 
 ---
 
