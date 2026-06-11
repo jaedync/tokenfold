@@ -55,11 +55,20 @@ staleness, not our accuracy.
    agree to −0.02% over a month of real usage, with both residual cents
    explained. The cache-tier, dedup, and pricing work is corroborated by an
    independent 16k-star implementation.
-2. **Known gap (ours): >200k-context tier pricing.** Anthropic bills input
-   above 200k context at premium rates (LiteLLM `*_above_200k_tokens`
-   fields); ccusage applies it per component, tokenfold doesn't. Zero impact
-   on this machine in June (else the totals would drift), but enterprise
-   1M-context Sonnet usage would be undercounted. Candidate follow-up.
+2. **>200k-context tier pricing: NOT a gap (corrected 2026-06-11).** An
+   earlier draft of this doc flagged tokenfold's lack of above-200k tiering
+   as a gap, inferred from ccusage implementing it. Verified wrong for
+   everything that matters: per current Anthropic docs AND current LiteLLM
+   data, the long-context premium exists ONLY for Sonnet 4 / Sonnet 4.5 (the
+   old 1M-beta: $6/$22.50 above 200k). Fable 5, Opus 4.6/4.7/4.8, Sonnet
+   4.6, Haiku 4.5 have NO premium — "1M context window at standard API
+   pricing" (Anthropic migration docs), and LiteLLM carries no
+   `*_above_200k_tokens` fields for them, so ccusage's tiering is a no-op on
+   them too. Fleet exposure check on prod: 0 requests >200k input on
+   Sonnet 4/4.5 in the entire DB (47,240 such requests exist, all on
+   current-gen no-premium models). Implementing tiering for current models
+   would OVERcount. No action; revisit only if a premium-priced model enters
+   the fleet.
 3. **Candidate dedup refinement:** ccusage keeps the non-sidechain copy and
    does a secondary message-id-only check because "sidechain logs can replay
    parent messages with new request IDs" — tokenfold's MAX-per-request_id
