@@ -197,6 +197,35 @@ class ReadingsTemplateTest(unittest.TestCase):
         self.assertIn("billing_readings", self.html)
         self.assertIn("readings_writable", self.html)
 
+    def test_grouped_headers_disambiguate_sources(self):
+        """The core UX contract: which number is the org console's and which
+        is tokenfold's must be answered by the table structure itself."""
+        self.assertIn("AT THIS READING", self.html)
+        self.assertIn("SINCE PREVIOUS READING", self.html)
+        self.assertIn(">TOKENFOLD<", self.html)
+        self.assertIn(">GAP<", self.html)
+
+    def test_numeric_headers_right_align_with_values(self):
+        """Global dashboard CSS right-aligns all non-first data cells
+        (td:not(:first-child)); numeric headers must carry .num so they
+        right-align with their values — the original bug was left-aligned
+        headers over right-aligned numbers."""
+        import re
+        renderer = re.search(r"function renderBillingReadings[\s\S]{0,4000}",
+                             self.html).group(0)
+        self.assertGreaterEqual(renderer.count('class="num'), 6)
+
+    def test_headers_use_house_tooltip_vocabulary(self):
+        import re
+        renderer = re.search(r"function renderBillingReadings[\s\S]{0,4000}",
+                             self.html).group(0)
+        self.assertIn("data-info=", renderer)
+
+    def test_no_sticky_header_inside_panel(self):
+        """Global `thead th` is position:sticky for the scroll-wrapped data
+        tables; inside this panel it detaches and floats — must be static."""
+        self.assertIn(".br-table thead th{position:static", self.html)
+
     def test_note_rendered_through_esc(self):
         # the renderer must escape user-entered note text
         self.assertIn("esc(", self.html)
