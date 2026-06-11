@@ -164,6 +164,14 @@ if [ "$VERIFY_ONLY" -eq 0 ]; then
   cp "$SCRIPT_DIR/tokenfold-usage-push.sh" "$HOOKS_DIR/tokenfold-usage-push.sh"
   chmod +x "$HOOKS_DIR/tokenfold-usage-push.sh"
 
+  # Self-updater (optional file so older checkouts still install cleanly).
+  # Once present, the wrapper spawns it after each push and this machine
+  # tracks GitHub main without further manual installs.
+  if [ -f "$SCRIPT_DIR/tokenfold-update.sh" ]; then
+    cp "$SCRIPT_DIR/tokenfold-update.sh" "$HOOKS_DIR/tokenfold-update.sh"
+    chmod +x "$HOOKS_DIR/tokenfold-update.sh"
+  fi
+
   # hook.sh wrapper — stamps the machine name, then execs the detaching pusher.
   cat > "$HOOKS_DIR/hook.sh" <<'EOF'
 #!/bin/sh

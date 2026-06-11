@@ -58,4 +58,17 @@ if command -v setsid >/dev/null 2>&1; then
 else
   nohup python3 "$PUSH" >>"$LOG_FILE" 2>&1 < /dev/null &
 fi
+
+# Auto-update: spawn the self-updater, also detached. It no-ops in <1s unless
+# the client/ tree changed on GitHub main (logs to its own update.log).
+# TOKENFOLD_NO_UPDATE=1 disables. Riding the debounced push keeps the GitHub
+# check rate at most one per push cycle during active use.
+UPDATER="$HOOK_DIR/tokenfold-update.sh"
+if [ -z "$TOKENFOLD_NO_UPDATE" ] && [ -f "$UPDATER" ]; then
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh "$UPDATER" >/dev/null 2>&1 < /dev/null &
+  else
+    nohup sh "$UPDATER" >/dev/null 2>&1 < /dev/null &
+  fi
+fi
 exit 0
