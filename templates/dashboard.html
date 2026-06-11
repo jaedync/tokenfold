@@ -2150,6 +2150,26 @@ th[data-info]:focus::after { opacity: 1; }
   .stat-card:nth-child(7) .stat-value { font-size: 1.2rem; }
   .stat-card { padding: 0.7rem; }
 }
+/* ── Official billing readings (enterprise) ── */
+.rate-gauge-sub{font-size:10px;color:var(--gray-dim);margin-left:8px}
+.br-input-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.br-input-row input{border:2px solid #1a1a1a;background:var(--paper,#fff);
+  font:inherit;font-size:13px;padding:6px 8px}
+.br-input-row input#brAmount{width:200px}
+.br-input-row input#brNote{flex:1;min-width:140px}
+.br-input-row button{border:2px solid #1a1a1a;background:#f5c518;cursor:pointer;
+  font:inherit;font-size:11px;font-weight:700;padding:7px 14px;letter-spacing:.06em}
+.br-input-row button:hover{background:#1a1a1a;color:#f5c518}
+#brStatus{font-size:11px;color:var(--gray-dim)}
+.br-table{width:100%;border-collapse:collapse;font-size:12px}
+.br-table th{text-align:left;font-size:10px;letter-spacing:.08em;color:var(--gray-dim);
+  border-bottom:2px solid #1a1a1a;padding:4px 8px 4px 0}
+.br-table td{padding:5px 8px 5px 0;border-bottom:1px solid #d8d4cc;
+  font-variant-numeric:tabular-nums}
+.br-del{border:none;background:none;cursor:pointer;color:var(--gray-dim);
+  font-size:14px;line-height:1;padding:0 4px}
+.br-del:hover{color:#e63329}
+.br-since,.br-empty{font-size:11px;color:var(--gray-dim);margin-top:6px}
 </style>
 </head>
 <body>
@@ -2358,6 +2378,25 @@ th[data-info]:focus::after { opacity: 1; }
   <div id="oauthGaugesPanel"{% if scope == 'personal' %} style="display:block;min-height:325px"{% endif %}>
     {%- if scope == 'personal' %}<div class="rate-gauge" style="border-top:var(--border)"><div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>{% endif -%}
   </div>
+  {%- if scope == 'enterprise' %}
+  <!-- Official billing readings: manually recorded org-page MTD figures.
+       Deltas between consecutive readings vs measured cost = coverage. -->
+  <div id="billingReadingsPanel" class="rate-gauge" style="border-top:var(--border)">
+    <div class="rate-gauge-head">
+      <span class="rate-gauge-label">OFFICIAL BILLING READINGS</span>
+      <span class="rate-gauge-sub">org console MTD · UTC months</span>
+    </div>
+    {%- if readings_writable %}
+    <div class="br-input-row">
+      <input id="brAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="org page $ (month to date)" aria-label="official month-to-date dollars">
+      <input id="brNote" type="text" maxlength="256" placeholder="note (optional)" aria-label="note">
+      <button type="button" id="brRecordBtn">RECORD</button>
+      <span id="brStatus" role="status" aria-live="polite"></span>
+    </div>
+    {%- endif %}
+    <div id="billingReadingsTable"></div>
+  </div>
+  {%- endif %}
 </div>
 
 <!-- Weekly usage chart modal -->
@@ -2760,6 +2799,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 
 const TF_SCOPE = '{{ scope }}';
 const TF_LOCKED = {{ 'true' if scope_locked else 'false' }};
+const BR_WRITABLE = {{ 'true' if readings_writable else 'false' }};
 
 /* ---- Scope restore: redirect once to saved scope on bare / visits ---- */
 (function(){
@@ -4739,6 +4779,74 @@ function toggleSess(i){
 }
 renderSessions();
 
+/* ---- Official billing readings (enterprise) ----
+   Manually recorded org-console MTD figures. The interesting math (Δofficial
+   vs Δmeasured per interval, coverage %) arrives precomputed in
+   D.billing_readings; this only renders and posts. */
+function renderBillingReadings(){
+  const wrap=document.getElementById('billingReadingsTable');
+  if(!wrap)return;
+  const rows=D.billing_readings||[];
+  if(!rows.length){
+    wrap.innerHTML='<div class="br-empty">no readings yet — record the org console month-to-date figure; deltas between consecutive readings vs measured cost quantify coverage</div>';
+    return;
+  }
+  const dash='—';
+  let h='<table class="br-table"><thead><tr><th>WHEN · UTC</th><th>OFFICIAL MTD</th><th>MEASURED THEN</th><th>Δ OFFICIAL</th><th>Δ MEASURED</th><th>COVERAGE</th><th></th></tr></thead><tbody>';
+  for(const r of rows){
+    const when=new Date(r.recorded_epoch*1000).toISOString().slice(0,16).replace('T',' ');
+    h+='<tr><td>'+esc(when)
+      +(r.note?' <span title="'+esc(r.note)+'">✎</span>':'')
+      +'</td><td>'+fC(r.amount_usd)
+      +'</td><td>'+(r.measured_usd!=null?fC(r.measured_usd):dash)
+      +'</td><td>'+(r.delta_official!=null?fC(r.delta_official):dash)
+      +'</td><td>'+(r.delta_measured!=null?fC(r.delta_measured):dash)
+      +'</td><td>'+(r.coverage_pct!=null?esc(r.coverage_pct.toFixed(1))+'%':dash)
+      +'</td><td>'+(BR_WRITABLE?'<button type="button" class="br-del" data-id="'+esc(String(r.id))+'" title="delete reading" aria-label="delete reading">×</button>':'')
+      +'</td></tr>';
+  }
+  h+='</tbody></table>';
+  if(rows[0].measured_since!=null){
+    h+='<div class="br-since">measured since last reading: '+fC(rows[0].measured_since)+' · official counterpart unknown until the next reading</div>';
+  }
+  wrap.innerHTML=h;
+  wrap.querySelectorAll('.br-del').forEach(b=>{
+    b.onclick=()=>{
+      if(!confirm('Delete this reading?'))return;
+      fetch('/api/billing-readings/'+encodeURIComponent(b.dataset.id),{method:'DELETE'})
+        .then(r=>{if(!r.ok)throw 0;return refreshBillingReadings();})
+        .catch(()=>brStatus('delete failed'));
+    };
+  });
+}
+function brStatus(msg){
+  const el=document.getElementById('brStatus');
+  if(el){el.textContent=msg;setTimeout(()=>{if(el.textContent===msg)el.textContent='';},4000);}
+}
+function refreshBillingReadings(){
+  return fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE))
+    .then(r=>r.json())
+    .then(data=>{D.billing_readings=data.billing_readings||[];renderBillingReadings();});
+}
+(function(){
+  const btn=document.getElementById('brRecordBtn');
+  if(!btn)return;
+  btn.onclick=()=>{
+    const amtEl=document.getElementById('brAmount');
+    const amt=parseFloat(amtEl.value);
+    if(!isFinite(amt)||amt<0){brStatus('enter the org console $ figure');return;}
+    const note=(document.getElementById('brNote').value||'').trim();
+    btn.disabled=true;
+    fetch('/api/billing-readings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({amount_usd:amt,note:note||null})})
+      .then(r=>{if(!r.ok)throw 0;amtEl.value='';document.getElementById('brNote').value='';
+        brStatus('recorded ✓');return refreshBillingReadings();})
+      .catch(()=>brStatus('record failed'))
+      .finally(()=>{btn.disabled=false;});
+  };
+})();
+renderBillingReadings();
+
 /* ---- Scroll Animations ---- */
 (function(){
   var obs = new IntersectionObserver(function(entries){
@@ -4807,6 +4915,7 @@ renderSessions();
       renderHeatmap();
       renderHourly();
       renderSessions();
+      renderBillingReadings();
       // Update footer timestamp — target the label span only; rewriting all of
       // .footer-right would destroy the ingest-key reveal button next to it.
       const genLabel=document.getElementById('genTimeLabel');

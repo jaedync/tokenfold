@@ -187,4 +187,7 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         # only embedded when the dashboard itself is behind Basic auth — an open
         # dashboard must never leak the machine-ingest key.
         "ingest_key": config.STATS_API_KEY if config.DASHBOARD_PASSWORD else "",
+        # Billing-reading writes are human actions behind Basic auth; an open
+        # dashboard renders the history read-only (the server enforces too).
+        "readings_writable": bool(config.DASHBOARD_PASSWORD),
     })

@@ -42,6 +42,14 @@ class BackfillRequest(BaseModel):
     reroll_days: list[str] = Field(default_factory=list, max_length=2000)
 
 
+class BillingReadingRequest(BaseModel):
+    """A manually recorded Claude org-page MTD figure. No max_length on note —
+    the handler truncates to 256 instead of rejecting (a long paste should not
+    lose the reading)."""
+    amount_usd: float
+    note: str | None = None
+
+
 class DesktopSessionUpsert(BaseModel):
     cli_session_id: str
     desktop_session_id: str | None = None

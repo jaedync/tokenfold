@@ -161,6 +161,22 @@ CREATE TABLE IF NOT EXISTS session_titles (
     updated_at  TEXT
 );
 
+-- Manually recorded Claude org-page billing figures. FIRST-CLASS data:
+-- not derived from events, never rebuilt, included in DB backups.
+CREATE TABLE IF NOT EXISTS billing_readings (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope          TEXT NOT NULL DEFAULT 'enterprise',
+    amount_usd     REAL NOT NULL,
+    measured_usd   REAL,
+    month          TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL,
+    recorded_epoch REAL NOT NULL,
+    note           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_readings_seq
+    ON billing_readings(scope, month, recorded_epoch);
+
 """ + _DAILY_SUMMARY_DDL + """
 CREATE TABLE IF NOT EXISTS desktop_sessions (
     cli_session_id         TEXT PRIMARY KEY,
