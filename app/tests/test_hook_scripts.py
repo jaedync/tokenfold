@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
 class DebouncedPostToolUseTest(unittest.TestCase):
     """Long turns run for hours before Stop fires; the PostToolUse hook with a
-    TOKENFOLD_MIN_INTERVAL debounce keeps server data <=5 min stale. Source-level
+    TOKENFOLD_MIN_INTERVAL debounce keeps server data <=1 min stale. Source-level
     contract: the wrapper implements the debounce and the installer registers
     the debounced PostToolUse group alongside Stop/SessionEnd."""
 
@@ -73,4 +73,78 @@ class DebouncedPostToolUseTest(unittest.TestCase):
 
     def test_installer_registers_posttooluse(self):
         self.assertIn('"PostToolUse"', self.installer)
-        self.assertIn("TOKENFOLD_MIN_INTERVAL=300", self.installer)
+        self.assertIn("TOKENFOLD_MIN_INTERVAL=60", self.installer)
+        self.assertNotIn("TOKENFOLD_MIN_INTERVAL=300", self.installer)
+
+    def test_stop_and_sessionend_have_no_debounce(self):
+        """Stop must ALWAYS fire — only PostToolUse gets the cooldown env."""
+        import re
+        # the plain group command (used for Stop/SessionEnd) carries no env prefix
+        plain = re.findall(r'"command": \'"?\$HOME/\.claude/usage-telemetry/hook\.sh"?\'',
+                           self.installer)
+        self.assertTrue(plain, "plain (undebounced) hook command missing")
+        # exactly one debounced command, and it is the PostToolUse one
+        debounced = re.findall(r"TOKENFOLD_MIN_INTERVAL=\d+", self.installer)
+        self.assertEqual(len(set(debounced)), 1)
+
+
+def _run_registration(settings: dict) -> dict:
+    """Run the installer's embedded settings-registration python verbatim
+    against a temp settings.json; return the resulting settings."""
+    installer = (ROOT / "client" / "install-tokenfold-hook.sh").read_text()
+    start = installer.index("<<'PY'") + len("<<'PY'\n")
+    end = installer.index("\nPY\n", start)
+    py = installer[start:end]
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "settings.json")
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        r = subprocess.run(["python3", "-", path], input=py,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise AssertionError(f"registration failed: {r.stderr}")
+        with open(path) as f:
+            return json.load(f)
+
+
+class RegistrationNormalizationTest(unittest.TestCase):
+    """The fleet upgrades by re-running this installer (auto-update). A stale
+    debounce value in an existing PostToolUse group must be rewritten, not
+    skipped — presence-only idempotency would freeze old installs at 300s."""
+
+    def test_fresh_install_registers_all_three_events(self):
+        out = _run_registration({})
+        for event in ("Stop", "SessionEnd", "PostToolUse"):
+            cmds = [h["command"] for g in out["hooks"][event] for h in g["hooks"]]
+            self.assertTrue(any("usage-telemetry/hook.sh" in c for c in cmds), event)
+        post = json.dumps(out["hooks"]["PostToolUse"])
+        self.assertIn("TOKENFOLD_MIN_INTERVAL=60", post)
+        stop = json.dumps(out["hooks"]["Stop"])
+        self.assertNotIn("TOKENFOLD_MIN_INTERVAL", stop)
+
+    def test_stale_debounce_value_is_rewritten(self):
+        stale = {"hooks": {"PostToolUse": [{"hooks": [{
+            "type": "command",
+            "command": 'TOKENFOLD_MIN_INTERVAL=300 "$HOME/.claude/usage-telemetry/hook.sh"',
+            "timeout": 10}]}]}}
+        out = _run_registration(stale)
+        post = json.dumps(out["hooks"]["PostToolUse"])
+        self.assertIn("TOKENFOLD_MIN_INTERVAL=60", post)
+        self.assertNotIn("TOKENFOLD_MIN_INTERVAL=300", post)
+        # still exactly one tokenfold group — normalize, don't duplicate
+        marked = [g for g in out["hooks"]["PostToolUse"]
+                  if "usage-telemetry/hook.sh" in json.dumps(g)]
+        self.assertEqual(len(marked), 1)
+
+    def test_foreign_hooks_untouched(self):
+        foreign = {"hooks": {"Stop": [{"hooks": [{
+            "type": "command", "command": "/usr/local/bin/other-hook.sh"}]}]}}
+        out = _run_registration(foreign)
+        stop = json.dumps(out["hooks"]["Stop"])
+        self.assertIn("other-hook.sh", stop)
+        self.assertIn("usage-telemetry/hook.sh", stop)
+
+    def test_current_state_is_a_noop(self):
+        once = _run_registration({})
+        twice = _run_registration(once)
+        self.assertEqual(once, twice)

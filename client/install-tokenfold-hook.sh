@@ -201,10 +201,11 @@ marker = "usage-telemetry/hook.sh"
 group = {"hooks": [{"type": "command",
                     "command": '"$HOME/.claude/usage-telemetry/hook.sh"',
                     "timeout": 10}]}
-# Long turns can run for hours before Stop fires; PostToolUse + a 5-min
-# debounce (TOKENFOLD_MIN_INTERVAL in the wrapper) keeps data <=5 min stale.
+# Long turns can run for hours before Stop fires; PostToolUse + a 1-min
+# debounce (TOKENFOLD_MIN_INTERVAL in the wrapper) keeps data <=1 min stale.
+# Stop/SessionEnd stay undebounced — a session ending must always flush.
 post_group = {"hooks": [{"type": "command",
-              "command": 'TOKENFOLD_MIN_INTERVAL=300 "$HOME/.claude/usage-telemetry/hook.sh"',
+              "command": 'TOKENFOLD_MIN_INTERVAL=60 "$HOME/.claude/usage-telemetry/hook.sh"',
               "timeout": 10}]}
 
 try:
@@ -220,15 +221,34 @@ changed = False
 for event in ("Stop", "SessionEnd", "PostToolUse"):
     groups = list(hooks.get(event, []))
     add = post_group if event == "PostToolUse" else group
-    present = any(
-        marker in (h.get("command", "") or "")
-        for g in groups if isinstance(g, dict)
-        for h in g.get("hooks", []) if isinstance(h, dict)
-    )
+    want = add["hooks"][0]["command"]
+    present = False
+    normalized = []
+    for g in groups:
+        if not (isinstance(g, dict) and any(
+                marker in (h.get("command", "") or "")
+                for h in g.get("hooks", []) if isinstance(h, dict))):
+            normalized.append(g)       # foreign group — pass through untouched
+            continue
+        present = True
+        # ours: the fleet upgrades by re-running this installer, so a stale
+        # command (e.g. an old debounce value) must be rewritten in place
+        new_hooks = [
+            {**h, "command": want}
+            if isinstance(h, dict) and marker in (h.get("command", "") or "")
+               and h.get("command") != want
+            else h
+            for h in g.get("hooks", [])
+        ]
+        if new_hooks != g.get("hooks", []):
+            changed = True
+        normalized.append({**g, "hooks": new_hooks})
+    groups = normalized
     if not present:
         groups = groups + [add]    # new list — never mutate the original
         changed = True
-    hooks[event] = groups
+    if groups != hooks.get(event):
+        hooks[event] = groups
 
 if changed:
     new_settings = {**settings, "hooks": hooks}
