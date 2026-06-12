@@ -31,7 +31,7 @@ You need two inputs from the operator (neither is stored in this repo):
 (email, `organizationName`, `organizationType`, `organizationUuid`) and tags every event.
 Personal Max accounts report `organizationType=claude_max` → classified **personal**.
 Enterprise/Team orgs report `claude_enterprise`/`claude_team` → classified **enterprise**.
-**Freshness:** `Stop`/`SessionEnd` flush when a turn or session ends, but a single turn can run for hours — so the `PostToolUse` hook also fires (after every tool call) with a built-in **5-minute debounce** (`TOKENFOLD_MIN_INTERVAL=300`): data is never more than ~5 minutes stale during long runs, at most one push per 5 minutes.
+**Freshness:** `Stop`/`SessionEnd` flush when a turn or session ends (always, undebounced), but a single turn can run for hours — so the `PostToolUse` hook also fires (after every tool call) with a built-in **1-minute debounce** (`TOKENFOLD_MIN_INTERVAL=60`): data is never more than ~1 minute stale during long runs, at most one push per minute.
 
 No secrets leave the machine — only those four identity fields.
 
