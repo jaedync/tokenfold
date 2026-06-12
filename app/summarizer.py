@@ -6,9 +6,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .config import IDLE_THRESHOLD_S, TZ_NAME
+from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn
-from .pricing import compute_cost, display_model, load_pricing
+from .pricing import compute_cost, display_model, effective_geo, load_pricing
 
 TZ = ZoneInfo(TZ_NAME)
 
@@ -46,7 +46,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     requests = conn.execute(
         f"SELECT request_id, COALESCE(project_dir,'unknown') as project_dir, "
         f"source_machine, session_id, day, model, is_sidechain, agent_id, "
-        f"speed, inference_geo, "
+        f"speed, inference_geo, ({ENTERPRISE_PRED}) as is_ent, "
         f"MAX(input_tokens) as inp, MAX(output_tokens) as out, "
         f"MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         f"MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
@@ -103,7 +103,9 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         dd["cache_creation_tokens"] += cc
         dd["cache_read_tokens"] += cr
 
-        req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"], r["inference_geo"],
+        req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"],
+                                effective_geo(r["inference_geo"],
+                                              enterprise=bool(r["is_ent"])),
                                 cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
                                 web_search=r["ws"] or 0)
         dd["cost"] += req_cost

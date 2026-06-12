@@ -29,6 +29,19 @@ ENTERPRISE_ORG_TYPES = _csv_env("ENTERPRISE_ORG_TYPES", "claude_enterprise,claud
 ENTERPRISE_ORG_UUIDS = _csv_env("ENTERPRISE_ORG_UUIDS")
 ENTERPRISE_EMAIL_DOMAINS = _csv_env("ENTERPRISE_EMAIL_DOMAINS")
 
+# US-residency assumption: Claude Code transcripts stamp inference_geo
+# 'not_available' on ALL subscription traffic, so a US-pinned workspace
+# (1.1x on every token category, Opus/Sonnet 4.6+) is invisible to us.
+# TOKENFOLD_ENTERPRISE_GEO=us bills enterprise-classified usage at the US
+# rate at COMPUTE TIME — raw events are never modified; revert by clearing
+# the env (stored daily rollups need a re-roll either way).
+_assume_geo = os.environ.get("TOKENFOLD_ENTERPRISE_GEO", "").strip().lower()
+if _assume_geo not in ("", "us"):
+    print(f"[config] WARNING: TOKENFOLD_ENTERPRISE_GEO={_assume_geo!r} "
+          "unsupported (only 'us') — ignored")
+    _assume_geo = ""
+ENTERPRISE_ASSUME_GEO = _assume_geo
+
 
 def _sql_in(col, values):
     quoted = ",".join("'" + v.replace("'", "''") + "'" for v in values)

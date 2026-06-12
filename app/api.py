@@ -16,7 +16,7 @@ from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
-from .pricing import compute_cost, display_model
+from .pricing import compute_cost, display_model, effective_geo
 
 
 def _scrub_to_minute(iso_str: str) -> str:
@@ -145,7 +145,9 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         c = compute_cost(
             dm, r["inp"] or 0, r["outp"] or 0,
             r["cc"] or 0, r["cr"] or 0,
-            r["speed"], r["inference_geo"],
+            r["speed"],
+            effective_geo(r["inference_geo"],
+                          enterprise=(effective == "enterprise")),
             cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
             web_search=r["ws"] or 0)
         if c > 0:

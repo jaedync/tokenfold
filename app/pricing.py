@@ -56,6 +56,19 @@ FAST_OPUS_BASE = {
 }
 GEO_US_MULT = 1.1
 
+
+def effective_geo(inference_geo, *, enterprise: bool):
+    """The geo to bill at. Transcripts stamp 'not_available' on subscription
+    traffic, so a US-pinned enterprise workspace is invisible — when the
+    instance assumes US residency (config.ENTERPRISE_ASSUME_GEO == 'us'),
+    enterprise usage bills at the US rate regardless of the recorded value.
+    Reads config at call time so the assumption is flip-able without restarts
+    in tests (prod flips via env + container restart + day re-roll)."""
+    import app.config as config
+    if enterprise and config.ENTERPRISE_ASSUME_GEO == "us":
+        return "us"
+    return inference_geo
+
 # Server tools: web search bills a flat $10 per 1,000 requests ON TOP of token
 # cost (web fetch is free — its fetched-content tokens are already in usage).
 # Model-independent, and per-request fees take no geo/fast multipliers.

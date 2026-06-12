@@ -22,7 +22,8 @@ from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
-    display_model, get_pricing, is_priced, load_pricing, model_sort_key,
+    display_model, effective_geo, get_pricing, is_priced, load_pricing,
+    model_sort_key,
 )
 from .water import compute_energy_wh, compute_water_ml
 
@@ -263,7 +264,7 @@ def _tiered_cw_cost(cw, c1h, p):
     return c5 + c1
 
 
-def _build_recent_sessions(conn, pred, limit=25):
+def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
     """Per-session rollup over the recent window: cost, tokens, wall duration,
     burn rate ($/hr). Titles come from desktop_sessions (Claude Desktop pushes
     those); CLI sessions show their project instead. Scope-partitioned via pred.
@@ -310,7 +311,8 @@ def _build_recent_sessions(conn, pred, limit=25):
         })
         dm = display_model(r["model"])
         c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
-                         r["cr"] or 0, r["speed"], r["inference_geo"],
+                         r["cr"] or 0, r["speed"],
+                         effective_geo(r["inference_geo"], enterprise=enterprise),
                          cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
                          web_search=r["ws"] or 0)
         st["cost"] += c
@@ -394,6 +396,13 @@ def build_dashboard_data(scope: str = DEFAULT_SCOPE) -> dict:
     return data
 
 
+def _geo_assumed(scope: str) -> bool:
+    """True when this enterprise view bills at the assumed US 1.1x rate —
+    surfaced in the payload so the UI can disclose the assumption."""
+    import app.config as _config
+    return scope == "enterprise" and _config.ENTERPRISE_ASSUME_GEO == "us"
+
+
 def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
     """Return the dashboard structure with no data (used when no summaries exist)."""
     now = datetime.now(TZ)
@@ -429,6 +438,7 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
         # Readings are first-class data, independent of daily summaries — they
         # must survive the no-summaries-yet path (e.g. a fresh enterprise view).
         "billing_readings": build_readings_payload(get_conn(), scope),
+        "geo_assumed": _geo_assumed(scope),
     }
 
 
@@ -472,7 +482,7 @@ def _merge_summary_rows(rows) -> dict:
     return merged
 
 
-def _build_hourly(conn, pred: str) -> list[dict]:
+def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
     """Build the 24-slot hourly activity grid from live event data (48h window)."""
     now_h = datetime.now(TZ)
     current_hour_num = now_h.hour
@@ -544,7 +554,8 @@ def _build_hourly(conn, pred: str) -> list[dict]:
             dm = display_model(r["model"])
             hourly_list[idx]["cost"] += compute_cost(
                 dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
-                r["speed"], r["inference_geo"],
+                r["speed"],
+                effective_geo(r["inference_geo"], enterprise=enterprise),
                 cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
                 web_search=r["ws"] or 0)
 
@@ -1102,10 +1113,11 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     sessions_count = tot["sessions"]
 
     # ── Hourly (live query) ──
-    hourly_list = _build_hourly(conn, pred)
+    hourly_list = _build_hourly(conn, pred, enterprise=(scope == "enterprise"))
 
     # ── Recent sessions (burn rate per task) ──
-    recent_sessions = _build_recent_sessions(conn, pred)
+    recent_sessions = _build_recent_sessions(
+        conn, pred, enterprise=(scope == "enterprise"))
 
     # ── Project display names ──
     _top_project_dirs = sorted(project_cost, key=lambda x: -project_cost[x])[:15]
@@ -1174,6 +1186,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "scope": scope,
         "month_cost": month_cost,
         "billing_readings": build_readings_payload(conn, scope),
+        "geo_assumed": _geo_assumed(scope),
         "month_label": month_label,
     }
 

@@ -7,7 +7,7 @@ then sums costs across models using pricing.compute_cost().
 import sqlite3
 
 from .config import DEFAULT_SCOPE, scope_predicate
-from .pricing import compute_cost, display_model
+from .pricing import compute_cost, display_model, effective_geo
 
 
 def compute_window_cost(
@@ -58,7 +58,7 @@ def compute_window_cost(
             r["cc"] or 0,
             r["cr"] or 0,
             r["speed"],
-            r["inference_geo"],
+            effective_geo(r["inference_geo"], enterprise=(scope == "enterprise")),
             cw_5m=r["c5m"] or 0,
             cw_1h=r["c1h"] or 0,
             web_search=r["ws"] or 0,

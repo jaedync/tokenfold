@@ -3877,6 +3877,12 @@ function renderMode(mode) {
     if(monthLabelEl && monthLabelText) {
       monthLabelEl.textContent = 'MONTH TO DATE · ' + monthLabelText;
     }
+    // honesty label: this instance bills enterprise usage at an ASSUMED
+    // US-residency rate (transcripts can't tell us where inference ran)
+    if(D && D.geo_assumed){
+      var noteEl = section.querySelector('.month-counter-note');
+      if(noteEl) noteEl.textContent = 'raw API pricing · US residency 1.1x assumed';
+    }
     if(monthCostEl) {
       if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         monthCostEl.textContent = fC(rawMonthCost);
