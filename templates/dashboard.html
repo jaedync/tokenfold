@@ -2181,6 +2181,31 @@ th[data-info]:focus::after { opacity: 1; }
   font-size:14px;line-height:1;padding:0 4px}
 .br-del:hover{color:#e63329}
 .br-since,.br-empty,.br-legend{font-size:11px;color:var(--gray-dim);margin-top:8px}
+
+/* ── Section reorder (drag-and-drop) ──
+   Each .tf-section gets a grip injected at boot; order persists per browser
+   (localStorage tf_section_order) and echoes to the console after changes. */
+.tf-section{position:relative}
+.tf-drag{position:absolute;top:12px;right:12px;z-index:10;width:30px;height:30px;
+  display:flex;align-items:center;justify-content:center;padding:0;
+  border:2px solid var(--black);background:var(--bg);color:var(--black);
+  font-size:14px;line-height:1;cursor:grab;opacity:0;
+  transition:opacity .15s ease-out,background .15s ease-out}
+.tf-section:hover .tf-drag,.tf-drag:focus-visible{opacity:1}
+.tf-drag:hover,.tf-drag:focus-visible{background:var(--yellow)}
+.tf-drag:active{cursor:grabbing}
+/* the reference accordion has its expand arrow at top-right — sit beside it */
+.tf-section[data-section="reference"] .tf-drag{right:56px;top:50%;margin-top:-15px}
+.tf-section.tf-dragging{opacity:.35;outline:3px dashed var(--black);outline-offset:-3px}
+#tfDropBar{position:absolute;left:0;right:0;height:4px;background:var(--red);
+  z-index:999;pointer-events:none;display:none}
+.tf-chip{position:fixed;top:-100px;left:-100px;padding:8px 14px;
+  border:3px solid var(--black);background:var(--yellow);color:var(--black);
+  font-family:var(--font-display);font-size:.7rem;text-transform:uppercase;
+  letter-spacing:.08em;white-space:nowrap}
+/* native HTML5 DnD never fires on touch — no dead affordance there */
+@media (pointer:coarse){.tf-drag{display:none}}
+@media (prefers-reduced-motion: reduce){.tf-drag{transition:none}}
 </style>
 </head>
 <body>
@@ -2260,6 +2285,7 @@ th[data-info]:focus::after { opacity: 1; }
   <a href="#reference">Reference</a>
 </nav>
 <!-- ======== COST HERO ======== -->
+<div class="tf-section" data-section="cost">
 <div class="cost-hero" id="cost">
   <div class="cost-hero-circle"></div>
   <div class="cost-hero-main">
@@ -2362,9 +2388,11 @@ th[data-info]:focus::after { opacity: 1; }
     </div>
   </div>
 </div>
+</div><!-- /tf cost -->
 <!-- ======== MONTH-TO-DATE COST PANEL ======== -->
 <!-- statically visible: the month hero renders from embedded data at boot,
      and hiding-until-JS made the whole page jump on slow networks -->
+<div class="tf-section" data-section="limits">
 <div id="rateLimitsSection" class="rate-limits">
   <div class="rate-limits-header">
     <div class="rate-limits-header-bar"></div>
@@ -2430,8 +2458,12 @@ th[data-info]:focus::after { opacity: 1; }
     </div>
   </div>
 </div>
+</div><!-- /tf limits -->
 <!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
+<div class="tf-section" data-section="stats">
 <div class="stats-grid">{{ cards_html|safe }}</div>
+</div><!-- /tf stats -->
+<div class="tf-section" data-section="sessions">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== SESSIONS / BURN RATE ======== -->
@@ -2448,7 +2480,9 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
   <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window (14 days). Titles are AI-generated summaries; untitled sessions show their project.</div>
 </div>
+</div><!-- /tf sessions -->
 <!-- ======== ACTIVITY (calendar + hourly) ======== -->
+<div class="tf-section" data-section="activity">
 <div class="panel" style="border-bottom:var(--border)" id="activity">
   <div class="section-header">
     <div class="section-header-bar"></div>
@@ -2464,6 +2498,8 @@ th[data-info]:focus::after { opacity: 1; }
   <div id="hourlyHeatmap" class="hourly-grid"></div>
   <div id="hourlyLegend" class="hm-legend"></div>
 </div>
+</div><!-- /tf activity -->
+<div class="tf-section" data-section="trends">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== DAILY ACTIVITY ======== -->
@@ -2489,6 +2525,8 @@ th[data-info]:focus::after { opacity: 1; }
     <canvas id="cTokens" aria-label="Daily token breakdown stacked bars" role="img"></canvas>
   </div>
 </div>
+</div><!-- /tf trends -->
+<div class="tf-section" data-section="models">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== MODELS: COST BY MODEL + TIME BREAKDOWN ======== -->
@@ -2526,6 +2564,8 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
   <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Costs use published Anthropic API rates (see Reference below). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
 </div>
+</div><!-- /tf models -->
+<div class="tf-section" data-section="machines">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== MACHINES ======== -->
@@ -2563,6 +2603,8 @@ th[data-info]:focus::after { opacity: 1; }
     </table>
   </div>
 </div>
+</div><!-- /tf machines -->
+<div class="tf-section" data-section="tools">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== TOOL USAGE ======== -->
@@ -2583,6 +2625,8 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
   <div class="chart-wrap chart-wrap--mid"><canvas id="cProjects" aria-label="Project activity cost bars" role="img"></canvas></div>
 </div>
+</div><!-- /tf tools -->
+<div class="tf-section" data-section="daily">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== DAILY BREAKDOWN TABLE ======== -->
@@ -2599,7 +2643,9 @@ th[data-info]:focus::after { opacity: 1; }
     </table>
   </div>
 </div>
+</div><!-- /tf daily -->
 <!-- ======== REFERENCE (collapsed accordion: static Anthropic data) ======== -->
+<div class="tf-section" data-section="reference">
 <details class="ref-accordion" id="reference">
   <summary>
     <span class="ref-accordion-title">Reference</span>
@@ -2639,6 +2685,165 @@ th[data-info]:focus::after { opacity: 1; }
   <div id="cphWrap" class="chart-wrap" style="min-height:220px"></div>
 </div>
 </details>
+</div><!-- /tf reference -->
+<script>
+/* ── Section reorder ──
+   Drag a section's grip (top-right, shown on hover) or focus it and use the
+   arrow keys. Runs here — right after the last section — so a saved order is
+   applied during parse, before first paint reaches the sections. */
+(function(){
+  'use strict';
+  const KEY='tf_section_order';
+  const secs=()=>Array.from(document.querySelectorAll('.tf-section'));
+  const DEFAULT_ORDER=secs().map(s=>s.dataset.section);
+  const REDUCED=window.matchMedia('(prefers-reduced-motion: reduce)');
+  const order=()=>secs().map(s=>s.dataset.section);
+  const byId=id=>document.querySelector('.tf-section[data-section="'+id+'"]');
+
+  function syncJumpNav(){
+    const nav=document.querySelector('.jump-nav'); if(!nav) return;
+    const anchors=Array.from(nav.querySelectorAll('a'));
+    secs().forEach(sec=>{
+      const a=anchors.find(x=>{
+        try{return sec.querySelector(x.getAttribute('href'));}catch(e){return false;}
+      });
+      if(a) nav.appendChild(a);
+    });
+  }
+
+  function applySectionOrder(saved){
+    if(!Array.isArray(saved)) return;
+    // a stale order from an older template must never lose sections:
+    // unknown ids drop, missing ids keep their default slot
+    const known=saved.filter(id=>DEFAULT_ORDER.indexOf(id)>=0);
+    const full=known.concat(DEFAULT_ORDER.filter(id=>known.indexOf(id)<0));
+    if(full.join()===order().join()) return;
+    const all=secs(), parent=all[0].parentNode, ref=all[all.length-1].nextSibling;
+    full.forEach(id=>{const el=byId(id); if(el) parent.insertBefore(el,ref);});
+  }
+
+  function persist(){
+    const o=order();
+    try{localStorage.setItem(KEY,JSON.stringify(o));}catch(e){}
+    console.log('[tokenfold] section order: '+o.join(', '));
+    syncJumpNav();
+  }
+
+  /* FLIP: sections glide to their new slots instead of teleporting */
+  function withFlip(mutate){
+    if(REDUCED.matches){mutate();return;}
+    const all=secs();
+    const before=new Map(all.map(el=>[el,el.getBoundingClientRect().top]));
+    mutate();
+    all.forEach(el=>{
+      const dy=before.get(el)-el.getBoundingClientRect().top;
+      if(!dy) return;
+      el.style.transition='none';
+      el.style.transform='translateY('+dy+'px)';
+      requestAnimationFrame(()=>{
+        el.style.transition='transform .3s cubic-bezier(.22,1,.36,1)';
+        el.style.transform='';
+        el.addEventListener('transitionend',()=>{el.style.transition='';},{once:true});
+      });
+    });
+  }
+
+  function moveBefore(sec,ref){            // ref: element, or null = end
+    const prev=order().join();
+    withFlip(()=>{
+      const parent=sec.parentNode;
+      if(ref){parent.insertBefore(sec,ref);}
+      else{const rest=secs().filter(s=>s!==sec);
+           parent.insertBefore(sec,rest[rest.length-1].nextSibling);}
+    });
+    if(order().join()!==prev) persist();
+  }
+
+  // grip handles (injected so the markup stays clean)
+  secs().forEach(sec=>{
+    const h=document.createElement('button');
+    h.type='button'; h.className='tf-drag'; h.textContent='⣿';
+    h.title='Drag to reorder · arrow keys move';
+    h.setAttribute('aria-label',
+      'Reorder the '+sec.dataset.section+' section: drag, or press arrow up or down');
+    h.addEventListener('mousedown',()=>{sec.draggable=true;});
+    h.addEventListener('keydown',e=>{
+      const dir=e.key==='ArrowUp'?-1:(e.key==='ArrowDown'?1:0);
+      if(!dir) return;
+      e.preventDefault();
+      const all=secs(), i=all.indexOf(sec), j=i+dir;
+      if(j<0||j>=all.length) return;
+      moveBefore(sec,dir<0?all[j]:(j+1<all.length?all[j+1]:null));
+      h.focus();
+    });
+    sec.appendChild(h);
+  });
+
+  // native HTML5 drag-and-drop, delegated at the document
+  const bar=document.createElement('div'); bar.id='tfDropBar';
+  document.body.appendChild(bar);
+  let dragging=null, dropRef, chip=null;
+
+  document.addEventListener('dragstart',e=>{
+    const sec=e.target&&e.target.closest?e.target.closest('.tf-section'):null;
+    if(!sec||!sec.draggable) return;
+    dragging=sec; dropRef=undefined;
+    e.dataTransfer.effectAllowed='move';
+    try{e.dataTransfer.setData('text/plain',sec.dataset.section);}catch(_){}
+    // default drag image would be a screenshot of the whole section —
+    // a compact name chip keeps the gesture legible
+    chip=document.createElement('div'); chip.className='tf-chip';
+    const h2=sec.querySelector('h2');
+    chip.textContent=h2?h2.textContent.trim():sec.dataset.section;
+    document.body.appendChild(chip);
+    try{e.dataTransfer.setDragImage(chip,18,18);}catch(_){}
+    requestAnimationFrame(()=>sec.classList.add('tf-dragging'));
+  });
+
+  document.addEventListener('dragover',e=>{
+    if(!dragging) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='move';
+    const others=secs().filter(s=>s!==dragging);
+    dropRef=null;
+    for(const s of others){
+      const r=s.getBoundingClientRect();
+      if(e.clientY<r.top+r.height/2){dropRef=s;break;}
+    }
+    const y=dropRef?dropRef.getBoundingClientRect().top
+                   :others[others.length-1].getBoundingClientRect().bottom;
+    bar.style.display='block';
+    bar.style.top=(y+window.scrollY-2)+'px';
+  });
+
+  document.addEventListener('drop',e=>{
+    if(!dragging) return;
+    e.preventDefault();
+    if(dropRef!==undefined) moveBefore(dragging,dropRef);
+  });
+
+  document.addEventListener('dragend',()=>{
+    if(!dragging) return;
+    dragging.classList.remove('tf-dragging');
+    dragging.draggable=false;
+    dragging=null; dropRef=undefined;
+    bar.style.display='none';
+    if(chip){chip.remove();chip=null;}
+  });
+
+  // a mousedown on the grip that never becomes a drag must not leave the
+  // section draggable (it would hijack text selection inside it)
+  document.addEventListener('mouseup',()=>{
+    if(!dragging) secs().forEach(s=>{s.draggable=false;});
+  });
+
+  // boot: apply this client's saved order
+  try{
+    const saved=JSON.parse(localStorage.getItem(KEY)||'null');
+    if(saved){applySectionOrder(saved);syncJumpNav();}
+  }catch(e){}
+})();
+</script>
 <!-- ======== FOOTER ======== -->
 <footer class="footer">
   <div class="footer-left">
