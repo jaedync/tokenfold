@@ -198,26 +198,36 @@ def invalidate_cache():
     trigger_eager_rebuild()
 
 
+_cache_gen = 0
+
+
 def trigger_eager_rebuild():
     """Rebuild cache in background thread. Serves previous cache during rebuild.
 
-    Clears the entire scope-keyed cache on invalidation, then pre-warms the
-    DEFAULT_SCOPE slot so the common path stays warm.
+    Invalidation (version bump + cache clear) happens UNCONDITIONALLY — even
+    when a rebuild is already in flight. The original early-return made a
+    write that raced an ingest rebuild invisible until the next unrelated
+    invalidation. The generation counter makes a completing rebuild discard
+    its result if another invalidation landed while it was building, so it
+    can never write pre-invalidation data back into the cache.
     """
-    global _rebuilding
+    global _rebuilding, _cache_gen
     with _cache_lock:
-        if _rebuilding:
-            return  # rebuild already in progress
-        _rebuilding = True
+        _cache_gen += 1
+        gen = _cache_gen
         _cache_version_bump()
         _cached_data.clear()  # invalidate all scopes immediately
+        if _rebuilding:
+            return  # in-flight rebuild's result will fail the gen check
+        _rebuilding = True
 
     def _rebuild():
         global _rebuilding
         try:
             data = _build_dashboard_data_inner(DEFAULT_SCOPE)
             with _cache_lock:
-                _cached_data[DEFAULT_SCOPE] = data
+                if _cache_gen == gen:  # stale if invalidated again meanwhile
+                    _cached_data[DEFAULT_SCOPE] = data
         finally:
             with _cache_lock:
                 _rebuilding = False

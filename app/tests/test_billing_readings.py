@@ -115,6 +115,19 @@ class ReadingsCrudTest(_ReadingsBase):
             .fetchone()["c"], 0)
         self.assertEqual(self._delete(rid).status_code, 404)
 
+    def test_write_responses_carry_fresh_readings_list(self):
+        """The dashboard renders the new state straight from the write
+        response — it must never depend on the (racy) dashboard cache."""
+        b1 = self._post({"amount_usd": 100.0}).json()
+        self.assertEqual(len(b1["readings"]), 1)
+        b2 = self._post({"amount_usd": 110.0}).json()
+        self.assertEqual(len(b2["readings"]), 2)
+        newest = b2["readings"][0]  # newest first, deltas precomputed
+        self.assertAlmostEqual(newest["amount_usd"], 110.0, places=2)
+        self.assertAlmostEqual(newest["delta_official"], 10.0, places=2)
+        d = self._delete(b2["id"]).json()
+        self.assertEqual(len(d["readings"]), 1)
+
 
 class ReadingsPayloadTest(_ReadingsBase):
 
@@ -225,6 +238,20 @@ class ReadingsTemplateTest(unittest.TestCase):
         """Global `thead th` is position:sticky for the scroll-wrapped data
         tables; inside this panel it detaches and floats — must be static."""
         self.assertIn(".br-table thead th{position:static", self.html)
+
+    def test_confirmed_coverage_summary(self):
+        """Aggregate confirmed metric: sum of measured interval deltas over
+        sum of official interval deltas, shown above the table."""
+        self.assertIn("br-summary", self.html)
+        self.assertIn("CONFIRMED COVERAGE", self.html)
+
+    def test_write_handlers_render_from_response(self):
+        """Record/delete must re-render from the write response's `readings`
+        (cache-independent), not only via a /api/stats refetch."""
+        import re
+        block = re.search(r"function refreshBillingReadings[\s\S]{0,3000}",
+                          self.html).group(0)
+        self.assertIn(".readings", block)
 
     def test_note_rendered_through_esc(self):
         # the renderer must escape user-entered note text

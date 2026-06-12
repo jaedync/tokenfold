@@ -69,6 +69,9 @@ async def record_reading(req: BillingReadingRequest):
         "month": now.strftime("%Y-%m"),
         "recorded_at": now.isoformat(),
         "note": note,
+        # fresh full list straight from the DB: the dashboard renders this
+        # directly so a racy dashboard-cache rebuild can never hide the write
+        "readings": build_readings_payload(conn, "enterprise"),
     }
 
 
@@ -84,7 +87,8 @@ async def delete_reading(reading_id: int):
 
     from .aggregator import trigger_eager_rebuild
     trigger_eager_rebuild()
-    return {"deleted": reading_id}
+    return {"deleted": reading_id,
+            "readings": build_readings_payload(conn, "enterprise")}
 
 
 def build_readings_payload(conn, scope: str, limit: int = 50) -> list[dict]:

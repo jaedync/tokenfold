@@ -2181,6 +2181,11 @@ th[data-info]:focus::after { opacity: 1; }
   font-size:14px;line-height:1;padding:0 4px}
 .br-del:hover{color:#e63329}
 .br-since,.br-empty,.br-legend{font-size:11px;color:var(--gray-dim);margin-top:8px}
+.br-summary{display:flex;align-items:baseline;gap:14px;margin:10px 0 14px;
+  padding:10px 14px;border:2px solid var(--black);background:var(--bg)}
+.br-summary-pct{font-family:var(--font-display);font-size:1.5rem;line-height:1}
+.br-summary-text{font-size:.72rem;color:var(--gray-dim)}
+.br-summary-text b{color:var(--black)}
 
 /* ── Section reorder (drag-and-drop) ──
    Each .tf-section gets a grip injected at boot; order persists per browser
@@ -5056,6 +5061,20 @@ function renderBillingReadings(){
   const dash='—';
   // signed currency for the gap: official − tokenfold (+ = Anthropic bills more than we see)
   const fS=v=>(v<0?'−':'+')+fC(Math.abs(v));
+  // confirmed coverage: aggregate over every interval with a real official
+  // delta — the headline answer to "how much of real billing do we see?"
+  const conf=rows.filter(r=>r.coverage_pct!=null);
+  let summary='';
+  if(conf.length){
+    const dOff=conf.reduce((a,r)=>a+r.delta_official,0);
+    const dMeas=conf.reduce((a,r)=>a+r.delta_measured,0);
+    summary='<div class="br-summary">'
+      +'<span class="br-summary-pct">'+(100*dMeas/dOff).toFixed(1)+'%</span>'
+      +'<span class="br-summary-text"><b>CONFIRMED COVERAGE</b> — tokenfold measured <b>'
+      +fC(dMeas)+'</b> of <b>'+fC(dOff)+'</b> official growth over '
+      +conf.length+' confirmed interval'+(conf.length>1?'s':'')
+      +' · gap '+fS(dOff-dMeas)+'</span></div>';
+  }
   let h='<table class="br-table"><thead>'
     +'<tr><th class="br-corner"></th>'
     +'<th colspan="3" class="br-group br-sep">AT THIS READING</th>'
@@ -5088,12 +5107,13 @@ function renderBillingReadings(){
     h+='<div class="br-since">tokenfold has measured <b>'+fC(rows[0].measured_since)+'</b> since the newest reading — record the org console figure again to add a coverage point</div>';
   }
   h+='<div class="br-legend">Δ columns compare consecutive readings within the same UTC month · — means no comparable previous reading</div>';
-  wrap.innerHTML=h;
+  wrap.innerHTML=summary+h;
   wrap.querySelectorAll('.br-del').forEach(b=>{
     b.onclick=()=>{
       if(!confirm('Delete this reading?'))return;
       fetch('/api/billing-readings/'+encodeURIComponent(b.dataset.id),{method:'DELETE'})
-        .then(r=>{if(!r.ok)throw 0;return refreshBillingReadings();})
+        .then(r=>{if(!r.ok)throw 0;return r.json();})
+        .then(applyReadingsResponse)
         .catch(()=>brStatus('delete failed'));
     };
   });
@@ -5107,6 +5127,17 @@ function refreshBillingReadings(){
     .then(r=>r.json())
     .then(data=>{D.billing_readings=data.billing_readings||[];renderBillingReadings();});
 }
+// Write responses carry the fresh list straight from the DB — render that
+// directly. A /api/stats refetch can race the dashboard-cache rebuild and
+// serve the pre-write payload (the "new reading doesn't appear" bug).
+function applyReadingsResponse(body){
+  if(body&&Array.isArray(body.readings)){
+    D.billing_readings=body.readings;
+    renderBillingReadings();
+    return;
+  }
+  return refreshBillingReadings();
+}
 (function(){
   const btn=document.getElementById('brRecordBtn');
   if(!btn)return;
@@ -5118,8 +5149,9 @@ function refreshBillingReadings(){
     btn.disabled=true;
     fetch('/api/billing-readings',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({amount_usd:amt,note:note||null})})
-      .then(r=>{if(!r.ok)throw 0;amtEl.value='';document.getElementById('brNote').value='';
-        brStatus('recorded ✓');return refreshBillingReadings();})
+      .then(r=>{if(!r.ok)throw 0;return r.json();})
+      .then(b=>{amtEl.value='';document.getElementById('brNote').value='';
+        brStatus('recorded ✓');return applyReadingsResponse(b);})
       .catch(()=>brStatus('record failed'))
       .finally(()=>{btn.disabled=false;});
   };
