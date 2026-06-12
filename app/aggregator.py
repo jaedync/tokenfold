@@ -295,6 +295,8 @@ def _build_recent_sessions(conn, pred, limit=25):
             "min_ts": r["min_ts"], "max_ts": r["max_ts"],
             "machine": r["machine"], "project_dir": r["project_dir"],
             "_model_cost": {},
+            "_parts": {"input": 0.0, "output": 0.0, "cache_5m": 0.0,
+                       "cache_1h": 0.0, "cache_read": 0.0, "web_search": 0.0},
         })
         dm = display_model(r["model"])
         c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
@@ -303,6 +305,19 @@ def _build_recent_sessions(conn, pred, limit=25):
                          web_search=r["ws"] or 0)
         st["cost"] += c
         st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
+        # per-kind dollar parts for the expanded row's cost-mix card — same
+        # list-price convention as the model breakdown (no geo/fast modifiers)
+        parts = st["_parts"]
+        p = get_pricing(dm)
+        if p:
+            c5, c1 = _tiered_cw_parts(r["cc"] or 0, r["c1h"] or 0, p)
+            parts["input"] += (r["inp"] or 0) * p[0] / 1e6
+            parts["output"] += (r["outp"] or 0) * p[1] / 1e6
+            parts["cache_5m"] += c5
+            parts["cache_1h"] += c1
+            parts["cache_read"] += (r["cr"] or 0) * p[3] / 1e6
+        # the web-search fee is model-independent and bills even unpriced models
+        parts["web_search"] += (r["ws"] or 0) * _WS_FEE
         st["total_tokens"] += (r["inp"] or 0) + (r["outp"] or 0) + (r["cc"] or 0) + (r["cr"] or 0)
         st["input"] += r["inp"] or 0
         st["output"] += r["outp"] or 0
@@ -351,6 +366,7 @@ def _build_recent_sessions(conn, pred, limit=25):
             "duration_s": round(duration_s),
             "burn_per_hr": burn,
             "last_ts": st["max_ts"],
+            "cost_parts": {k: round(v, 4) for k, v in st["_parts"].items()},
         })
     return out
 

@@ -26,6 +26,14 @@ class SectionWrapperTest(unittest.TestCase):
     def test_wrapper_count_matches_units(self):
         self.assertEqual(HTML.count('class="tf-section"'), len(UNITS))
 
+    def test_server_default_order(self):
+        """Jaedyn's promoted layout (2026-06-12) is the shipped default."""
+        order = re.findall(r'<div class="tf-section" data-section="(\w+)">',
+                           HTML)
+        self.assertEqual(order, ["stats", "cost", "activity", "limits",
+                                 "sessions", "trends", "models", "machines",
+                                 "tools", "daily", "reference"])
+
     def test_wrappers_open_and_close_balanced(self):
         # crude but effective: the section-wrap region must not change the
         # total div balance of the page

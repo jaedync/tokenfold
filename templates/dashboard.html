@@ -2206,6 +2206,21 @@ th[data-info]:focus::after { opacity: 1; }
 /* native HTML5 DnD never fires on touch — no dead affordance there */
 @media (pointer:coarse){.tf-drag{display:none}}
 @media (prefers-reduced-motion: reduce){.tf-drag{transition:none}}
+
+/* ── Live session badge (last activity < 2 min) ── */
+.sess-live{color:var(--red);font-weight:700;font-size:.68rem;
+  letter-spacing:.08em;display:inline-flex;align-items:center;gap:6px}
+.sess-live-dot{width:8px;height:8px;background:var(--red);display:inline-block;
+  animation:tfPulse 1.2s ease-in-out infinite}
+@keyframes tfPulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.sess-live-dot{animation:none}}
+
+/* ── Per-session cost-mix card (expanded row) ── */
+.sess-cost-bar{display:flex;height:14px;border:2px solid var(--black);
+  margin:8px 0 10px;overflow:hidden}
+.sess-cost-bar span{display:block;height:100%;min-width:1px}
+.sess-cost-swatch{display:inline-block;width:9px;height:9px;
+  border:1px solid var(--black);margin-right:6px}
 </style>
 </head>
 <body>
@@ -2274,9 +2289,9 @@ th[data-info]:focus::after { opacity: 1; }
 <!-- ======== JUMP NAV (sticky) ======== -->
 <nav class="jump-nav" aria-label="Page sections">
   <a href="#cost">Cost</a>
+  <a href="#activity">Activity</a>
   <a href="#rateLimitsSection">Limits</a>
   <a href="#sessions">Sessions</a>
-  <a href="#activity">Activity</a>
   <a href="#trends">Trends</a>
   <a href="#models">Models</a>
   <a href="#machines">Machines</a>
@@ -2284,6 +2299,10 @@ th[data-info]:focus::after { opacity: 1; }
   <a href="#daily">Daily</a>
   <a href="#reference">Reference</a>
 </nav>
+<!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
+<div class="tf-section" data-section="stats">
+<div class="stats-grid">{{ cards_html|safe }}</div>
+</div><!-- /tf stats -->
 <!-- ======== COST HERO ======== -->
 <div class="tf-section" data-section="cost">
 <div class="cost-hero" id="cost">
@@ -2389,6 +2408,24 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
 </div>
 </div><!-- /tf cost -->
+<!-- ======== ACTIVITY (calendar + hourly) ======== -->
+<div class="tf-section" data-section="activity">
+<div class="panel" style="border-bottom:var(--border)" id="activity">
+  <div class="section-header">
+    <div class="section-header-bar"></div>
+    <h2>Activity</h2>
+    <span class="period-chip">all time</span>
+  </div>
+  <div id="activityHeatmap" style="overflow-x:auto;padding:4px 0 8px;margin-top:1.5rem" role="img" aria-label="Calendar heatmap of daily cost"></div>
+  <div id="heatmapLegend" class="hm-legend"></div>
+  <div class="section-subheader">
+    <span>Hourly</span>
+    <span class="period-chip">last 24h</span>
+  </div>
+  <div id="hourlyHeatmap" class="hourly-grid"></div>
+  <div id="hourlyLegend" class="hm-legend"></div>
+</div>
+</div><!-- /tf activity -->
 <!-- ======== MONTH-TO-DATE COST PANEL ======== -->
 <!-- statically visible: the month hero renders from embedded data at boot,
      and hiding-until-JS made the whole page jump on slow networks -->
@@ -2459,10 +2496,6 @@ th[data-info]:focus::after { opacity: 1; }
   </div>
 </div>
 </div><!-- /tf limits -->
-<!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
-<div class="tf-section" data-section="stats">
-<div class="stats-grid">{{ cards_html|safe }}</div>
-</div><!-- /tf stats -->
 <div class="tf-section" data-section="sessions">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
@@ -2481,24 +2514,6 @@ th[data-info]:focus::after { opacity: 1; }
   <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Burn rate per task over the recent window (14 days). Titles are AI-generated summaries; untitled sessions show their project.</div>
 </div>
 </div><!-- /tf sessions -->
-<!-- ======== ACTIVITY (calendar + hourly) ======== -->
-<div class="tf-section" data-section="activity">
-<div class="panel" style="border-bottom:var(--border)" id="activity">
-  <div class="section-header">
-    <div class="section-header-bar"></div>
-    <h2>Activity</h2>
-    <span class="period-chip">all time</span>
-  </div>
-  <div id="activityHeatmap" style="overflow-x:auto;padding:4px 0 8px;margin-top:1.5rem" role="img" aria-label="Calendar heatmap of daily cost"></div>
-  <div id="heatmapLegend" class="hm-legend"></div>
-  <div class="section-subheader">
-    <span>Hourly</span>
-    <span class="period-chip">last 24h</span>
-  </div>
-  <div id="hourlyHeatmap" class="hourly-grid"></div>
-  <div id="hourlyLegend" class="hm-legend"></div>
-</div>
-</div><!-- /tf activity -->
 <div class="tf-section" data-section="trends">
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
@@ -2837,11 +2852,13 @@ th[data-info]:focus::after { opacity: 1; }
     if(!dragging) secs().forEach(s=>{s.draggable=false;});
   });
 
-  // boot: apply this client's saved order
+  // boot: apply this client's saved order; always resync the nav so it
+  // tracks the section order no matter where the order came from
   try{
     const saved=JSON.parse(localStorage.getItem(KEY)||'null');
-    if(saved){applySectionOrder(saved);syncJumpNav();}
+    if(saved) applySectionOrder(saved);
   }catch(e){}
+  syncJumpNav();
 })();
 </script>
 <!-- ======== FOOTER ======== -->
@@ -4908,8 +4925,10 @@ function renderSessions(){
   if(!body) return;
   const rows = D.recent_sessions || [];
   // Skip rebuild when data unchanged — preserves expanded detail rows and
-  // scroll position inside .tbl-wrap across live refreshes (P2-24)
-  const key = JSON.stringify(rows);
+  // scroll position inside .tbl-wrap across live refreshes (P2-24).
+  // The minute bucket keeps the LIVE badge and relative times honest: a
+  // session that goes quiet must lose its badge even with no new data.
+  const key = JSON.stringify(rows) + '|' + Math.floor(Date.now()/60000);
   if(body._renderKey === key) return;
   body._renderKey = key;
   if(!rows.length){
@@ -4943,6 +4962,32 @@ function renderSessions(){
     ).join('') || '<div class="mb-stat"><span class="mb-label">'+dot+'</span></div>';
     const cpp = s.prompts > 0 ? fC(s.cost / s.prompts) : dot;
     const isOpen = _openSessions.has(s.session_id);
+    // a session active in the last 2 minutes is, for our purposes, live
+    const isLive = (Date.now()/1000 - s.last_ts) < 120;
+    const lastCell = isLive
+      ? '<span class="sess-live"><span class="sess-live-dot"></span>LIVE</span>'
+      : rel(s.last_ts);
+    // cost-mix card: per-kind dollar parts, same colors as the
+    // Cost-by-Model stacked chart
+    const PART_DEFS = [['input','Input','#1a4b8c'],['output','Output','#e63329'],
+      ['cache_5m','Cache 5m','#f5c518'],['cache_1h','Cache 1h','#d99000'],
+      ['cache_read','Cache Read','#8b8680'],['web_search','Web Search','#2e7d4f']];
+    const parts = s.cost_parts || {};
+    const pTotal = PART_DEFS.reduce((a,d)=>a+(parts[d[0]]||0), 0);
+    const fP = v => v >= 0.01 ? fC(v) : '<$0.01';
+    let costCard = '';
+    if(pTotal > 0){
+      const segs = PART_DEFS.filter(d=>(parts[d[0]]||0) > 0);
+      const bar = segs.map(d=>
+        '<span title="'+d[1]+' '+fP(parts[d[0]])+'" style="background:'+d[2]
+        +';flex:0 0 '+(100*parts[d[0]]/pTotal).toFixed(2)+'%"></span>').join('');
+      const partRows = segs.map(d=>
+        '<div class="mb-stat"><span class="mb-label"><span class="sess-cost-swatch" style="background:'
+        +d[2]+'"></span>'+d[1]+'</span><span>'+fP(parts[d[0]])+'</span></div>').join('');
+      costCard = '<div class="mb-group"><div class="mb-group-title">Cost Mix</div>'
+        +'<div class="sess-cost-bar" role="img" aria-label="Cost composition by usage kind">'+bar+'</div>'
+        +partRows+'</div>';
+    }
     return '<tr class="sess-row" onclick="toggleSess('+i+')" tabindex="0" aria-expanded="'+(isOpen?'true':'false')+'" style="cursor:pointer;--mc:'+mc+'">'
       +'<td title="'+esc(s.session_id)+'"><svg class="mb-arrow'+(isOpen?' open':'')+'" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+label+'</td>'
       +'<td><span class="sess-machine" style="border-bottom:2px solid '+mc+'">'+esc(s.machine||dot)+'</span></td>'
@@ -4951,7 +4996,7 @@ function renderSessions(){
       +'<td class="num" style="color:'+(s.cost>0?'var(--black)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
       +'<td class="num">'+dur(s.duration_s)+'</td>'
       +'<td class="num">'+burn+'</td>'
-      +'<td class="num">'+rel(s.last_ts)+'</td>'
+      +'<td class="num">'+lastCell+'</td>'
       +'</tr>'
       +'<tr class="mb-detail sess-detail" id="sessd'+i+'" data-sid="'+esc(s.session_id||'')+'" style="display:'+(isOpen?'':'none')+';--mc:'+mc+'"><td colspan="8">'
       +'<div class="mb-grid">'
@@ -4970,6 +5015,7 @@ function renderSessions(){
       +'<div class="mb-group"><div class="mb-group-title">Models</div>'
       +modelRows
       +'</div>'
+      +costCard
       +'<div class="mb-group"><div class="mb-group-title">Context</div>'
       +'<div class="mb-stat"><span class="mb-label">Project</span><span>'+esc(s.project||dot)+'</span></div>'
       +'<div class="mb-stat"><span class="mb-label">Session</span><span style="font-size:.6rem">'+esc((s.session_id||'').slice(0,8))+'</span></div>'

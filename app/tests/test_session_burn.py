@@ -97,12 +97,38 @@ class SessionBurnTest(TempDBTestCase):
 
 
 class TemplateSessionsUITest(unittest.TestCase):
-    def test_template_renders_sessions_section(self):
+    @classmethod
+    def setUpClass(cls):
         from pathlib import Path
-        tpl = (Path(__file__).resolve().parents[2] / "templates" / "dashboard.html").read_text()
-        self.assertIn("recent_sessions", tpl)
-        self.assertIn("sessionsBody", tpl)
-        self.assertIn("burn_per_hr", tpl)
+        cls.tpl = (Path(__file__).resolve().parents[2]
+                   / "templates" / "dashboard.html").read_text()
+
+    def test_template_renders_sessions_section(self):
+        self.assertIn("recent_sessions", self.tpl)
+        self.assertIn("sessionsBody", self.tpl)
+        self.assertIn("burn_per_hr", self.tpl)
+
+    def test_live_badge_for_sessions_active_within_2m(self):
+        self.assertIn("sess-live", self.tpl)
+        self.assertIn("LIVE", self.tpl)
+        self.assertIn("120", self.tpl)  # the 2-minute liveness threshold
+        # the pulse must stop under reduced motion
+        self.assertRegex(self.tpl,
+                         r"prefers-reduced-motion[^}]*\{[^}]*sess-live")
+
+    def test_cost_breakdown_card_in_expanded_row(self):
+        self.assertIn("cost_parts", self.tpl)
+        self.assertIn("sess-cost-bar", self.tpl)
+        for label in ("Cache 5m", "Cache 1h", "Cache Read", "Web Search"):
+            self.assertIn(label, self.tpl, label)
+
+    def test_render_key_includes_time_bucket(self):
+        """The unchanged-data rebuild skip must not freeze the LIVE badge or
+        relative times forever — the key carries a minute bucket."""
+        import re
+        renderer = re.search(r"function renderSessions[\s\S]{0,1500}",
+                             self.tpl).group(0)
+        self.assertIn("60000", renderer)
 
 
 if __name__ == "__main__":
@@ -186,6 +212,56 @@ class AiTitleCaptureTest(TempDBTestCase):
         ])
         n = self.conn.execute("SELECT COUNT(*) c FROM session_titles").fetchone()["c"]
         self.assertEqual(n, 0)
+
+
+class SessionCostPartsTest(TempDBTestCase):
+    """The expanded session row shows a cost-composition card. Parts use the
+    same list-price convention as the model breakdown (no geo/fast modifiers);
+    web-search fees count even for unpriced models."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ins_full(self, uuid, model, inp, outp, cc, cr, c5m, c1h, ws):
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
+            "request_id,source_machine,project_dir,model,is_sidechain,agent_id,"
+            "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
+            "cache_ephemeral_5m,cache_ephemeral_1h,web_search_requests,"
+            "is_human_prompt) "
+            "VALUES(?,'assistant','2026-06-09T12:00:00Z',?,'2026-06-09','sessA',?,"
+            "'mac1','projA',?,0,NULL,?,?,?,?,?,?,?,0)",
+            (uuid, NOW, "r-" + uuid, model, inp, outp, cc, cr, c5m, c1h, ws))
+        self.conn.commit()
+
+    def _session(self):
+        from app.summarizer import summarize_days
+        from app.aggregator import build_dashboard_data
+        summarize_days(["2026-06-09"])
+        return [x for x in build_dashboard_data("personal")["recent_sessions"]
+                if x["session_id"] == "sessA"][0]
+
+    def test_cost_parts_math(self):
+        # Opus 4.8 static rates: in $5/M, out $25/M, cw-5m $6.25/M, cr $0.50/M
+        self._ins_full("u1", "claude-opus-4-8", inp=1_000_000, outp=100_000,
+                       cc=2_000_000, cr=4_000_000, c5m=1_000_000,
+                       c1h=1_000_000, ws=100)
+        parts = self._session()["cost_parts"]
+        self.assertAlmostEqual(parts["input"], 5.0, places=4)
+        self.assertAlmostEqual(parts["output"], 2.5, places=4)
+        self.assertAlmostEqual(parts["cache_5m"], 6.25, places=4)   # (2M-1M)x6.25
+        self.assertAlmostEqual(parts["cache_1h"], 10.0, places=4)   # 1M x $5 x 2
+        self.assertAlmostEqual(parts["cache_read"], 2.0, places=4)  # 4M x $0.50
+        self.assertAlmostEqual(parts["web_search"], 1.0, places=4)  # 100 x $0.01
+
+    def test_unpriced_model_zero_parts_but_web_search_counts(self):
+        self._ins_full("u1", "mystery-model-9", inp=1_000_000, outp=100_000,
+                       cc=0, cr=0, c5m=0, c1h=0, ws=50)
+        parts = self._session()["cost_parts"]
+        self.assertEqual(parts["input"], 0)
+        self.assertEqual(parts["output"], 0)
+        self.assertAlmostEqual(parts["web_search"], 0.5, places=4)
 
 
 class SessionDetailFieldsTest(TempDBTestCase):
