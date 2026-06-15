@@ -66,7 +66,14 @@ def load_cursors() -> dict:
 
 
 def save_cursors(cursors: dict):
-    CURSOR_FILE.write_text(json.dumps(cursors, indent=2))
+    # Atomic write: a Stop push can run concurrently with an in-flight
+    # PostToolUse push (Stop/SessionEnd are undebounced). A plain write_text
+    # truncates then rewrites, so a concurrent load_cursors() can read a torn
+    # file -> {} -> cursors reset to 0 -> entire history re-sent. tmp + replace
+    # makes readers see only the complete old or complete new file.
+    tmp = CURSOR_FILE.with_suffix(CURSOR_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(cursors, indent=2))
+    os.replace(tmp, CURSOR_FILE)
 
 
 def strip_content(rec: dict) -> dict:
