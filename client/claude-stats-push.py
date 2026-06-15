@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import socket
 import sys
 import time
@@ -28,6 +27,9 @@ CURSOR_FILE = Path(os.environ.get(
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 DESKTOP_DIR = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
 DESKTOP_CURSOR_KEY = "__desktop_last_activity_ms"
+STAT_CACHE_KEY = "__stat_cache"  # {path: [mtime_ns, size]} — skip unchanged files
+USAGE_FETCH_STAMP = Path.home() / ".tokenfold-usage-stamp"
+USAGE_FETCH_MIN_INTERVAL = 300  # don't hit Anthropic's usage API > once / 5 min
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
@@ -42,6 +44,17 @@ def log(msg):
 def err(msg):
     """Always print to stderr — not gated on VERBOSE."""
     print(f"[tokenfold] {msg}", file=sys.stderr)
+
+
+def _file_sig(path: Path):
+    """A cheap change-signature for a transcript file: [mtime_ns, size].
+    Captured BEFORE reading, so any append during/after the read leaves a
+    newer signature next run -> the file is re-read and new lines caught."""
+    try:
+        st = path.stat()
+        return [st.st_mtime_ns, st.st_size]
+    except OSError:
+        return None
 
 
 def read_desktop_cursor(cursors: dict) -> int:
@@ -444,15 +457,36 @@ def _usage_backoff_clear():
         pass
 
 
+def _usage_fetch_too_soon() -> bool:
+    """True if we fetched OAuth usage within USAGE_FETCH_MIN_INTERVAL. The
+    pusher fires on every hook; without this gate it would hit Anthropic's
+    usage API on every fire. The gauge only changes slowly, so once per a few
+    minutes is plenty."""
+    try:
+        last = json.loads(USAGE_FETCH_STAMP.read_text()).get("last", 0)
+    except (json.JSONDecodeError, OSError):
+        return False
+    return (time.time() - last) < USAGE_FETCH_MIN_INTERVAL
+
+
+def _usage_fetch_stamp():
+    try:
+        USAGE_FETCH_STAMP.write_text(json.dumps({"last": time.time()}))
+    except OSError:
+        pass
+
+
 def _fetch_and_push_usage():
     """Fetch usage from Anthropic API and push to server (best-effort)."""
     if _usage_is_backed_off():
         return
-
-    # Jitter: 0-90s random delay so requests don't land on exact cron intervals
-    jitter = random.randint(0, 90)
-    log(f"Usage fetch jitter: {jitter}s")
-    time.sleep(jitter)
+    # Interval-gate: this runs on every hook fire, but the OAuth usage endpoint
+    # only needs polling every few minutes. Replaces the old 0-90s jitter sleep
+    # (a cron-era relic that made every push process linger up to 90s — even
+    # enterprise machines with no token, which fetch nothing).
+    if _usage_fetch_too_soon():
+        return
+    _usage_fetch_stamp()
 
     token = _get_oauth_token()
     if not token:
@@ -510,9 +544,23 @@ def main():
     total_accepted = 0
     total_dupes = 0
 
+    # stat cache: skip files unchanged since we last fully consumed them, so a
+    # hook fire stats N files instead of reading every byte of all of them.
+    stat_cache = cursors.get(STAT_CACHE_KEY)
+    if not isinstance(stat_cache, dict):
+        stat_cache = {}
+    fresh_stats = {}
+
     for project_dir, jsonl_path in find_session_files():
         cursor_key = str(jsonl_path)
         cursor_line = cursors.get(cursor_key, 0)
+
+        # Fast skip: we've fully consumed this file before AND its signature
+        # is unchanged -> nothing new, don't open it. (sig captured pre-read.)
+        sig = _file_sig(jsonl_path)
+        if cursor_line and sig is not None and stat_cache.get(cursor_key) == sig:
+            fresh_stats[cursor_key] = sig
+            continue
 
         # Read new lines
         try:
@@ -523,6 +571,7 @@ def main():
             continue
 
         if cursor_line >= len(all_lines):
+            fresh_stats[cursor_key] = sig  # fully consumed, remember to skip
             continue  # No new lines
 
         new_lines = all_lines[cursor_line:]
@@ -539,6 +588,7 @@ def main():
 
         if not events:
             cursors[cursor_key] = len(all_lines)
+            fresh_stats[cursor_key] = sig
             continue
 
         # Send in batches
@@ -555,8 +605,14 @@ def main():
                 log(f"  -> FAILED batch at line {batch_cursor}, will retry next run")
                 break  # Stop processing this file, retry next run
         else:
-            # All batches succeeded - update cursor
+            # All batches succeeded - update cursor + remember signature.
+            # sig is the PRE-read value: if the file grew during the read we
+            # re-read once next run (sig mismatch) rather than skip unread data.
             cursors[cursor_key] = len(all_lines)
+            fresh_stats[cursor_key] = sig
+
+    # Only keep signatures for files seen this run (prunes deleted transcripts).
+    cursors[STAT_CACHE_KEY] = fresh_stats
 
     # Desktop session metadata (macOS-only, no-op otherwise).
     root = desktop_dir()
