@@ -74,7 +74,7 @@ fi
 
 # TOKENFOLD_NO_UPDATE guards against any recursive update spawn from inside
 # the installer's verification push.
-if TOKENFOLD_NO_UPDATE=1 sh "$installer" >> "$LOG" 2>&1; then
+if TOKENFOLD_NO_UPDATE=1 bash "$installer" >> "$LOG" 2>&1; then
   printf '%s' "$sha" > "$STAMP"
   log "client updated to $sha"
 else
