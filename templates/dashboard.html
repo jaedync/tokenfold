@@ -30,7 +30,8 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet"></noscript>
 <!-- Self-hosted Chart.js (no CDN single-point-of-failure). `defer` keeps it
      off the critical path; the inline boot script guards `typeof Chart` so
      tables/heatmaps still render if this file ever fails to load. -->
@@ -53,7 +54,7 @@
   --yellow-text: #9a7a00;
   --gray-light: #d8d4cc;
   --gray-dim: #6b6860;
-  --gray-model: #8b8680;
+  --white: #fff;
   --border: 4px solid var(--black);
   --border-thin: 3px solid var(--black);
   --font-display: 'Archivo Black', sans-serif;
@@ -67,8 +68,11 @@ body {
   background: var(--bg);
   color: var(--black);
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
 }
+
+button { -webkit-appearance: none; appearance: none; font: inherit; }
 
 /* ---- HEADER ---- */
 
@@ -248,6 +252,8 @@ body {
 .date-bar-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 1.2rem;
 }
 
@@ -271,6 +277,11 @@ body {
   color: var(--gray-dim);
   font-family: var(--font-body);
   transition: background 0.15s, color 0.15s;
+  min-height: 24px;
+}
+
+@media (pointer: coarse) {
+  .scope-btn, .mode-btn, .ingest-key-btn { min-height: 44px; }
 }
 
 .mode-btn.active {
@@ -302,6 +313,7 @@ body {
   color: var(--gray-dim);
   font-family: var(--font-body);
   transition: background 0.15s, color 0.15s;
+  min-height: 24px;
 }
 
 .scope-btn--active {
@@ -319,6 +331,8 @@ body {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .machine-pill {
@@ -345,7 +359,7 @@ body {
 .refresh-indicator {
   font-family: var(--font-display);
   font-size: 0.6rem;
-  color: var(--red);
+  color: var(--black);
   border: 2px solid var(--red);
   padding: 2px 8px;
   text-transform: uppercase;
@@ -397,13 +411,17 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   margin-bottom: 0.4rem;
-  opacity: 0.75;
+  color: var(--gray-dim);
 }
 
 .stat-card--blue .stat-label,
 .stat-card--red .stat-label,
 .stat-card--black .stat-label {
-  color: rgba(244, 240, 232, 0.7);
+  color: rgba(244, 240, 232, 0.92);
+}
+
+.stat-card--yellow .stat-label {
+  color: #3a352f;
 }
 
 .stat-value {
@@ -587,24 +605,8 @@ body {
 }
 
 .rate-limits-header {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
+  /* layout (flex/align/gap) inherited from .section-header; keep section-specific padding */
   padding: 1rem 2.5rem 0;
-}
-
-.rate-limits-header-bar {
-  width: 6px;
-  height: 28px;
-  background: var(--red);
-  flex-shrink: 0;
-}
-
-.rate-limits-header h2 {
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .rate-limits-updated {
@@ -668,7 +670,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-body);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -693,7 +695,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-body);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -816,7 +818,7 @@ body {
 
 .rate-gauge-stat-label {
   font-family: var(--font-body);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -834,6 +836,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 .usage-chart-overlay.visible { display: flex; }
@@ -844,6 +847,7 @@ body {
   width: 100%;
   max-width: 960px;
   max-height: 90vh;
+  max-height: 90svh;
   overflow-y: auto;
   position: relative;
 }
@@ -941,7 +945,7 @@ body {
 
 @media (max-width: 700px) {
   .usage-chart-modal { max-width: 100%; margin: 0.5rem; }
-  .usage-chart-canvas-wrap { height: min(55vh, 320px); }
+  .usage-chart-canvas-wrap { height: min(55vh, 320px); height: min(55svh, 320px); }
   .usage-chart-body { padding: 0.5rem 0.8rem 1rem; }
 }
 
@@ -977,7 +981,7 @@ body {
 
 .month-counter-note {
   font-family: var(--font-body);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1100,6 +1104,10 @@ body {
   padding: 0.15rem 0.5rem;
   white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  cursor: pointer;
 }
 .env-bar:hover .env-info-btn { color: var(--black); border-color: var(--black); }
 
@@ -1123,6 +1131,7 @@ body {
   max-width: 620px;
   width: 100%;
   max-height: 85vh;
+  max-height: 85svh;
   overflow-y: auto;
   position: relative;
 }
@@ -1199,7 +1208,7 @@ body {
 .env-modal-body li::before {
   content: "\25A0";
   color: var(--red);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   margin-right: 0.5rem;
   vertical-align: middle;
 }
@@ -1208,7 +1217,7 @@ body {
   background: var(--black);
   color: var(--bg);
   padding: 0.8rem 1rem;
-  font-family: 'DM Sans', monospace;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 0.75rem;
   line-height: 1.7;
   margin: 0.6rem 0;
@@ -1285,7 +1294,7 @@ body {
   .env-bar { padding: 0.6rem 0.8rem; gap: 0.8rem; }
   .env-value { font-size: 1rem; }
   .env-label { font-size: 0.62rem; }
-  .env-modal { max-height: 90vh; }
+  .env-modal { max-height: 90vh; max-height: 90svh; }
   .env-modal-body { padding: 1rem; }
 }
 
@@ -1306,7 +1315,7 @@ body {
 }
 
 .section-header-bar--blue { background: var(--blue); }
-.section-header-bar--yellow { background: var(--yellow); }
+.section-header-bar--yellow { background: var(--yellow-text); }
 .section-header-bar--black { background: var(--black); }
 
 .section-header h2 {
@@ -1335,6 +1344,8 @@ body {
   padding: 0 2.5rem;
   overflow-x: auto;
   scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
 }
 .jump-nav::-webkit-scrollbar { display: none; }
 
@@ -1350,7 +1361,7 @@ body {
   white-space: nowrap;
   transition: background 0.12s, color 0.12s;
 }
-.jump-nav a:hover { background: var(--red); color: #fff; }
+.jump-nav a:hover { background: #b3271b; color: #fff; }
 
 /* anchored sections land below the sticky nav */
 #cost, #rateLimitsSection, #sessions, #activity, #trends,
@@ -1442,6 +1453,7 @@ body {
   align-items: center;
   gap: 1rem;
   padding: 1.1rem 2.5rem;
+  -webkit-user-select: none;
   user-select: none;
 }
 .ref-accordion summary::-webkit-details-marker { display: none; }
@@ -1481,7 +1493,7 @@ body {
 .toggle-group .toggle-label {
   font-family: var(--font-body);
   font-weight: 700;
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--gray-dim);
@@ -1491,6 +1503,7 @@ body {
 /* ---- PANELS ---- */
 
 .panel {
+  min-width: 0;
   padding: 2rem 2.5rem;
 }
 
@@ -1507,6 +1520,25 @@ body {
 .chart-container {
   position: relative;
   width: 100%;
+  min-width: 0;
+}
+
+/* Empty windows say so instead of rendering bare axes (P3-34) */
+.chart-container.is-empty canvas, .chart-wrap.is-empty canvas { opacity: 0.12; }
+.chart-container.is-empty::after, .chart-wrap.is-empty::after {
+  content: 'no activity in this window';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+  pointer-events: none;
 }
 
 /* Empty windows say so instead of rendering bare axes (P3-34) */
@@ -1534,6 +1566,7 @@ body {
 .chart-wrap {
   position: relative;
   width: 100%;
+  min-width: 0;
   margin-top: 1.2rem;
 }
 
@@ -1573,6 +1606,10 @@ body {
   transition: transform 0.15s;
 }
 
+@supports not (aspect-ratio: 1) {
+  .hourly-sq { height: 0; padding-bottom: 100%; }
+}
+
 .hourly-sq:hover { transform: scale(1.15); }
 
 .hourly-lbl {
@@ -1598,6 +1635,11 @@ body {
   grid-template-columns: 1fr 1fr 1fr;
   border-bottom: var(--border);
 }
+
+/* Grid items must be allowed to shrink below their content's intrinsic
+   width, or a wide canvas/SVG/table holds the 1fr track open and overflows. */
+.content-grid-2col > *,
+.content-grid-3col > * { min-width: 0; }
 
 /* ---- TABLES ---- */
 
@@ -1676,7 +1718,7 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* ---- SORTABLE HEADERS ---- */
 
-thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable { cursor: pointer; -webkit-user-select: none; user-select: none; }
 thead th.sortable:hover { color: var(--black); }
 thead th.sortable:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
 tr.sess-row:focus-visible, tr.mb-row:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
@@ -1684,7 +1726,7 @@ tr.sess-row:focus-visible, tr.mb-row:focus-visible { outline: 2px solid var(--re
   display: inline-block;
   min-width: 0.9em;
   margin-left: 2px;
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   color: var(--red);
   vertical-align: middle;
 }
@@ -1896,7 +1938,7 @@ th[data-info]:focus::after { opacity: 1; }
 .unpriced-badge {
   font-family: var(--font-body);
   font-weight: 700;
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--black);
@@ -1917,6 +1959,7 @@ th[data-info]:focus::after { opacity: 1; }
   border: 2px solid var(--gray-dim);
   padding: 0.2rem 0.5rem;
   cursor: pointer;
+  min-height: 24px;
 }
 .ingest-key-btn:hover { color: var(--black); border-color: var(--black); }
 
@@ -1926,6 +1969,7 @@ th[data-info]:focus::after { opacity: 1; }
   color: var(--black);
   background: var(--yellow);
   padding: 0.2rem 0.4rem;
+  -webkit-user-select: all;
   user-select: all;
   word-break: break-all;
 }
@@ -1998,6 +2042,7 @@ th[data-info]:focus::after { opacity: 1; }
   .header-title, .header-subtitle-band, .header-enterprise-band, .header-geo-block,
   .date-bar, .stat-card, .cost-hero-label, .cost-hero-value,
   .cost-hero-period, .env-bar { animation: none !important; }
+  .status-sq--pulse { animation: none !important; }
   .env-equiv-text { transition: none !important; }
   .section-header .section-header-bar { transform: none !important; transition: none !important; }
   .section-header h2 { clip-path: none !important; transition: none !important; }
@@ -2005,6 +2050,11 @@ th[data-info]:focus::after { opacity: 1; }
 }
 
 /* ---- RESPONSIVE ---- */
+
+@media (max-width: 960px) {
+  .date-bar { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+  .date-bar-right { width: 100%; }
+}
 
 @media (max-width: 1100px) {
   .content-grid-2col,
@@ -2049,7 +2099,7 @@ th[data-info]:focus::after { opacity: 1; }
   .rate-limits-grid { grid-template-columns: 1fr; }
   .rate-gauge + .rate-gauge { border-left: none; border-top: var(--border); }
   .rate-limits-header { padding: 1rem 1.2rem 0; flex-wrap: wrap; }
-  .rate-limits-updated { font-size: 0.55rem; }
+  .rate-limits-updated { font-size: 0.65rem; }
   .rate-gauge { padding: 1.2rem; }
   .rate-gauge-stats { flex-wrap: wrap; }
   .rate-gauge-stat { flex: 1 1 40%; }
@@ -2135,7 +2185,7 @@ th[data-info]:focus::after { opacity: 1; }
   .scope-btn { padding: 4px 10px; font-size: 0.7rem; }
   /* keep every 3rd hour label on phones instead of anonymous squares */
   .hourly-lbl { display: none; }
-  .hourly-lbl--key { display: block; font-size: 0.55rem; }
+  .hourly-lbl--key { display: block; font-size: 0.65rem; }
   .hourly-cell { gap: 0; }
   .hourly-grid { gap: 2px; }
 }
@@ -2304,6 +2354,7 @@ th[data-info]:focus::after { opacity: 1; }
   <a href="#daily">Daily</a>
   <a href="#reference">Reference</a>
 </nav>
+<main id="main">
 <!-- ======== STAT CARDS - ASYMMETRIC GRID ======== -->
 <div class="tf-section" data-section="stats">
 <div class="stats-grid">{{ cards_html|safe }}</div>
@@ -2345,7 +2396,7 @@ th[data-info]:focus::after { opacity: 1; }
   <div class="env-metric" id="envEquiv" style="display:none">
     <span class="env-equiv-text" id="envEquivVal"></span>
   </div>
-  <span class="env-info-btn" aria-hidden="true">&#9432; methodology</span>
+  <button type="button" class="env-info-btn" id="envInfoBtn" aria-haspopup="dialog" aria-expanded="false">&#9432; methodology</button>
 </div>
 
 <!-- Environmental methodology modal -->
@@ -2436,8 +2487,8 @@ th[data-info]:focus::after { opacity: 1; }
      and hiding-until-JS made the whole page jump on slow networks -->
 <div class="tf-section" data-section="limits">
 <div id="rateLimitsSection" class="rate-limits">
-  <div class="rate-limits-header">
-    <div class="rate-limits-header-bar"></div>
+  <div class="rate-limits-header section-header">
+    <div class="section-header-bar"></div>
     <h2>Cost &amp; Limits</h2>
     <span id="rateLimitsUpdated" class="rate-limits-updated">month to date</span>
   </div>
@@ -2489,7 +2540,7 @@ th[data-info]:focus::after { opacity: 1; }
     </div>
     <div class="usage-chart-body">
       <div class="usage-chart-canvas-wrap">
-        <canvas id="usageChartCanvas"></canvas>
+        <canvas id="usageChartCanvas" role="img" aria-label="Weekly usage pace over the last 7 days"></canvas>
       </div>
       <div class="usage-chart-legend">
         <div class="usage-chart-legend-item">
@@ -2650,7 +2701,7 @@ th[data-info]:focus::after { opacity: 1; }
 <!-- ======== STRIPE ======== -->
 <div class="stripe-band"></div>
 <!-- ======== DAILY BREAKDOWN TABLE ======== -->
-<div class="table-panel" id="daily">
+<div class="table-panel" id="daily" style="content-visibility:auto;contain-intrinsic-size:auto 700px">
   <div class="section-header">
     <div class="section-header-bar section-header-bar--blue"></div>
     <h2>Daily Breakdown</h2>
@@ -2867,6 +2918,7 @@ th[data-info]:focus::after { opacity: 1; }
 })();
 </script>
 <!-- ======== FOOTER ======== -->
+</main>
 <footer class="footer">
   <div class="footer-left">
     <div class="footer-geo">
@@ -2955,6 +3007,7 @@ th[data-info]:focus::after { opacity: 1; }
 
 <div id="hmTip"></div>
 
+<script type="application/json" id="tf-data">{{ data_json|safe }}</script>
 <script>
 /* ============================================================
    BAUHAUS DASHBOARD - JAVASCRIPT
@@ -3052,6 +3105,7 @@ function afterTableRender(tbody){
   document.querySelectorAll('.tbl-wrap table').forEach(function(tbl){
     tbl.querySelectorAll('thead th').forEach(function(th, i){
       th.classList.add('sortable');
+      th.setAttribute('scope','col');
       if(!th.hasAttribute('tabindex')) th.setAttribute('tabindex','0');
       const ind = document.createElement('span');
       ind.className = 'sort-ind';
@@ -3115,7 +3169,14 @@ function setScope(s, btn) {
   window.location.assign(u.toString());
 }
 
-const D = {{ data_json|safe }};
+const D = (function () {
+  try {
+    return JSON.parse(document.getElementById('tf-data').textContent);
+  } catch (e) {
+    console.error('Tokenfold: failed to parse embedded data payload', e);
+    return {};
+  }
+})();
 const MODEL_ORDER = D.model_order || [];
 function modelSort(a,b){
   const ai=MODEL_ORDER.indexOf(a), bi=MODEL_ORDER.indexOf(b);
@@ -3131,7 +3192,8 @@ function initChartGlobals(){
   if(!hasChart()) return false;
   Chart.defaults.font.family = "'DM Sans', sans-serif";
   Chart.defaults.font.size = 12;
-  Chart.defaults.color = '#6b6860';
+  Chart.defaults.color = '#3a352f';
+  Chart.defaults.resizeDelay = 120;
   Chart.defaults.borderColor = '#d8d4cc';
   /* No grow-from-zero animations: live refreshes repaint every 30s and the
      replay both looks broken and leaves blank charts in screenshots. */
@@ -3186,6 +3248,9 @@ function wrapCanvas(wrapId, cvId){
     wrap.innerHTML = '';
     cv = document.createElement('canvas');
     cv.id = cvId;
+    cv.setAttribute('role','img');
+    var TF_CANVAS_LABELS = { cCostByModel: 'Cost by model — stacked bar chart of token-category spend', cCPH: 'Cost per hour versus throughput, by model' };
+    if(TF_CANVAS_LABELS[cvId]) cv.setAttribute('aria-label', TF_CANVAS_LABELS[cvId]);
     wrap.appendChild(cv);
   }
   return cv;
@@ -3201,7 +3266,7 @@ const MODEL_COLORS = {
   'Sonnet 4.6': '#1a4b8c',
   'Sonnet 4.5': '#8b8680',
   'Haiku 4.5':  '#f5c518',
-  'Sonnet 4':   '#8b8680',
+  'Sonnet 4':   '#7d5ba6',
   'Haiku 3.5':  '#d8d4cc',
   'Sonnet 3.5': '#6b6860',
 };
@@ -3224,7 +3289,7 @@ function fN(n){
   if(n==null||isNaN(n))return '0';
   const neg=n<0?'-':'', a=Math.abs(n);
   const u=(v,d,s)=>neg+(+v.toFixed(d))+s;       // +x.toFixed trims ".0"
-  if(a>=9.995e8)return u(a/1e9,2,'B');          // 999.95M+ rounds up: promote
+  if(a>=9.9995e8)return u(a/1e9,2,'B');          // 999.95M+ rounds up: promote
   if(a>=999950)return u(a/1e6,1,'M');           // 999,960 rounds up: promote
   if(a>=1e3)return u(a/1e3,1,'K');
   return neg+a.toString();
@@ -3233,7 +3298,9 @@ function fN(n){
    so durations read identically everywhere (P3-31). */
 function fT(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?h+'h '+m+'m':m+'m'}
 function fHM(totalMin){return fT(Math.round(totalMin)*60)}
-function fC(n){return '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function fC(n){if(n==null||isNaN(n))return '$0.00';return '$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
+function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
 function sizeWrap(id, items, axis) {
   const el = document.getElementById(id);
@@ -3273,6 +3340,7 @@ function animateCardValue(el, targetValue, formatFn, duration, fractional) {
 
 /* ---- Live Status Indicator ---- */
 function updateStatus(){
+  if(document.hidden) return;
   var ts = D.last_active_ts;
   var sq = document.getElementById('statusSq');
   var tx = document.getElementById('statusText');
@@ -3304,18 +3372,20 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
   const body = document.getElementById('pricingBody');
   if (!body || !pricingModels.length) return;
   function fP(v){ return fC(v); }
+  var _rows = [];
   pricingModels.forEach(name => {
     const p = mPricing[name];
     const c = mColor(name);
-    body.innerHTML += '<tr>'
+    _rows.push('<tr>'
       +'<td><div class="model-name-cell"><span class="model-dot" style="background:'+c+'"></span>'+esc(name)+'</div></td>'
       +'<td>'+fP(p.input)+'</td>'
       +'<td>'+fP(p.output)+'</td>'
       +'<td>'+fP(p.cache_write)+'</td>'
       +'<td>'+fP(p.cache_write_1h)+'</td>'  /* always set by aggregator (P3-40) */
       +'<td>'+fP(p.cache_read)+'</td>'
-      +'</tr>';
+      +'</tr>');
   });
+  body.innerHTML = _rows.join('');
 })();
 
 /* ---- Benchmarks (static) — chart built at boot, after deferred Chart.js ---- */
@@ -3327,6 +3397,7 @@ benchModels.sort((a,b)=>modelSort(a,b));
 if(benchModels.length && hasChart()){
   sizeWrap('benchWrap', benchModels.length, 'y');
   const cv3=document.createElement('canvas');cv3.id='cBench';
+  cv3.setAttribute('role','img'); cv3.setAttribute('aria-label','Benchmark intelligence scores by model');
   document.getElementById('benchWrap').appendChild(cv3);
   new Chart(cv3,{
     type:'bar',
@@ -3340,7 +3411,7 @@ if(benchModels.length && hasChart()){
       plugins:{legend:{position:'bottom',labels:{padding:6,font:{size:10,weight:700},color:'#1a1a1a'}},
         tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.raw+'%'}}},
       scales:{
-        x:{beginAtZero:true,max:100,ticks:{callback:v=>v+'%',font:{size:11},color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+        x:{beginAtZero:true,max:100,ticks:{callback:v=>v+'%',font:{size:11},color:'#3a352f'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
         y:{grid:{display:false},ticks:{font:{weight:700,size:12},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
       }}
   });
@@ -3563,13 +3634,16 @@ var _envCycleTimer = null;
     var bar = document.getElementById('envBar');
     var modal = document.getElementById('envModal');
     var close = document.getElementById('envModalClose');
+    var infoBtn = document.getElementById('envInfoBtn');
     if(!bar||!modal)return;
     bar.onclick = function(){
       modal.classList.add('visible');
+      if(infoBtn) infoBtn.setAttribute('aria-expanded','true');
       buildComparisons();
     };
-    close.onclick = function(){ modal.classList.remove('visible'); };
-    modal.onclick = function(e){ if(e.target===modal) modal.classList.remove('visible'); };
+    if(infoBtn) infoBtn.addEventListener('click', function(e){ e.stopPropagation(); bar.onclick(); });
+    close.onclick = function(){ modal.classList.remove('visible'); if(infoBtn) infoBtn.setAttribute('aria-expanded','false'); };
+    modal.onclick = function(e){ if(e.target===modal){ modal.classList.remove('visible'); if(infoBtn) infoBtn.setAttribute('aria-expanded','false'); } };
     // Escape-to-close handled by the single global keydown handler.
     function buildComparisons(){
       // rebuilt on every open — _envTotalW changes with live refreshes
@@ -3615,13 +3689,13 @@ var _tokIncludeCacheReads = false;
   btn.addEventListener('click', function(){
     _tokIncludeCacheReads = !_tokIncludeCacheReads;
     btn.setAttribute('aria-pressed', _tokIncludeCacheReads ? 'true' : 'false');
-    renderMode(localStorage.getItem('dashMode') || '14d');
+    renderMode(lsGet('dashMode') || '14d');
   });
 })();
 
 /* ---- Mode Toggle ---- */
 function setMode(mode) {
-  localStorage.setItem('dashMode', mode);
+  lsSet('dashMode', mode);
   document.querySelectorAll('.mode-btn').forEach(b => {
     const on = b.dataset.mode === mode;
     b.classList.toggle('active', on);
@@ -3630,6 +3704,22 @@ function setMode(mode) {
   renderMode(mode);
 }
 
+// DST-aware UTC offset (minutes; negative = west of UTC) for a timezone at instant `ms`.
+// Replaces the old hardcoded CST -6h so summer (CDT, -5h) renders correct local times.
+function tfTzOffsetMin(ms, tz) {
+  try {
+    var parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date(ms));
+    var tzName = '';
+    for (var i = 0; i < parts.length; i++) { if (parts[i].type === 'timeZoneName') { tzName = parts[i].value; break; } }
+    var m = tzName.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/);
+    if (!m) return -360;
+    var sign = m[1].charAt(0) === '-' ? -1 : 1;
+    var hh = Math.abs(parseInt(m[1], 10));
+    var mm = m[2] ? parseInt(m[2], 10) : 0;
+    return sign * (hh * 60 + mm);
+  } catch (e) { return -360; }
+}
+function tfChicagoOffsetMin(ms) { return tfTzOffsetMin(ms, 'America/Chicago'); }
 function renderMode(mode) {
   const isRecent = mode === '14d';
   const isToday = mode === 'today';
@@ -3966,7 +4056,7 @@ function renderMode(mode) {
       ]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
         scales:{
-          x:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v.toFixed(0),font:{size:11},color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+          x:{stacked:true,beginAtZero:true,ticks:{callback:v=>'$'+v.toFixed(0),font:{size:11},color:'#3a352f'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
           y:{stacked:true,grid:{display:false},ticks:{font:{weight:700,size:12},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
         },
         plugins:{
@@ -4008,15 +4098,15 @@ function renderMode(mode) {
           legend:{position:'bottom',labels:{padding:8,font:{size:10,weight:700},color:'#1a1a1a'}},
           tooltip:{mode:'index',callbacks:{label:c=>{
             const m=cphModels[c.dataIndex];
-            if(c.dataset.label==='Cost/hr') return fC(c.raw)+'/hr ('+m[hrsKey].toFixed(1)+'h, $'+(outPriceMap[m.model]||'?')+'/MTok output)';
+            if(c.dataset.label==='Cost/hr') return fC(c.raw)+'/hr ('+(m[hrsKey]!=null?m[hrsKey].toFixed(1):'?')+'h, $'+(outPriceMap[m.model]||'?')+'/MTok output)';
             return c.raw+' tok/s effective output';
           }}}
         },
         scales:{
           x:{grid:{display:false},ticks:{font:{weight:700},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}},
           y:{beginAtZero:true,position:'left',
-             title:{display:!isMobile(),text:'$/hr',color:'#6b6860',font:{size:10}},
-             ticks:{callback:v=>'$'+v,color:'#6b6860'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
+             title:{display:!isMobile(),text:'$/hr',color:'#3a352f',font:{size:10}},
+             ticks:{callback:v=>'$'+v,color:'#3a352f'},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
           y2:{beginAtZero:true,position:'right',
               title:{display:!isMobile(),text:'tok/s',color:'#1a1a1a',font:{size:10}},
               ticks:{color:'#1a1a1a'},grid:{display:false},border:{color:'#1a1a1a',width:3}}
@@ -4044,6 +4134,7 @@ function renderMode(mode) {
       plugins:{legend:{position:isMobile()?'bottom':'right',labels:{padding:isMobile()?8:12,font:{weight:700,size:isMobile()?10:11},color:'#1a1a1a'}},
         tooltip:{callbacks:{label:c=>c.label+': '+fT(c.raw)}}}}
   });
+  markEmpty('cTime', (tbThink + tbTool + tbSub) <= 0);
   const orchTotal = tbThink + tbTool;
   const combinedTotal = orchTotal + tbSub;
   const agentRuns = isToday ? (D.today.time_breakdown.agent_runs || 0) : isRecent ? (D.time_breakdown.recent_agent_runs || 0) : (D.time_breakdown.agent_runs || 0);
@@ -4072,7 +4163,7 @@ function renderMode(mode) {
         }}}},
       scales:{
         x:{beginAtZero:true,grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
+        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a',callback:function(v){var l=this.getLabelForValue(v);return l.length>18?l.slice(0,17)+'…':l;}},border:{color:'#1a1a1a',width:3}}
       }}
   });
 
@@ -4103,7 +4194,7 @@ function renderMode(mode) {
       },
       scales:{
         x:{beginAtZero:true,ticks:{callback:v=>'$'+v},grid:{color:'#d8d4cc'},border:{color:'#1a1a1a',width:3}},
-        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a'},border:{color:'#1a1a1a',width:3}}
+        y:{grid:{display:false},ticks:{font:{weight:700,size:11},color:'#1a1a1a',callback:function(v){var l=this.getLabelForValue(v);return l.length>18?l.slice(0,17)+'…':l;}},border:{color:'#1a1a1a',width:3}}
       }}
   });
 
@@ -4144,6 +4235,9 @@ function renderMode(mode) {
           legend:{position:'bottom',labels:{padding:8,font:{weight:700,size:10},color:'#1a1a1a'}}
         }}
     });
+  } else {
+    dropChart('machineCost');
+    dropChart('machineDaily');
   }
 
   /* ── Machine Breakdown table ── */
@@ -4495,7 +4589,7 @@ function initRateLimits(){
       try {
         var resetTime = new Date(oauth.weekly_resets_at).getTime();
         var weekStart = resetTime - WEEK_MS;
-        var cstOff = -6 * 60;
+        var cstOff = tfChicagoOffsetMin(weekStart);
         var startLocal = new Date(weekStart + cstOff * 60000);
         var firstMidnight = new Date(Date.UTC(
           startLocal.getUTCFullYear(), startLocal.getUTCMonth(), startLocal.getUTCDate()
@@ -4621,6 +4715,7 @@ function initRateLimits(){
       if(!updatedEl || !oauth.updated_at_epoch) return;
       var STALE_S = 3600;
       function updateStale() {
+        if(document.hidden) return;
         var ageSec = (Date.now() / 1000) - oauth.updated_at_epoch;
         var text;
         if(ageSec < 60) text = 'updated just now';
@@ -4682,8 +4777,8 @@ function initRateLimits(){
       var cumCost = 0;
       var maxH = Math.min(nowH + 1, totalHours);
 
-      // CST offset for day labels
-      var cstOff = -6 * 60;
+      // DST-aware Chicago offset for day labels
+      var cstOff = tfChicagoOffsetMin(weekStartEpoch * 1000);
       var DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
       // Find hours until first midnight from week start (to avoid label collisions)
@@ -4836,7 +4931,7 @@ function initRateLimits(){
               border: { color: '#1a1a1a', width: 3 },
               ticks: {
                 font: { family: '"DM Sans"', size: 10, weight: '600' },
-                color: '#6b6860',
+                color: '#3a352f',
                 maxRotation: 0,
                 autoSkip: false,
                 callback: function(val, idx) {
@@ -4852,11 +4947,11 @@ function initRateLimits(){
                 display: true,
                 text: yLabel,
                 font: { family: '"DM Sans"', size: 10, weight: '700' },
-                color: '#6b6860'
+                color: '#3a352f'
               },
               ticks: {
                 font: { family: '"DM Sans"', size: 10 },
-                color: '#6b6860',
+                color: '#3a352f',
                 callback: function(v) { return '$' + v; }
               }
             }
@@ -4907,6 +5002,7 @@ function initRateLimits(){
     // Pass current scope so the server can gate oauth fields to personal scope.
     var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
     function pollLimits(){
+      if(document.hidden) return;
       fetch(rlUrl)
         .then(function(r) { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
         .then(function(data) { renderAllRateLimits(data.weekly_budget); })
@@ -4948,7 +5044,7 @@ let _chartsBooted = false;
 function bootCharts(){
   if(_chartsBooted || !initChartGlobals()) return;
   _chartsBooted = true;
-  renderMode(localStorage.getItem('dashMode') || '14d');
+  renderMode(lsGet('dashMode') || '14d');
   renderBenchmarks();
 }
 function reserveLimitsSpace(){
@@ -4965,7 +5061,7 @@ function reserveLimitsSpace(){
 }
 function boot(){
   reserveLimitsSpace();
-  setMode(localStorage.getItem('dashMode') || '14d');
+  setMode(lsGet('dashMode') || '14d');
   initRateLimits();
   bootCharts(); // no-op under defer; covers an already-present Chart global
 }
@@ -5093,6 +5189,7 @@ function toggleSess(i){
   if(sid){ if(open)_openSessions.add(sid); else _openSessions.delete(sid); }
 }
 renderSessions();
+setInterval(renderSessions, 30000);
 
 /* ---- Official billing readings (enterprise) ----
    Manually recorded org-console MTD figures. The interesting math (Δofficial
@@ -5117,7 +5214,7 @@ function renderBillingReadings(){
     const dOff=conf.reduce((a,r)=>a+r.delta_official,0);
     const dMeas=conf.reduce((a,r)=>a+r.delta_measured,0);
     summary='<div class="br-summary">'
-      +'<span class="br-summary-pct">'+(100*dMeas/dOff).toFixed(1)+'%</span>'
+      +'<span class="br-summary-pct">'+(dOff!==0?(100*dMeas/dOff).toFixed(1):'—')+'%</span>'
       +'<span class="br-summary-text"><b>CONFIRMED COVERAGE</b> — tokenfold measured <b>'
       +fC(dMeas)+'</b> of <b>'+fC(dOff)+'</b> official growth over '
       +conf.length+' confirmed interval'+(conf.length>1?'s':'')
@@ -5137,7 +5234,8 @@ function renderBillingReadings(){
     +'<th class="num" data-info="tokenfold ÷ official for the interval: how much of real billing we capture">COVERAGE</th>'
     +'<th></th></tr></thead><tbody>';
   for(const r of rows){
-    const when=new Date(r.recorded_epoch*1000).toISOString().slice(0,16).replace('T',' ');
+    const _wt=(r.recorded_epoch!=null&&isFinite(r.recorded_epoch))?new Date(r.recorded_epoch*1000):null;
+    const when=(_wt&&!isNaN(_wt))?_wt.toISOString().slice(0,16).replace('T',' '):'—';
     const gap=(r.measured_usd!=null)?r.amount_usd-r.measured_usd:null;
     h+='<tr><td>'+esc(when)
       +(r.note?' <span title="'+esc(r.note)+'">✎</span>':'')
@@ -5257,7 +5355,8 @@ renderBillingReadings();
     // Pin the refetch to THIS page's scope. A bare /api/stats falls back to the
     // server's default scope and would repaint an enterprise view with personal
     // data (scope bleed) on every live update.
-    fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE)).then(r=>r.json()).then(data=>{
+    fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE)).then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); }).then(data=>{
+      if(!data || !Array.isArray(data.model_breakdown) || !data.daily){ throw new Error('bad payload shape'); }
       knownVersion=data.version||0;
       // Update D in-place (const can't be reassigned)
       Object.keys(data).forEach(k=>{D[k]=data[k];});
@@ -5269,7 +5368,7 @@ renderBillingReadings();
       MODEL_ORDER.length=0;
       (data.model_order||[]).forEach(m=>MODEL_ORDER.push(m));
       // Re-render
-      const mode=localStorage.getItem('dashMode')||'14d';
+      const mode=lsGet('dashMode')||'14d';
       renderMode(mode);
       renderHeatmap();
       renderHourly();
@@ -5310,7 +5409,7 @@ renderBillingReadings();
   startPolling();
 })();
 
-/* ---- Responsive: re-render charts on breakpoint cross ---- */
+/* ---- Responsive: re-render charts on breakpoint cross + reflow all on resize ---- */
 (function(){
   var wasMobile = isMobile();
   var timer;
@@ -5320,10 +5419,80 @@ renderBillingReadings();
       var nowMobile = isMobile();
       if (nowMobile !== wasMobile) {
         wasMobile = nowMobile;
-        renderMode(localStorage.getItem('dashMode') || '14d');
+        renderMode(lsGet('dashMode') || '14d');
         renderHeatmap();
       }
+      // Charts whose container width changed must re-measure. Chart.js
+      // responsive does NOT reliably catch a parent resize when the canvas
+      // held the 1fr track open (it stays at its load width and gets clipped),
+      // so resize every live chart explicitly. Chart.getChart() resolves the
+      // instance for any canvas regardless of which registry holds it
+      // (_charts, the benchmarks cv3, the usage modal chart).
+      if (typeof Chart !== 'undefined' && Chart.getChart) {
+        document.querySelectorAll('canvas').forEach(function(cv){
+          var inst = Chart.getChart(cv);
+          if (inst) { try { inst.resize(); } catch(e){} }
+        });
+      }
     }, 300);
+  });
+})();
+
+/* ---- Modal focus management (a11y-2): move-in, Tab-trap, restore, inert bg ---- */
+(function(){
+  var overlays = document.querySelectorAll('.env-modal-overlay, .usage-chart-overlay');
+  if(!overlays.length) return;
+  var FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  overlays.forEach(function(modal){
+    var lastFocus = null, trapHandler = null;
+    function setBgInert(on){
+      // Inert every SIBLING along the modal's ancestor chain up to <body>, leaving
+      // the modal's ancestors (e.g. <main>) and the modal itself interactive.
+      // (Inerting body children directly would inert <main>, which CONTAINS the
+      // modal, making the dialog itself inert — focus could not enter it.)
+      var node = modal;
+      while(node && node !== document.body){
+        var parent = node.parentElement;
+        if(!parent) break;
+        Array.prototype.forEach.call(parent.children, function(el){
+          if(el === node) return;
+          var t = el.tagName;
+          if(t === 'SCRIPT' || t === 'STYLE' || t === 'TEMPLATE') return;
+          if(on){ el.setAttribute('inert',''); el.setAttribute('data-tf-inert',''); }
+          else if(el.hasAttribute('data-tf-inert')){ el.removeAttribute('inert'); el.removeAttribute('data-tf-inert'); }
+        });
+        node = parent;
+      }
+    }
+    function onOpen(){
+      lastFocus = document.activeElement;
+      setBgInert(true);
+      var f = modal.querySelectorAll(FOCUSABLE);
+      if(f[0] && f[0].focus) f[0].focus(); else if(modal.focus) modal.focus();
+      trapHandler = function(e){
+        if(e.key !== 'Tab') return;
+        var items = Array.prototype.slice.call(modal.querySelectorAll(FOCUSABLE))
+          .filter(function(el){ return el.offsetParent !== null || el === document.activeElement; });
+        if(!items.length){ e.preventDefault(); return; }
+        var first = items[0], last = items[items.length-1];
+        if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+      };
+      modal.addEventListener('keydown', trapHandler);
+    }
+    function onClose(){
+      setBgInert(false);
+      if(trapHandler){ modal.removeEventListener('keydown', trapHandler); trapHandler = null; }
+      if(lastFocus && lastFocus.focus) lastFocus.focus();
+      lastFocus = null;
+    }
+    var wasVisible = modal.classList.contains('visible');
+    new MutationObserver(function(){
+      var vis = modal.classList.contains('visible');
+      if(vis === wasVisible) return;
+      wasVisible = vis;
+      if(vis) onOpen(); else onClose();
+    }).observe(modal, { attributes:true, attributeFilter:['class'] });
   });
 })();
 </script>
