@@ -248,9 +248,13 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         for scope in ("enterprise", "personal"):
             html = c.get(f"/?scope={scope}").text
             import re as _re
-            m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
+            # data_json ships in a type=application/json tag (guarded JSON.parse
+            # boot), not an inline `const D = {...}` assignment.
+            m = _re.search(
+                r'<script type="application/json" id="tf-data">({.*?})</script>',
+                html, _re.DOTALL)
             self.assertIsNotNone(
-                m, f"data_json embed (const D = {{...}};) not found in page (scope={scope})")
+                m, f"data_json embed (#tf-data JSON tag) not found in page (scope={scope})")
             data_blob = m.group(1)
             for field in ("weekly_pct", "opus_pct", "five_hour_pct", "extra_usage"):
                 self.assertNotIn(f'"{field}"', data_blob,
@@ -319,13 +323,15 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         self.assertNotIn("me@gmail.com", html)
         self.assertNotIn("personal-mbp", html)
         self.assertNotIn("secret-side-project", html)
-        # The embedded data_json (D = {...}) is the aggregator payload — must NOT contain
-        # oauth gauge values.  Extract just the embedded JSON blob and check it.
+        # The embedded data_json (#tf-data JSON tag) is the aggregator payload — must NOT
+        # contain oauth gauge values.  Extract just the embedded JSON blob and check it.
         # (The surrounding template JS source contains the property name strings as code,
         # so we cannot check full HTML; we check the data payload specifically.)
         import re as _re
-        m = _re.search(r'const D = ({.*?});', html, _re.DOTALL)
-        self.assertIsNotNone(m, "data_json embed (const D = {...};) not found in page")
+        m = _re.search(
+            r'<script type="application/json" id="tf-data">({.*?})</script>',
+            html, _re.DOTALL)
+        self.assertIsNotNone(m, "data_json embed (#tf-data JSON tag) not found in page")
         data_blob = m.group(1)
         self.assertNotIn('"weekly_pct"', data_blob,
                          "weekly_pct must not appear in embedded data payload")
