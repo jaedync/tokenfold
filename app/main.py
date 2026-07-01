@@ -97,6 +97,7 @@ from .light import router as light_router
 from .ha import router as ha_router
 from .desktop_sessions import router as desktop_sessions_router
 from .billing_readings import router as billing_readings_router
+from .install import router as install_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
@@ -106,6 +107,7 @@ app.include_router(light_router)
 app.include_router(ha_router)
 app.include_router(desktop_sessions_router)
 app.include_router(billing_readings_router)
+app.include_router(install_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():

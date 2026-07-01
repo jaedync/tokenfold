@@ -2,6 +2,7 @@
 
 import html
 import json
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,7 @@ from .aggregator import build_dashboard_data
 from . import config
 from .auth import require_dashboard_auth
 from .config import DEFAULT_SCOPE, STATS_OWNER, VALID_SCOPES
+from .install import external_base_url  # single source of truth for the base URL
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -54,6 +56,14 @@ def _fmt_cost(c):
     if c == 0:
         return "$0.00"
     return f"${c:.3f}"
+
+
+def build_install_command(base_url, key):
+    """The one-command onboarding line the footer button copies: pipe the
+    server's own /install.sh into bash with the ingest key inline. shlex.quote
+    keeps a key with shell metacharacters (spaces, quotes) from breaking out of
+    the --token argument when the command is pasted into a terminal."""
+    return f"curl -fsSL {base_url}/install.sh | bash -s -- --token {shlex.quote(key)}"
 
 
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
@@ -187,6 +197,14 @@ async def dashboard(request: Request, scope: Optional[str] = None):
         # only embedded when the dashboard itself is behind Basic auth — an open
         # dashboard must never leak the machine-ingest key.
         "ingest_key": config.STATS_API_KEY if config.DASHBOARD_PASSWORD else "",
+        # One-command install line for the footer copy button. Same fail-closed
+        # gate as ingest_key, AND requires a key to embed: the command inlines
+        # the ingest key, so an open dashboard (no DASHBOARD_PASSWORD) or a
+        # keyless instance must never render it.
+        "install_cmd": (
+            build_install_command(external_base_url(request), config.STATS_API_KEY)
+            if config.DASHBOARD_PASSWORD and config.STATS_API_KEY else ""
+        ),
         # Billing-reading writes are human actions behind Basic auth; an open
         # dashboard renders the history read-only (the server enforces too).
         "readings_writable": bool(config.DASHBOARD_PASSWORD),

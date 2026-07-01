@@ -2882,7 +2882,11 @@ th[data-info]:focus::after { opacity: 1; }
       data-ingest-key="{{ ingest_key|e }}"
       title="Reveal + copy the ingest key (STATS_API_KEY) for setting up new machines">Ingest Key</button></span>
     <span aria-hidden="true">·</span>
-    {% endif %}<span id="genTimeLabel">Generated {{ gen_time|e }}</span>
+    {% if install_cmd %}<span id="installCmdWrap"><button type="button" class="ingest-key-btn" id="installCmdBtn"
+      data-install-cmd="{{ install_cmd|e }}"
+      title="Copy a curl-pipe-bash one-liner (contains the ingest key) to set up a new machine">Install Command</button></span>
+    <span aria-hidden="true">·</span>
+    {% endif %}{% endif %}<span id="genTimeLabel">Generated {{ gen_time|e }}</span>
   </div>
 </footer>
 {% if ingest_key %}
@@ -2905,6 +2909,44 @@ th[data-info]:focus::after { opacity: 1; }
         note.style.color = 'var(--gray-dim)';
         wrap.appendChild(note);
       }, function () { /* no clipboard (http/permission) — key is shown, that's enough */ });
+    }
+  });
+})();
+</script>
+{% endif %}
+{% if install_cmd %}
+<script>
+(function () {
+  // The install command inlines the live ingest key, so (unlike the reveal-
+  // first key button) it stays hidden — one click just copies it and shows a
+  // transient ' copied' note. But a copy-only control must never silently
+  // no-op: with no clipboard (http/permission), reveal the command text so it
+  // can still be selected and copied by hand.
+  var btn = document.getElementById('installCmdBtn');
+  // One reused note element + a removal timer: unlike the one-shot key button
+  // (which replaces itself on click), this button survives its click, so
+  // appending a fresh span each time would accumulate ' copied copied…'.
+  var note = document.createElement('span');
+  note.textContent = ' copied';
+  note.style.color = 'var(--gray-dim)';
+  var noteTimer;
+  btn.addEventListener('click', function () {
+    var cmd = btn.getAttribute('data-install-cmd');
+    var wrap = document.getElementById('installCmdWrap');
+    function reveal() {
+      var span = document.createElement('span');
+      span.className = 'ingest-key-value';
+      span.textContent = cmd;
+      wrap.replaceChildren(span);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(cmd).then(function () {
+        if (!note.parentNode) wrap.appendChild(note);
+        clearTimeout(noteTimer);
+        noteTimer = setTimeout(function () { note.remove(); }, 1500);
+      }, reveal);
+    } else {
+      reveal();
     }
   });
 })();

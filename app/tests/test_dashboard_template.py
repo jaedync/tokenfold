@@ -170,6 +170,18 @@ class DashboardTemplateTest(unittest.TestCase):
         self.assertNotIn("s.cost>0?'var(--red)'", self.tpl)
         self.assertNotIn("ms.cost > 0 ? 'var(--red)'", self.tpl)
 
+    def test_install_command_button_and_clipboard_fallback(self):
+        """Footer install-command button copies the curl-pipe-bash one-liner;
+        with no clipboard (http/permission) it reveals the text so it can be
+        copied by hand — a copy-only button must never silently no-op."""
+        self.assertIn('id="installCmdBtn"', self.tpl)
+        self.assertIn('data-install-cmd="{{ install_cmd|e }}"', self.tpl)
+        # Scope the assertions to the install button's own script block.
+        sidx = self.tpl.index("getElementById('installCmdBtn')")
+        block = self.tpl[sidx:self.tpl.index("</script>", sidx)]
+        self.assertIn("navigator.clipboard", block)
+        self.assertIn("replaceChildren", block)  # the reveal fallback
+
 
 class TableUxRegressionTest(unittest.TestCase):
     """Pins the table/animation regression fixes: sticky headers that survive
