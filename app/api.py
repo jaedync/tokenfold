@@ -17,22 +17,25 @@ from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost
 from .db import get_conn
 from .pricing import compute_cost, display_model, effective_geo
+from .usage_buckets import normalize_usage_buckets
 
 
-def _scrub_to_minute(iso_str: str) -> str:
+def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
 
     Removes subsecond and second precision so a per-account microsecond
     offset can't fingerprint the account across responses.
 
-    Returns the input unchanged if empty or unparseable.
+    Fails CLOSED: returns None when the input is empty or unparseable, so a
+    raw (full-precision, fingerprintable) value can never pass through to
+    the response.
     """
     if not iso_str:
-        return iso_str
+        return None
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
     except (ValueError, TypeError):
-        return iso_str
+        return None
     return (
         dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
     )
@@ -81,7 +84,12 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     OAuth gauge contract (scope-gated):
     - personal scope on a non-enterprise-locked instance, with an oauth_usage
       meta row present -> weekly_budget.oauth carries the Max-subscription
-      gauge fields (weekly_pct, five_hour_pct, per-model pcts, extra_usage, ...).
+      gauge fields (weekly_pct, five_hour_pct, extra_usage, ...) plus
+      'buckets': the normalized bucket list from usage_buckets (limits[]
+      primary, legacy dicts fallback) as [{key, label, pct, resets_at}] —
+      per-model limits appear as 'scoped:<model>' keys. The main
+      weekly/five_hour gauge fields derive from the SAME merged buckets, so
+      a limits[]-only payload (legacy dicts nulled) still populates them.
     - enterprise scope, enterprise-locked instance, or no meta row -> the
       'oauth' key is NEVER present (compliance-facing invariant).
     """
@@ -190,19 +198,37 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                 usage = stored.get("data", {})
                 updated_at = stored.get("updated_at", "")
 
-                seven_day = usage.get("seven_day") or {}
-                five_hour = usage.get("five_hour") or {}
-                seven_day_sonnet = usage.get("seven_day_sonnet") or {}
-                seven_day_opus = usage.get("seven_day_opus") or {}
                 extra = usage.get("extra_usage") or {}
+
+                # Normalize ONCE (limits[] primary, legacy dicts fallback):
+                # the main weekly/5h gauges AND the buckets list all read the
+                # merged view, so a limits[]-only payload (legacy dicts
+                # nulled, as prod already does per-model) still populates
+                # every gauge. resets_at leaves the normalizer RAW — scrub
+                # (fail-closed) at this boundary.
+                normalized = normalize_usage_buckets(usage)
+                by_key = {b["key"]: b for b in normalized}
+                seven_day = by_key.get("seven_day") or {}
+                five_hour = by_key.get("five_hour") or {}
+
+                buckets = [
+                    {
+                        "key": b["key"],
+                        "label": b["label"],
+                        "pct": b["utilization"],
+                        "resets_at": _scrub_to_minute_or_none(b["resets_at"]),
+                    }
+                    for b in normalized
+                ]
 
                 oauth_block = {
                     "weekly_pct": seven_day.get("utilization", 0),
-                    "weekly_resets_at": _scrub_to_minute(seven_day.get("resets_at", "")),
+                    "weekly_resets_at":
+                        _scrub_to_minute_or_none(seven_day.get("resets_at")) or "",
                     "five_hour_pct": five_hour.get("utilization", 0),
-                    "five_hour_resets_at": _scrub_to_minute(five_hour.get("resets_at", "")),
-                    "sonnet_pct": seven_day_sonnet.get("utilization", 0) if seven_day_sonnet else None,
-                    "opus_pct": seven_day_opus.get("utilization", 0) if seven_day_opus else None,
+                    "five_hour_resets_at":
+                        _scrub_to_minute_or_none(five_hour.get("resets_at")) or "",
+                    "buckets": buckets,
                     "extra_usage": {
                         "enabled": extra.get("is_enabled", False),
                         "monthly_limit_cents": extra.get("monthly_limit", 0),

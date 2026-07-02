@@ -19,6 +19,7 @@ from .auth import require_api_key
 from .aggregator import build_dashboard_data
 from .cost_windows import compute_window_cost
 from .db import get_conn
+from .usage_buckets import normalize_usage_buckets
 
 router = APIRouter()
 
@@ -41,6 +42,30 @@ def _truncate_to_minute(iso_str: str) -> tuple[str, float] | tuple[None, None]:
         return None, None
     dt = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
     return dt.isoformat(), dt.timestamp()
+
+
+def _model_buckets(buckets: list, now_epoch: float) -> dict | None:
+    """Per-model utilization from the scoped entries of the normalized
+    bucket list (the caller runs normalize_usage_buckets exactly once).
+
+    {<slug>: {pct_used, resets_at, resets_in_s}} — resets_at minute-truncated
+    (anti-fingerprinting, hard invariant). No implied_limit_usd here: scoped
+    utilization can't be paired with a per-model spend split cheaply, and a
+    wrong dollar figure is worse than none. Returns None when the payload has
+    no scoped buckets.
+    """
+    out = {}
+    for b in buckets:
+        if not b["key"].startswith("scoped:"):
+            continue
+        resets_iso, resets_epoch = _truncate_to_minute(b["resets_at"] or "")
+        out[b["key"][len("scoped:"):]] = {
+            "pct_used": b["utilization"],
+            "resets_at": resets_iso,
+            "resets_in_s": (max(0, int(resets_epoch - now_epoch))
+                            if resets_epoch is not None else None),
+        }
+    return out or None
 
 
 def _implied_limit(spend_usd: float, pct_used: float | None) -> float | None:
@@ -96,6 +121,7 @@ async def ha_metrics():
 
     five_hour_block = None
     weekly_block = None
+    model_buckets = None
     updated_at_epoch = None
 
     if locked_scope != "enterprise":
@@ -115,15 +141,21 @@ async def ha_metrics():
 
             if stored:
                 usage = stored.get("data") or {}
-                fh = usage.get("five_hour") or {}
-                sd = usage.get("seven_day") or {}
+                # Normalize ONCE (limits[] primary, legacy dicts fallback) so
+                # a limits[]-only payload (legacy five_hour/seven_day nulled)
+                # still feeds the window blocks. resets_at stays RAW here —
+                # _truncate_to_minute below enforces minute precision.
+                buckets = normalize_usage_buckets(usage)
+                by_key = {b["key"]: b for b in buckets}
+                fh = by_key.get("five_hour") or {}
+                sd = by_key.get("seven_day") or {}
 
                 # Window spend is personal-scoped: these windows track the personal
                 # Max utilization, so spend must match (personal) for
                 # implied_limit = spend / (pct/100) to be coherent.
                 five_hour_block = _window_block(
                     conn,
-                    fh.get("resets_at", ""),
+                    fh.get("resets_at") or "",
                     fh.get("utilization"),
                     FIVE_HOURS_S,
                     now_epoch,
@@ -131,12 +163,15 @@ async def ha_metrics():
                 )
                 weekly_block = _window_block(
                     conn,
-                    sd.get("resets_at", ""),
+                    sd.get("resets_at") or "",
                     sd.get("utilization"),
                     SEVEN_DAYS_S,
                     now_epoch,
                     scope="personal",
                 )
+                # Per-model scoped buckets — same enterprise gate as the
+                # window blocks above (inside the locked_scope check).
+                model_buckets = _model_buckets(buckets, now_epoch)
 
                 updated_at_iso = stored.get("updated_at", "")
                 if updated_at_iso:
@@ -152,5 +187,6 @@ async def ha_metrics():
         "cost_total_usd": cost_total,
         "five_hour": five_hour_block,
         "weekly": weekly_block,
+        "model_buckets": model_buckets,
         "updated_at_epoch": updated_at_epoch,
     })

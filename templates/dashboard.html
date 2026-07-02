@@ -4472,6 +4472,7 @@ function initRateLimits(){
       if(!iso) return '';
       try {
         var d = new Date(iso);
+        if(isNaN(d.getTime())) return '';  // junk input — never "undefined 12a"
         var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
         var h = d.getHours(), m = d.getMinutes();
         var ampm = h >= 12 ? 'p' : 'a';
@@ -4658,28 +4659,47 @@ function initRateLimits(){
     gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected);
     gaugeHtml += '</div>';
 
-    // Per-model rows (Opus / Sonnet) if present
+    // Per-model rows from oauth.buckets 'scoped:' entries (limits[]-driven;
+    // five_hour/seven_day keep their full gauges above — never re-rendered
+    // here). Older servers without buckets: empty list, no rows, no errors.
+    // Known models get fixed colors; unknowns cycle SCOPED_FALLBACK — :root
+    // tokens deliberately NOT in SCOPED_COLORS (both stay readable as pct
+    // text via textColorFor), so an unknown bucket can never collide with a
+    // known model's color. Unknown-vs-unknown reuse past two is accepted:
+    // the palette has no more readable spares. Indexed by position among
+    // unknowns in the sorted list so colors survive the 60s poll.
+    // var(--red) never — it's reserved for over-pace overflow.
+    var SCOPED_COLORS = {
+      'scoped:opus': 'var(--black)',
+      'scoped:sonnet': 'var(--blue)',
+      'scoped:fable': 'var(--yellow)'
+    };
+    var SCOPED_FALLBACK = ['var(--gray-dim)', 'var(--yellow-text)'];
     var modelRowsHtml = '';
-    if(oauth.opus_pct !== null && oauth.opus_pct !== undefined) {
+    var scopedBuckets = (oauth.buckets || []).filter(function(b){
+      return b && typeof b.key === 'string' && b.key.indexOf('scoped:') === 0;
+    }).sort(function(a, b){ return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
+    var fallbackIdx = 0;  // counts only buckets NOT in SCOPED_COLORS
+    for(var sbi = 0; sbi < scopedBuckets.length; sbi++) {
+      var sb = scopedBuckets[sbi];
+      var sbPct = typeof sb.pct === 'number' ? sb.pct : 0;
+      var sbColor = SCOPED_COLORS[sb.key];
+      if(!sbColor) {
+        sbColor = SCOPED_FALLBACK[fallbackIdx % SCOPED_FALLBACK.length];
+        fallbackIdx++;
+      }
+      var sbReset = fmtReset(sb.resets_at);
       modelRowsHtml += '<div class="rate-gauge" style="border-top:var(--border)">'
-        + '<div class="rate-gauge-head"><span class="rate-gauge-label">Opus · 7-Day</span></div>'
+        + '<div class="rate-gauge-head">'
+        + '<span class="rate-gauge-label">' + esc(sb.label) + ' · 7-Day</span>'
+        + (sbReset ? '<span class="rate-gauge-reset">' + sbReset + '</span>' : '')
+        + '</div>'
         + '<div class="rate-gauge-track">'
-        + '<div class="rate-gauge-fill" style="width:' + Math.min(oauth.opus_pct, 100).toFixed(1) + '%;background:var(--black)"></div>'
+        + '<div class="rate-gauge-fill" style="width:' + Math.min(sbPct, 100).toFixed(1) + '%;background:' + sbColor + '"></div>'
         + '</div>'
         + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct">' + Math.round(oauth.opus_pct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(oauth.opus_pct)) + '% remaining</span>'
-        + '</div></div>';
-    }
-    if(oauth.sonnet_pct !== null && oauth.sonnet_pct !== undefined) {
-      modelRowsHtml += '<div class="rate-gauge" style="border-top:var(--border)">'
-        + '<div class="rate-gauge-head"><span class="rate-gauge-label">Sonnet · 7-Day</span></div>'
-        + '<div class="rate-gauge-track">'
-        + '<div class="rate-gauge-fill" style="width:' + Math.min(oauth.sonnet_pct, 100).toFixed(1) + '%;background:var(--blue)"></div>'
-        + '</div>'
-        + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:var(--blue)">' + Math.round(oauth.sonnet_pct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(oauth.sonnet_pct)) + '% remaining</span>'
+        + '<span class="rate-gauge-pct" style="color:' + textColorFor(sbColor) + '">' + Math.round(sbPct) + '%</span>'
+        + '<span class="rate-gauge-remaining">' + (100 - Math.round(sbPct)) + '% remaining</span>'
         + '</div></div>';
     }
 

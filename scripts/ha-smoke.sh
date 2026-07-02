@@ -37,6 +37,21 @@ for win in five_hour weekly; do
   fi
 done
 
+# model_buckets: key always present; when populated, each per-model entry
+# must carry the full sub-shape with a minute-truncated (or null) resets_at.
+check 'has("model_buckets")'                'model_buckets key must be present'
+if [ "$(echo "$body" | jq '.model_buckets')" != "null" ]; then
+  check '.model_buckets | type == "object"' 'model_buckets must be an object'
+  for slug in $(echo "$body" | jq -r '.model_buckets | keys[]'); do
+    for sub in pct_used resets_at resets_in_s; do
+      check ".model_buckets[\"$slug\"] | has(\"$sub\")" \
+        "model_buckets.$slug.$sub must be present"
+    done
+    check ".model_buckets[\"$slug\"].resets_at | (. == null) or endswith(\":00+00:00\")" \
+      "model_buckets.$slug.resets_at must be minute-truncated or null"
+  done
+fi
+
 # updated_at_epoch, if present, must be divisible by 10.
 if [ "$(echo "$body" | jq '.updated_at_epoch')" != "null" ]; then
   check '.updated_at_epoch % 10 == 0' 'updated_at_epoch must be divisible by 10'

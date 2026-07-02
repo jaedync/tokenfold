@@ -134,7 +134,7 @@ production data overrules it: per-model limits now arrive ONLY in
 `data.limits[]`. Legacy keys must still be tolerated (other plans/accounts may
 populate them), but `limits[]` is the primary source.
 
-- [ ] **B1** (P0/M) Normalization layer: one helper (new module or `api.py`)
+- [x] **B1** (P0/M) Normalization layer: one helper (new module or `api.py`)
   `normalize_usage_buckets(usage_dict) -> [{key, label, utilization,
   resets_at}]` merging (a) non-null legacy dict buckets (`five_hour`,
   `seven_day`, `seven_day_opus`, …) and (b) `limits[]` entries
@@ -146,7 +146,7 @@ populate them), but `limits[]` is the primary source.
   null legacy buckets + 8 noise keys) → exactly three buckets out
   (five_hour 51, seven_day 11, Fable 17 w/ its resets_at); dedupe rule when
   both legacy and limits[] report the same window is defined and tested.
-- [ ] **B2** (P0/S) `/api/rate-limits` emits `oauth.buckets` (list of
+- [x] **B2** (P0/S) `/api/rate-limits` emits `oauth.buckets` (list of
   normalized buckets, `resets_at` minute-scrubbed via `_scrub_to_minute`).
   Remove `sonnet_pct`/`opus_pct` and migrate the template in the same change
   (grep says the template is the sole runtime consumer; no dual sources).
@@ -154,18 +154,18 @@ populate them), but `limits[]` is the primary source.
   Accept: fable bucket flows end-to-end; enterprise scope emits no `oauth`
   key and `"buckets"` joins the forbidden-strings list in
   `test_enterprise_only.py`.
-- [ ] **B3** (P0/M) Dynamic gauge rendering in `dashboard.html` (replaces the
+- [~] **B3** (P0/M) Dynamic gauge rendering in `dashboard.html` (replaces the
   hardcoded Opus/Sonnet rows at ~4663-4684). Label map (`Fable · 7-Day` etc.)
   with a derived fallback label for unknown buckets; per-bucket `resets_at`
   shown via `fmtReset` (legacy rows never had it). Written test-first: seed
   a fable-only payload → exactly one Fable row, zero Sonnet/Opus rows.
   **Visual verification in a real browser before calling it done.**
-- [ ] **B4** (P2/S) Deterministic color strategy: opus=var(--black),
+- [~] **B4** (P2/S) Deterministic color strategy: opus=var(--black),
   sonnet=var(--blue), fable=distinct (yellow + --yellow-text, or one new
   token); unknown buckets draw from a fixed cycle indexed by sorted key so
   colors are stable across the 60s poll; **var(--red) never assigned**
   (reserved for over-pace overflow). Verify visually with 3+ buckets seeded.
-- [ ] **B5** (P1/M) `/api/ha` gains `model_buckets` built from the same
+- [x] **B5** (P1/M) `/api/ha` gains `model_buckets` built from the same
   normalizer: `{pct_used, resets_at, resets_in_s}` per scoped bucket,
   `_truncate_to_minute` scrub preserved (anti-fingerprinting), absent on
   enterprise-locked instances exactly like `five_hour`/`weekly`. Update

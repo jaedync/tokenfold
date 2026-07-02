@@ -8,10 +8,14 @@ Fix 2: /api/ha suppresses oauth fields when enterprise-locked; when unlocked the
 import json
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import app.config
 from app.tests._support import TempDBTestCase
+
+FIXTURE_PATH = (Path(__file__).resolve().parent
+                / "fixtures" / "oauth_usage_live_2026-07-01.json")
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +323,255 @@ class HAUnlockedPersonalScopeTest(TempDBTestCase):
             msg=f"five_hour.spend_usd must be personal-only $5.0 (not blended $6.0), "
                 f"got {five_hour['spend_usd']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# B2 — /api/rate-limits oauth.buckets (normalized from limits[] + legacy)
+# ---------------------------------------------------------------------------
+
+def _seed_usage_payload(conn, usage, updated_at="2026-07-01T12:00:00+00:00"):
+    """Seed meta.oauth_usage with an arbitrary usage dict."""
+    payload = {"data": usage, "updated_at": updated_at}
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        ("oauth_usage", json.dumps(payload)),
+    )
+    conn.commit()
+
+
+def _seed_live_fixture(conn):
+    """Seed meta.oauth_usage with the EXACT live prod payload shape."""
+    usage = json.loads(FIXTURE_PATH.read_text())
+    _seed_usage_payload(conn, usage)
+    return usage
+
+
+class RateLimitsBucketsTest(TempDBTestCase):
+    """B2: personal /api/rate-limits emits oauth.buckets; per-model pct
+    fields (sonnet_pct/opus_pct) are gone."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _get_oauth(self):
+        c = self.client()
+        body = c.get("/api/rate-limits?scope=personal").json()
+        wb = body.get("weekly_budget", {})
+        self.assertIn("oauth", wb, "personal scope must return oauth block")
+        return wb["oauth"]
+
+    def test_fixture_buckets_contain_scoped_fable(self):
+        _seed_live_fixture(self.conn)
+        oauth = self._get_oauth()
+        buckets = {b["key"]: b for b in oauth["buckets"]}
+        self.assertEqual(
+            set(buckets), {"five_hour", "seven_day", "scoped:fable"})
+        fable = buckets["scoped:fable"]
+        self.assertEqual(fable["label"], "Fable")
+        self.assertEqual(fable["pct"], 34.0)
+        # minute-scrubbed via _scrub_to_minute_or_none (fixture is already minute-
+        # aligned, so scrub must be identity here; truncation proven below)
+        self.assertEqual(fable["resets_at"], "2026-07-02T08:00:00+00:00")
+        self.assertTrue(fable["resets_at"].endswith(":00+00:00"))
+
+    def test_bucket_resets_at_minute_scrubbed(self):
+        usage = {"limits": [
+            {"kind": "weekly_scoped", "percent": 12,
+             "resets_at": "2026-07-02T08:00:59.123456+00:00",
+             "scope": {"model": {"id": None, "display_name": "Fable"}}},
+        ]}
+        _seed_usage_payload(self.conn, usage)
+        oauth = self._get_oauth()
+        fable = next(b for b in oauth["buckets"] if b["key"] == "scoped:fable")
+        self.assertEqual(fable["resets_at"], "2026-07-02T08:00:00+00:00")
+
+    def test_sonnet_and_opus_pct_keys_removed(self):
+        _seed_live_fixture(self.conn)
+        oauth = self._get_oauth()
+        self.assertNotIn("sonnet_pct", oauth)
+        self.assertNotIn("opus_pct", oauth)
+
+    def test_main_gauge_fields_from_merged_buckets(self):
+        """Main gauges consume the MERGED buckets (limits[] primary, legacy
+        fallback) — same values as the legacy fields on the live fixture,
+        where both sources agree."""
+        _seed_live_fixture(self.conn)
+        oauth = self._get_oauth()
+        self.assertEqual(oauth["weekly_pct"], 20.0)
+        self.assertEqual(oauth["five_hour_pct"], 1.0)
+        self.assertEqual(oauth["weekly_resets_at"], "2026-07-02T08:00:00+00:00")
+        self.assertEqual(oauth["five_hour_resets_at"],
+                         "2026-07-02T07:40:00+00:00")
+        self.assertIn("extra_usage", oauth)
+
+    def test_unparseable_resets_at_fails_closed(self):
+        """An unparseable resets_at must NEVER pass through raw — the scrub
+        fails closed: "" for the main gauge fields, null for bucket entries."""
+        usage = {
+            "five_hour": {"utilization": 5.0, "resets_at": "not-a-date"},
+            "limits": [
+                {"kind": "weekly_all", "percent": 10,
+                 "resets_at": "not-a-date"},
+                {"kind": "weekly_scoped", "percent": 12,
+                 "resets_at": "not-a-date",
+                 "scope": {"model": {"id": None, "display_name": "Fable"}}},
+            ],
+        }
+        _seed_usage_payload(self.conn, usage)
+        c = self.client()
+        resp = c.get("/api/rate-limits?scope=personal")
+        self.assertNotIn("not-a-date", resp.text,
+                         "raw unparseable resets_at must not leak")
+        oauth = resp.json()["weekly_budget"]["oauth"]
+        self.assertEqual(oauth["weekly_resets_at"], "")
+        self.assertEqual(oauth["five_hour_resets_at"], "")
+        for b in oauth["buckets"]:
+            self.assertIsNone(b["resets_at"],
+                              f"bucket {b['key']} resets_at must be null")
+
+    def test_unknown_scoped_display_name_flows_through(self):
+        """A future model limit appears with ZERO code change."""
+        usage = {"limits": [
+            {"kind": "weekly_scoped", "percent": 7,
+             "resets_at": "2026-07-02T08:00:00+00:00",
+             "scope": {"model": {"id": None, "display_name": "Nova 9"},
+                       "surface": None}},
+        ]}
+        _seed_usage_payload(self.conn, usage)
+        oauth = self._get_oauth()
+        nova = next(b for b in oauth["buckets"] if b["key"] == "scoped:nova_9")
+        self.assertEqual(nova["label"], "Nova 9")
+        self.assertEqual(nova["pct"], 7.0)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 regression — legacy dicts nulled, limits[] only: gauges still populate
+# ---------------------------------------------------------------------------
+
+class GaugesFromLimitsOnlyTest(TempDBTestCase):
+    """Prod already nulls the per-model legacy keys; when five_hour/seven_day
+    go the same way, the main gauge fields must populate from limits[] — in
+    BOTH /api/rate-limits and /api/ha (they read the merged buckets, not the
+    legacy dicts)."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _seed_limits_only(self, resets_iso):
+        _seed_usage_payload(self.conn, {
+            "five_hour": None,
+            "seven_day": None,
+            "limits": [
+                {"kind": "session", "percent": 42,
+                 "resets_at": resets_iso, "scope": None},
+                {"kind": "weekly_all", "percent": 17,
+                 "resets_at": resets_iso, "scope": None},
+            ],
+        })
+
+    def test_rate_limits_gauges_populate_from_limits(self):
+        resets_iso = "2026-07-02T08:00:00+00:00"
+        self._seed_limits_only(resets_iso)
+        c = self.client()
+        body = c.get("/api/rate-limits?scope=personal").json()
+        oauth = body["weekly_budget"]["oauth"]
+        self.assertEqual(oauth["five_hour_pct"], 42.0)
+        self.assertEqual(oauth["weekly_pct"], 17.0)
+        self.assertEqual(oauth["five_hour_resets_at"], resets_iso)
+        self.assertEqual(oauth["weekly_resets_at"], resets_iso)
+
+    def test_ha_windows_populate_from_limits(self):
+        now = time.time()
+        resets_iso = _epoch_to_iso(now + 3600)
+        self._seed_limits_only(resets_iso)
+        with patch.object(app.config, 'LOCKED_SCOPE', None):
+            c = self.client()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
+        five_hour = body.get("five_hour")
+        weekly = body.get("weekly")
+        self.assertIsNotNone(five_hour,
+                             "five_hour must populate from limits[] alone")
+        self.assertIsNotNone(weekly,
+                             "weekly must populate from limits[] alone")
+        self.assertEqual(five_hour["pct_used"], 42.0)
+        self.assertEqual(weekly["pct_used"], 17.0)
+        self.assertTrue(five_hour["resets_at"].endswith(":00+00:00"),
+                        "resets_at must be minute-truncated")
+        self.assertTrue(weekly["resets_at"].endswith(":00+00:00"),
+                        "resets_at must be minute-truncated")
+
+
+# ---------------------------------------------------------------------------
+# B5 — /api/ha model_buckets (scoped buckets from the same normalizer)
+# ---------------------------------------------------------------------------
+
+class HAModelBucketsTest(TempDBTestCase):
+    """B5: /api/ha emits model_buckets for scoped buckets; enterprise-locked
+    instances emit null — same gate as five_hour/weekly."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def test_fixture_model_buckets_fable(self):
+        _seed_live_fixture(self.conn)
+        with patch.object(app.config, 'LOCKED_SCOPE', None):
+            c = self.client()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
+        mb = body.get("model_buckets")
+        self.assertIsNotNone(mb, "model_buckets must be present when unlocked")
+        self.assertEqual(set(mb), {"fable"})
+        fable = mb["fable"]
+        self.assertEqual(fable["pct_used"], 34.0)
+        self.assertEqual(fable["resets_at"], "2026-07-02T08:00:00+00:00")
+        self.assertTrue(fable["resets_at"].endswith(":00+00:00"),
+                        "resets_at must be minute-truncated")
+        self.assertIsInstance(fable["resets_in_s"], int)
+        self.assertGreaterEqual(fable["resets_in_s"], 0)
+        self.assertNotIn("implied_limit_usd", fable,
+                         "no implied limit for scoped buckets")
+
+    def test_model_buckets_resets_at_truncated_to_minute(self):
+        usage = {"limits": [
+            {"kind": "weekly_scoped", "percent": 12,
+             "resets_at": "2026-07-02T08:00:59.123456+00:00",
+             "scope": {"model": {"id": None, "display_name": "Fable"}}},
+        ]}
+        _seed_usage_payload(self.conn, usage)
+        with patch.object(app.config, 'LOCKED_SCOPE', None):
+            c = self.client()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
+        self.assertEqual(body["model_buckets"]["fable"]["resets_at"],
+                         "2026-07-02T08:00:00+00:00")
+
+    def test_model_buckets_null_when_enterprise_locked(self):
+        _seed_live_fixture(self.conn)
+        with patch.object(app.config, 'LOCKED_SCOPE', 'enterprise'):
+            c = self.client()
+            resp = c.get("/api/ha", headers={"X-API-Key": self.api_key})
+        body = resp.json()
+        self.assertIsNone(body["model_buckets"],
+                          "model_buckets must be None when enterprise-locked")
+        raw = resp.text
+        self.assertNotIn("pct_used", raw)
+        self.assertNotIn("resets_at", raw)
+        self.assertNotIn("fable", raw.lower(),
+                         "no scoped bucket name may leak when locked")
+
+    def test_model_buckets_null_when_no_scoped_buckets(self):
+        """Legacy-only payload with no per-model buckets -> null, not {}."""
+        _seed_usage_payload(self.conn, {
+            "five_hour": {"utilization": 50.0,
+                          "resets_at": "2026-07-02T07:40:00+00:00"},
+            "seven_day": {"utilization": 50.0,
+                          "resets_at": "2026-07-02T08:00:00+00:00"},
+        })
+        with patch.object(app.config, 'LOCKED_SCOPE', None):
+            c = self.client()
+            body = c.get("/api/ha", headers={"X-API-Key": self.api_key}).json()
+        self.assertIsNone(body["model_buckets"])
 
 
 # ---------------------------------------------------------------------------

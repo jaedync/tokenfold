@@ -9,6 +9,7 @@ assertions pin the perf/robustness contracts from the UX overhaul:
 * Charts update in place (no destroy/recreate animation replay on refresh).
 """
 
+import re
 import unittest
 from pathlib import Path
 
@@ -297,6 +298,77 @@ class TableUxRegressionTest(unittest.TestCase):
         rate-limits fetch resolves (no late shift)."""
         self.assertIn("reserveLimitsSpace", self.tpl)
         self.assertIn("minHeight", self.tpl)
+
+
+class ScopedBucketGaugesTest(unittest.TestCase):
+    """B3/B4: per-model gauge rows render from oauth.buckets ('scoped:' keys)
+    instead of hardcoded opus_pct/sonnet_pct fields, with deterministic colors
+    and per-bucket reset times."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_no_hardcoded_per_model_pct_fields(self):
+        """sonnet_pct/opus_pct are gone from the API; nothing may read them."""
+        self.assertNotIn("opus_pct", self.tpl)
+        self.assertNotIn("sonnet_pct", self.tpl)
+
+    def test_scoped_rows_loop_over_oauth_buckets(self):
+        """Rows come from (oauth.buckets || []) filtered to 'scoped:' keys —
+        the || [] guard keeps older servers (no buckets field) error-free."""
+        self.assertIn("oauth.buckets || []", self.tpl)
+        self.assertIn("indexOf('scoped:')", self.tpl)
+
+    def test_deterministic_color_map(self):
+        self.assertIn("'scoped:opus': 'var(--black)'", self.tpl)
+        self.assertIn("'scoped:sonnet': 'var(--blue)'", self.tpl)
+        self.assertIn("'scoped:fable': 'var(--yellow)'", self.tpl)
+
+    def test_no_red_in_scoped_palette(self):
+        """var(--red) is reserved for over-pace overflow — never a bucket."""
+        m = re.search(r"var SCOPED_COLORS = \{(.*?)\};", self.tpl, re.DOTALL)
+        self.assertIsNotNone(m, "SCOPED_COLORS map missing")
+        self.assertNotIn("--red", m.group(1))
+        m2 = re.search(r"var SCOPED_FALLBACK = \[(.*?)\];", self.tpl)
+        self.assertIsNotNone(m2, "SCOPED_FALLBACK palette missing")
+        self.assertNotIn("--red", m2.group(1))
+
+    def test_scoped_row_shows_reset_time(self):
+        """NEW vs the old rows: per-bucket resets_at via fmtReset."""
+        self.assertIn("fmtReset(sb.resets_at)", self.tpl)
+
+    def test_scoped_label_is_escaped(self):
+        """display_name is external data — must flow through esc()."""
+        self.assertIn("esc(sb.label)", self.tpl)
+
+    def test_yellow_pct_text_uses_readable_token(self):
+        """Yellow fill needs the darkened --yellow-text token for pct text;
+        the shared textColorFor helper handles the mapping."""
+        self.assertIn("textColorFor(sbColor)", self.tpl)
+
+    def test_pct_field_name_pinned(self):
+        """The renderer reads sb.pct — the /api/rate-limits buckets[] entries
+        emit 'pct', and renaming that field server-side would silently render
+        0% gauges (same string-pin style as the oauth.buckets check above)."""
+        self.assertIn("sb.pct", self.tpl)
+
+    def test_fallback_palette_disjoint_from_fixed_map(self):
+        """Unknown buckets must never collide with a known model's color:
+        SCOPED_FALLBACK draws only tokens absent from SCOPED_COLORS, and its
+        index advances only for unknown buckets (fallbackIdx, not sbi)."""
+        m = re.search(r"var SCOPED_COLORS = \{(.*?)\};", self.tpl, re.DOTALL)
+        self.assertIsNotNone(m, "SCOPED_COLORS map missing")
+        m2 = re.search(r"var SCOPED_FALLBACK = \[(.*?)\];", self.tpl)
+        self.assertIsNotNone(m2, "SCOPED_FALLBACK palette missing")
+        fixed = set(re.findall(r"var\(--[\w-]+\)", m.group(1)))
+        fallback = re.findall(r"var\(--[\w-]+\)", m2.group(1))
+        self.assertTrue(fallback, "fallback palette must not be empty")
+        self.assertFalse(
+            fixed & set(fallback),
+            f"fallback palette reuses fixed-map colors: {fixed & set(fallback)}")
+        self.assertIn("fallbackIdx", self.tpl)
+        self.assertNotIn("SCOPED_FALLBACK[sbi", self.tpl)
 
 
 class DashboardServerRenderTest(unittest.TestCase):

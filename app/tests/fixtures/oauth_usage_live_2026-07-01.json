@@ -1,0 +1,92 @@
+{
+  "amber_ladder": null,
+  "cinder_cove": null,
+  "extra_usage": {
+    "currency": null,
+    "daily": null,
+    "decimal_places": null,
+    "disabled_reason": null,
+    "is_enabled": false,
+    "monthly_limit": null,
+    "used_credits": null,
+    "utilization": null,
+    "weekly": null
+  },
+  "five_hour": {
+    "limit_dollars": null,
+    "remaining_dollars": null,
+    "resets_at": "2026-07-02T07:40:00+00:00",
+    "used_dollars": null,
+    "utilization": 1.0
+  },
+  "iguana_necktie": null,
+  "limits": [
+    {
+      "group": "session",
+      "is_active": false,
+      "kind": "session",
+      "percent": 1,
+      "resets_at": "2026-07-02T07:40:00+00:00",
+      "scope": null,
+      "severity": "normal"
+    },
+    {
+      "group": "weekly",
+      "is_active": false,
+      "kind": "weekly_all",
+      "percent": 20,
+      "resets_at": "2026-07-02T08:00:00+00:00",
+      "scope": null,
+      "severity": "normal"
+    },
+    {
+      "group": "weekly",
+      "is_active": true,
+      "kind": "weekly_scoped",
+      "percent": 34,
+      "resets_at": "2026-07-02T08:00:00+00:00",
+      "scope": {
+        "model": {
+          "display_name": "Fable",
+          "id": null
+        },
+        "surface": null
+      },
+      "severity": "normal"
+    }
+  ],
+  "member_dashboard_available": false,
+  "nimbus_quill": null,
+  "omelette_promotional": null,
+  "seven_day": {
+    "limit_dollars": null,
+    "remaining_dollars": null,
+    "resets_at": "2026-07-02T08:00:00+00:00",
+    "used_dollars": null,
+    "utilization": 20.0
+  },
+  "seven_day_cowork": null,
+  "seven_day_oauth_apps": null,
+  "seven_day_omelette": null,
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "spend": {
+    "auto_reload": null,
+    "balance": null,
+    "can_purchase_credits": false,
+    "can_toggle": false,
+    "cap": null,
+    "disabled_reason": null,
+    "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+    "enabled": false,
+    "limit": null,
+    "percent": 0,
+    "severity": "normal",
+    "used": {
+      "amount_minor": 0,
+      "currency": "USD",
+      "exponent": 2
+    }
+  },
+  "tangelo": null
+}

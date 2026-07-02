@@ -1,8 +1,12 @@
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.tests._support import TempDBTestCase
+
+FIXTURE_PATH = (Path(__file__).resolve().parent
+                / "fixtures" / "oauth_usage_live_2026-07-01.json")
 
 
 def ins(conn, uuid, req, acct, plan, org, machine, project, session,
@@ -75,6 +79,17 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
             (json.dumps(stored),))
         self.conn.commit()
 
+    def _seed_live_fixture(self):
+        """Seed meta.oauth_usage with the EXACT live prod payload — its
+        limits[] carries a weekly_scoped 'Fable' entry, so the suppression
+        tests below exercise real bucket data (mirrors test_oauth_gating)."""
+        usage = json.loads(FIXTURE_PATH.read_text())
+        stored = {"data": usage, "updated_at": "2026-07-01T12:00:00+00:00"}
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('oauth_usage', ?)",
+            (json.dumps(stored),))
+        self.conn.commit()
+
     def test_routes_exclude_consumer_spend(self):
         # Events in the CURRENT week window (rolling-7d window; no oauth row needed).
         now = time.time()
@@ -128,25 +143,32 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         now = time.time()
         ins(self.conn, "e1", "re1", "jaedyn@acme.io", "enterprise", "Acme",
             "acme-hpc1", "acme-portal", "sE", inp=1_000_000, ts=now - 3600)
-        # Seed an oauth_usage row — it must still be suppressed for enterprise scope.
-        self._seed_oauth_usage(now + 3600)
-        self.conn.commit()
+        # Seed the LIVE fixture — its limits[] yields a scoped:fable bucket,
+        # so the suppression assertions below are non-vacuous. It must still
+        # be suppressed for enterprise scope.
+        self._seed_live_fixture()
         c = self.client()
         # Default (no scope param) resolves to enterprise.
-        body = c.get("/api/rate-limits").json()
+        resp = c.get("/api/rate-limits")
+        body = resp.json()
         wb = body.get("weekly_budget", {})
         # Top-level oauth key must be absent.
         self.assertNotIn("oauth", wb,
                          "'oauth' key must not appear in enterprise rate-limits response")
         # Belt-and-suspenders: none of the gauge field names in the raw JSON text.
-        import json as _json
-        raw = _json.dumps(body)
+        raw = resp.text
         for forbidden in ("weekly_pct", "five_hour_pct", "weekly_resets_at",
                           "five_hour_resets_at", "opus_pct", "sonnet_pct",
                           "extra_usage"):
             self.assertNotIn(f'"{forbidden}"', raw,
                              f"personal gauge field '{forbidden}' must not appear in "
                              f"enterprise /api/rate-limits response JSON")
+        # Normalized bucket data is personal Max data too — none of the bucket
+        # list, its scoped keys, or the model display name may appear.
+        for forbidden in ("scoped:", "Fable", "buckets"):
+            self.assertNotIn(forbidden, raw,
+                             f"'{forbidden}' must not appear in enterprise "
+                             f"/api/rate-limits response body")
 
     def test_rate_limits_personal_has_oauth_gauges(self):
         """Personal /api/rate-limits with a seeded oauth_usage row must return the
@@ -193,17 +215,24 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         now = time.time()
         ins(self.conn, "c1", "rc1", "me@gmail.com", "max", None,
             "personal-mbp", "proj", "sC", inp=1_000_000, ts=now - 3600)
-        self._seed_oauth_usage(now + 3600)
-        self.conn.commit()
+        # LIVE fixture (limits[] with scoped:fable) — lock must suppress it all.
+        self._seed_live_fixture()
         import app.config as cfg
         from unittest.mock import patch
         with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
             c = self.client()
             # Locked enterprise — any personal request returns 403
-            body = c.get("/api/rate-limits").json()
+            resp = c.get("/api/rate-limits")
+            body = resp.json()
         wb = body.get("weekly_budget", {})
         self.assertNotIn("oauth", wb,
                          "'oauth' key must not appear when LOCKED_SCOPE='enterprise'")
+        # No normalized bucket data may leak into the raw body either.
+        raw = resp.text
+        for forbidden in ("scoped:", "Fable", "buckets"):
+            self.assertNotIn(forbidden, raw,
+                             f"'{forbidden}' must not appear in enterprise-locked "
+                             f"/api/rate-limits response body")
 
     def test_oauth_panel_show_path_sets_real_display_value(self):
         """Visibility regression pin (P1): #oauthGaugesPanel is hidden by the

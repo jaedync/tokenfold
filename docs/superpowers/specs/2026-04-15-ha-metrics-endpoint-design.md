@@ -143,7 +143,7 @@ The Anthropic OAuth usage API returns `utilization` rounded to approximately 0.1
 
 ## Out of Scope (deferred)
 
-- Per-model implied limits (Opus-only, Sonnet-only) — data is present in `seven_day_sonnet` / `seven_day_opus` but not needed yet.
+- Per-model implied limits (Opus-only, Sonnet-only) — data is present in `seven_day_sonnet` / `seven_day_opus` but not needed yet. *Update 2026-07-01:* per-model **utilization** now ships as top-level `model_buckets` (`{<slug>: {pct_used, resets_at, resets_in_s}}`, minute-truncated, enterprise-gated like `five_hour`/`weekly`, sourced from `data.limits[]` via `app/usage_buckets.py`); per-model implied **dollar** limits remain deferred.
 - `extra_usage` (monthly overage credits) — also present in `meta.oauth_usage` but deferred until the primary implied-limit signal is validated.
 - Per-machine cost breakdowns.
 - Tokens-today / cache hit ratio.
