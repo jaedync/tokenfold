@@ -176,7 +176,7 @@ marker) now that `resets_at` is available? (Cheap once B3 lands.)
 
 ## Workstream C — Historize limit readings + reset detection (P1)
 
-- [ ] **C1** (P1/S+M) Append-only `limit_readings` table + shared writer.
+- [x] **C1** (P1/S+M) Append-only `limit_readings` table + shared writer.
   Schema block in `db.py` SCHEMA (CREATE TABLE IF NOT EXISTS — no `_migrate`
   change needed): `id PK, fetched_epoch REAL NOT NULL, source TEXT
   ('server'|'client'), bucket TEXT, utilization REAL, resets_at TEXT (raw,
@@ -192,7 +192,7 @@ marker) now that `resets_at` is available? (Cheap once B3 lands.)
   gate today — the new write must skip when `LOCKED_SCOPE=='enterprise'`**,
   matching `usage_fetcher.should_run`; assert via the
   `test_enterprise_only.py` pattern.
-- [ ] **C2** (P1/M) Reset detection, derived on read (tunable without
+- [x] **C2** (P1/M) Reset detection, derived on read (tunable without
   re-migration). `detect_resets(rows)`: for consecutive same-bucket readings,
   reset iff `prev.resets_at_epoch > prev.fetched_epoch` (window still active
   — rules out natural expiry) AND (`utilization` drops ≥ RESET_DROP_PTS
@@ -200,7 +200,7 @@ marker) now that `resets_at` is available? (Cheap once B3 lands.)
   constants. Tests: natural 5h expiry (63→0, resets_at in past) → NO event;
   mid-window 63→2 → event; resets_at +26h w/ flat utilization → event;
   1-2pt jitter → NO event.
-- [ ] **C3** (P1/M) `GET /api/limit-history?bucket=&hours=` behind
+- [x] **C3** (P1/M) `GET /api/limit-history?bucket=&hours=` behind
   `require_dashboard_auth`, router registered like `billing_readings`
   (`main.py:99,109`). Returns readings (minute-scrubbed `resets_at`) +
   detected resets. 403/absent on enterprise scope or locked instance —
@@ -211,11 +211,11 @@ marker) now that `resets_at` is available? (Cheap once B3 lands.)
   "reset <time>" annotation on the weekly gauge when a reset falls inside
   the current window. Seed a synthetic mid-window reset; template test +
   real-browser visual check.
-- [ ] **C5** (P2/S) Retention: `DELETE FROM limit_readings WHERE
+- [x] **C5** (P2/S) Retention: `DELETE FROM limit_readings WHERE
   fetched_epoch < now - RETENTION_DAYS(90)` at most daily, in the fetcher
   maintenance loop (fine once C1's ingest gate exists — locked instances
   accumulate no rows). Test: 91d-old rows pruned, 89d survive.
-- [ ] **C6** (P2/S) `POST /api/usage` bucket-level validation: keep raw-dict
+- [x] **C6** (P2/S) `POST /api/usage` bucket-level validation: keep raw-dict
   storage for back-compat (non-dict already 400s — `ingest.py:505`), delegate
   per-bucket validation to `record_limit_readings` (skip+log invalid, record
   valid).

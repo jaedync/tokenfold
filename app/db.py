@@ -177,6 +177,24 @@ CREATE TABLE IF NOT EXISTS billing_readings (
 CREATE INDEX IF NOT EXISTS idx_billing_readings_seq
     ON billing_readings(scope, month, recorded_epoch);
 
+-- Append-only per-bucket OAuth usage-limit history (one row per bucket per
+-- poll). No raw-JSON column: the per-bucket fields suffice, and the latest
+-- full raw blob already lives in meta.oauth_usage. resets_at stores the RAW
+-- pre-scrub string (minute-scrubbing happens at API boundaries only);
+-- resets_at_epoch exists for query arithmetic.
+CREATE TABLE IF NOT EXISTS limit_readings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_epoch   REAL NOT NULL,
+    source          TEXT NOT NULL,
+    bucket          TEXT NOT NULL,
+    utilization     REAL NOT NULL,
+    resets_at       TEXT,
+    resets_at_epoch REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_limit_readings_seq
+    ON limit_readings(bucket, fetched_epoch);
+
 """ + _DAILY_SUMMARY_DDL + """
 CREATE TABLE IF NOT EXISTS desktop_sessions (
     cli_session_id         TEXT PRIMARY KEY,

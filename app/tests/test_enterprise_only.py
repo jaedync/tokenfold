@@ -368,6 +368,55 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
                          "opus_pct must not appear in embedded data payload")
 
 
+class EnterpriseLockedLimitHistoryTest(TempDBTestCase):
+    """Workstream C compliance: enterprise-locked instances must never
+    PERSIST personal Max limit history (POST /api/usage gate) nor SERVE it
+    (GET /api/limit-history), even when data is already present."""
+
+    def test_store_usage_locked_writes_no_limit_history(self):
+        """The meta.oauth_usage snapshot write is unchanged (existing
+        behavior), but the NEW limit_readings history write must be gated."""
+        usage = json.loads(FIXTURE_PATH.read_text())
+        import app.config as cfg
+        from unittest.mock import patch
+        with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
+            c = self.client()
+            r = c.post("/api/usage", json={"usage": usage},
+                       headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        meta = self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
+        self.assertIsNotNone(meta, "meta snapshot write must stay as-is")
+        n = self.conn.execute(
+            "SELECT COUNT(*) c FROM limit_readings").fetchone()["c"]
+        self.assertEqual(n, 0, "locked instance must persist NO limit history")
+
+    def test_limit_history_locked_is_404_with_no_data(self):
+        """Even with seeded rows, a locked instance must 404 (neutral —
+        the endpoint doesn't advertise itself) and leak zero utilization
+        or resets data in the body."""
+        now = time.time()
+        for t, pct in ((now - 1200, 63.0), (now - 600, 2.0)):
+            self.conn.execute(
+                "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+                "utilization, resets_at, resets_at_epoch) "
+                "VALUES(?, 'server', 'seven_day', ?, "
+                "'2026-07-02T08:00:00+00:00', ?)",
+                (t, pct, now + 3 * 3600))
+        self.conn.commit()
+        import app.config as cfg
+        from unittest.mock import patch
+        with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
+            c = self.client()
+            r = c.get("/api/limit-history?bucket=seven_day")
+        self.assertEqual(r.status_code, 404)
+        raw = r.text
+        for forbidden in ("pct", "utilization", "readings", "63", "resets_at"):
+            self.assertNotIn(forbidden, raw,
+                             f"'{forbidden}' must not appear in locked "
+                             f"/api/limit-history response body")
+
+
 class EnterprisePredicateUnattributedTest(TempDBTestCase):
     """Fix 3: unattributed rows (account_email=NULL) must be excluded even if
     plan='enterprise' and org_name is set."""

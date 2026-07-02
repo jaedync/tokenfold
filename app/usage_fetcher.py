@@ -28,6 +28,7 @@ def log(msg, *args):
 
 USAGE_FETCH_INTERVAL_S = 600  # fetch usage every 10 minutes
 TOKEN_CHECK_INTERVAL_S = 3600  # check token freshness every hour
+LIMIT_PRUNE_INTERVAL_S = 86400  # prune limit_readings at most once per day
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 ANTHROPIC_BETA = "oauth-2025-04-20"
@@ -258,10 +259,40 @@ async def _fetch_usage():
     )
     conn.commit()
 
+    # Historize per-bucket readings on EVERY poll (never raises into us) —
+    # the meta row above is snapshot-only; limit_readings is the history.
+    from .limit_readings import record_limit_readings
+    record_limit_readings(conn, usage, time.time(), "server")
+
     from .aggregator import invalidate_cache
     invalidate_cache()
 
     log("Usage data fetched and stored")
+
+
+# Module-level bookkeeping so the prune runs at most once per day across
+# loop iterations (mirrors the last_token_check idiom, but module-scoped so
+# tests can drive it directly).
+_last_prune_epoch: float = 0.0
+
+
+def _maybe_prune_limit_readings(now: float) -> bool:
+    """Prune limit_readings at most once per LIMIT_PRUNE_INTERVAL_S.
+
+    Placement here is compliance-safe: on enterprise-locked instances this
+    fetcher never runs (should_run) AND the ingest history write is gated,
+    so no limit_readings rows accumulate there to need pruning.
+    """
+    global _last_prune_epoch
+    if now - _last_prune_epoch < LIMIT_PRUNE_INTERVAL_S:
+        return False
+    _last_prune_epoch = now
+    try:
+        from .limit_readings import prune_limit_readings
+        prune_limit_readings(get_conn(), now_epoch=now)
+    except Exception as e:
+        log("Error pruning limit readings: %s", e)
+    return True
 
 
 async def _maintenance_loop():
@@ -279,6 +310,9 @@ async def _maintenance_loop():
             except Exception:
                 log("Error in token refresh")
             last_token_check = now
+
+        # Retention housekeeping (self-limits to once per day)
+        _maybe_prune_limit_readings(now)
 
         # Fetch usage
         try:

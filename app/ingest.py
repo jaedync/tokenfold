@@ -5,10 +5,11 @@ POST /api/usage - store OAuth usage data from client.
 import json
 import re
 import sqlite3
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .auth import require_api_key
 from .config import TZ_NAME
@@ -512,6 +513,18 @@ async def store_usage(request: Request):
         ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
     )
     conn.commit()
+
+    # Historize per-bucket readings — but ONLY on instances not locked to
+    # enterprise scope: the compliance invariant says locked instances must
+    # never PERSIST personal Max limit history (test_enterprise_only). The
+    # meta snapshot write above stays ungated (existing behavior). Read
+    # LOCKED_SCOPE fresh via sys.modules for importlib.reload safety, like
+    # api.py does. Bucket-level validation lives inside record_limit_readings
+    # (invalid buckets skipped, valid ones recorded, never raises).
+    import sys
+    if sys.modules["app.config"].LOCKED_SCOPE != "enterprise":
+        from .limit_readings import record_limit_readings
+        record_limit_readings(conn, usage, time.time(), "client")
 
     # Rate limit data is now served from /api/rate-limits directly,
     # no need to rebuild the full dashboard cache for usage updates.
