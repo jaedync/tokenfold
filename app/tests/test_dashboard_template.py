@@ -515,8 +515,9 @@ class BudgetLeftWindowFixTest(unittest.TestCase):
         computed only inside the block) — with 0 < active_s < 30 the gate
         passed but Math.round(active_s/60) rounded down to 0, so the pushed
         stat had an empty value. Gate and render must use the SAME
-        already-rounded lwActiveMin."""
-        start = self.tpl.index("var remainPct = 100 - wPct;")
+        already-rounded lwActiveMin. (F2 hoisted both declarations above
+        the stats rows, so the search window starts at the declaration.)"""
+        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
         end = self.tpl.index("var weeklyNote = null;")
         block = self.tpl[start:end]
         # lwActiveMin is computed before the gate, not only inside the block.
@@ -527,6 +528,42 @@ class BudgetLeftWindowFixTest(unittest.TestCase):
         self.assertIn("(limitWindow.cost > 0 || lwActiveMin > 0))", block)
         # Negative pin: the gate no longer compares the raw seconds field.
         self.assertNotIn("limitWindow.active_s > 0)", block)
+
+
+class WindowAnchoredSpendRowsTest(unittest.TestCase):
+    """F2: the weekly subpanel's spend/active rows are anchored to the
+    CURRENT limit window (oauth.limit_window), which resets when the window
+    does — natural rollover or granted reset alike. The never-resetting
+    rolling-7d pair survives only as the fallback when limit_window is
+    absent, with its honest label."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_window_rows_primary_rolling_fallback(self):
+        self.assertIn("'spent · this window'", self.tpl)
+        self.assertIn("'active · this window'", self.tpl)
+        # Fallback path (and only there) keeps the rolling labels.
+        self.assertIn("'spent · rolling 7d'", self.tpl)
+        self.assertIn("'active · rolling 7d'", self.tpl)
+        # Primary rows read limit_window fields, not wb.week_cost.
+        self.assertIn("fC(limitWindow.cost || 0)", self.tpl)
+
+    def test_rows_are_conditional_on_limit_window(self):
+        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
+        end = self.tpl.index("'spent · rolling 7d'")
+        block = self.tpl[start:end]
+        self.assertIn("if(limitWindow) {", block)
+        self.assertIn("'spent · this window'", block)
+
+    def test_carry_over_note_gated_on_fallback_path(self):
+        """The 'stats below carry over' apology only makes sense when the
+        rolling-7d fallback is showing — window-anchored stats reset WITH
+        the window."""
+        self.assertIn(
+            "if (!limitWindow && wPct < 1 && (weekCost > 0 || weekActiveMin > 0))",
+            self.tpl)
 
 
 class PaceChartTrendOverlayTest(unittest.TestCase):
@@ -631,6 +668,63 @@ class DashboardServerRenderTest(unittest.TestCase):
         src = (TEMPLATE.parent.parent / "app" / "dashboard.py").read_text()
         self.assertIn("_hot_cost", src)
         self.assertNotIn("'var(--red)' if d[\"cost\"] > 0", src)
+
+
+class SpendHistorySectionTest(unittest.TestCase):
+    """New 'Spend History' section: two Chart.js cards (limit windows +
+    monthly spend) fed by a single boot-time fetch of /api/spend-history,
+    with no polling and no error banner on failure (secondary analytics)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_section_markup_present_after_rate_limits(self):
+        self.assertIn('id="spendHistorySection"', self.tpl)
+        self.assertIn('id="spendHistoryWindowsCard"', self.tpl)
+        self.assertIn('id="spendHistoryMonthlyCard"', self.tpl)
+        self.assertGreater(
+            self.tpl.index('id="spendHistorySection"'),
+            self.tpl.index('id="rateLimitsSection"'),
+            "Spend History must be inserted after Cost & Limits")
+
+    def test_fetch_url_uses_scope_global(self):
+        self.assertIn(
+            "'/api/spend-history?scope=' + encodeURIComponent(TF_SCOPE)",
+            self.tpl)
+
+    def test_windows_card_gated_on_windows_key(self):
+        self.assertIn("if(data.windows && data.windows.length){", self.tpl)
+        self.assertIn("if(data.months && data.months.length){", self.tpl)
+
+    def test_no_polling_single_fetch(self):
+        """History moves slowly — exactly one fetch call, and it must not
+        live inside (or near) any setInterval callback."""
+        self.assertEqual(self.tpl.count("/api/spend-history?scope="), 1)
+        for m in re.finditer(r"setInterval\(", self.tpl):
+            window = self.tpl[m.start():m.start() + 400]
+            self.assertNotIn("spend-history", window)
+
+    def test_new_functions_are_declarations_not_arrows(self):
+        for fn in (
+            "function maybeRenderSpendHistory(){",
+            "function renderSpendWindowsChart(windows){",
+            "function renderSpendMonthlyChart(months){",
+            "function spShortDate(epochSeconds){",
+            "function spAlpha(hex, alpha){",
+        ):
+            self.assertIn(fn, self.tpl)
+
+    def test_section_hidden_until_data_shows_something(self):
+        """Default-hidden section only unhides once at least one card has
+        data — this also covers the fetch-error case (stays hidden, no
+        banner) since the section is never touched on the .catch() path."""
+        self.assertIn(
+            'id="spendHistorySection" style="border-bottom:var(--border);display:none"',
+            self.tpl)
+        self.assertIn("document.getElementById('spendHistorySection').style.display = 'block';", self.tpl)
+        catch_pos = self.tpl.index(".catch(function(){ /* secondary analytics")
+        self.assertNotIn("spendHistorySection", self.tpl[catch_pos:catch_pos + 120])
 
 
 if __name__ == "__main__":

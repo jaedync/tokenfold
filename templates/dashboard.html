@@ -1641,6 +1641,59 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
 .content-grid-2col > *,
 .content-grid-3col > * { min-width: 0; }
 
+/* ---- SPEND HISTORY ---- */
+
+.spend-history-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem 2rem;
+  margin-top: 1.5rem;
+}
+
+.spend-history-card { min-width: 0; }
+
+.spend-history-card-title { margin-bottom: 0.8rem; }
+
+.spend-history-chart-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  height: 280px;
+}
+
+.spend-history-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 0.8rem;
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+}
+
+.spend-history-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+.spend-history-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--black);
+}
+
+.spend-history-legend-note { color: var(--gray-dim); }
+
+@media (max-width: 959px) {
+  .spend-history-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+}
+
+@media (max-width: 480px) {
+  .spend-history-chart-wrap { height: 240px; }
+}
+
 /* ---- TABLES ---- */
 
 .table-panel {
@@ -2531,6 +2584,31 @@ th[data-info]:focus::after { opacity: 1; }
   {%- endif %}
 </div>
 
+<!-- ======== SPEND HISTORY (windows + monthly, secondary analytics — fetched
+     once at boot, no polling; hidden until the fetch resolves with data) ======== -->
+<div class="panel" id="spendHistorySection" style="border-bottom:var(--border);display:none">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--blue"></div>
+    <h2>Spend History</h2>
+  </div>
+  <div class="spend-history-grid">
+    <div class="spend-history-card" id="spendHistoryWindowsCard" hidden>
+      <div class="rate-gauge-label spend-history-card-title">Limit Windows</div>
+      <div class="spend-history-chart-wrap"><canvas id="cSpendWindows" role="img" aria-label="Cost and peak utilization per limit window"></canvas></div>
+      <div class="spend-history-legend">
+        <span><span class="spend-history-swatch" style="background:var(--blue)"></span>natural</span>
+        <span><span class="spend-history-swatch" style="background:var(--red)"></span>granted reset</span>
+        <span><span class="spend-history-swatch" style="background:var(--gray-dim)"></span>in progress</span>
+        <span class="spend-history-legend-note">faded = boundaries inferred</span>
+      </div>
+    </div>
+    <div class="spend-history-card" id="spendHistoryMonthlyCard" hidden>
+      <div class="rate-gauge-label spend-history-card-title">Monthly Spend &middot; UTC</div>
+      <div class="spend-history-chart-wrap"><canvas id="cSpendMonthly" role="img" aria-label="Monthly spend by model"></canvas></div>
+    </div>
+  </div>
+</div>
+
 <!-- Weekly usage chart modal -->
 <div id="usageChartOverlay" class="usage-chart-overlay" role="dialog" aria-modal="true" aria-label="Weekly usage pace chart">
   <div class="usage-chart-modal">
@@ -3260,9 +3338,17 @@ function hashStr(s){let h=5381;for(let i=0;i<s.length;i++)h=(h*33)^s.charCodeAt(
 const BAUHAUS_PALETTE = ['#e63329','#1a4b8c','#f5c518','#1a1a1a','#8b8680','#d8d4cc','#6b6860'];
 function colorFromPalette(name,explicitMap,palette){return explicitMap[name]||palette[hashStr(name)%palette.length];}
 
+/* Family hue, era shade: Opus = reds, Sonnet = blues, Fable = teal,
+   Haiku = yellows. Every CURRENT model needs an explicit entry — unlisted
+   names fall through to a hash over BAUHAUS_PALETTE, and 'Sonnet 5'
+   hashed to Sonnet 4.6's exact blue (ambiguous stacked charts). */
 const MODEL_COLORS = {
+  'Fable 5':    '#0f6b5c',
+  'Opus 4.8':   '#b8231a',
+  'Opus 4.7':   '#e08a1e',
   'Opus 4.6':   '#e63329',
   'Opus 4.5':   '#1a1a1a',
+  'Sonnet 5':   '#4f83bd',
   'Sonnet 4.6': '#1a4b8c',
   'Sonnet 4.5': '#8b8680',
   'Haiku 4.5':  '#f5c518',
@@ -4751,21 +4837,34 @@ function initRateLimits(){
         color: overUnder ? 'var(--red)' : 'var(--blue)'
       });
     }
-    // labels say "rolling 7d" — these do NOT reset with the limit window (P2-11)
-    weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
-    weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
+    // F2: spend/active are anchored to the CURRENT limit window
+    // (oauth.limit_window — starts at the natural rollover, or at the last
+    // granted reset if Anthropic issued one mid-window). The old rolling-7d
+    // pair (P2-11) never reset and read as "significant cost" seconds after
+    // a fresh window; it survives only as the fallback when limit_window is
+    // absent (unparseable resets_at), where its label stays honest.
+    // lwActiveMin is rounded up front so the budget-left gate below compares
+    // the SAME rounded quantity it renders (Fix 7).
+    var limitWindow = oauth.limit_window || null;
+    var lwActiveMin = limitWindow ? Math.round((limitWindow.active_s || 0) / 60) : 0;
+    if(limitWindow) {
+      weeklyStats.push({ value: fC(limitWindow.cost || 0), label: 'spent · this window' });
+      weeklyStats.push({ value: fHM(lwActiveMin), label: 'active · this window' });
+    } else {
+      weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
+      weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
+    }
 
     // D5: budget-left estimate MUST divide one consistent window's cost/
     // active-time by that SAME window's pct. The old code divided the
     // ROLLING-7d weekCost/weekActiveMin (a moving window) by the LIMIT-window
     // wPct, producing absurd numbers right after any reset (numerator barely
-    // moved, denominator near zero). oauth.limit_window (D5/server) carries
-    // cost + active_s over the actual [weekly_resets_at-7d, now] limit
-    // window, so both sides of the division now agree; suppressed entirely
+    // moved, denominator near zero). oauth.limit_window (D5/server, hoisted
+    // above for the F2 stats rows) carries cost + active_s over the actual
+    // limit window, so both sides of the division agree; suppressed entirely
     // when: limit_window is absent, wExpected hasn't cleared the noise floor,
     // or a reset landed in the last 24h (falls back to the existing
     // weeklyNote below, same as it always did for wPct < 1).
-    var limitWindow = oauth.limit_window || null;
     var recentWeeklyReset = false;
     if(trend.seven_day && trend.seven_day.resets && trend.seven_day.resets.length) {
       for(var wri = 0; wri < trend.seven_day.resets.length; wri++) {
@@ -4779,14 +4878,6 @@ function initRateLimits(){
     }
 
     var remainPct = 100 - wPct;
-    // Fix 7: gate and render on the SAME rounded quantity. lwActiveMin used
-    // to be computed only inside this block, so the gate compared the raw
-    // limitWindow.active_s (seconds) while the render compared the rounded
-    // minutes — with 0 < active_s < 30 the gate passed (active_s > 0) but
-    // Math.round(active_s/60) rounded down to 0, so neither part pushed and
-    // the stat rendered with an empty value. Computing lwActiveMin up front
-    // and gating on it directly keeps the two checks consistent.
-    var lwActiveMin = limitWindow ? Math.round((limitWindow.active_s || 0) / 60) : 0;
     if(limitWindow && wExpected >= 2 && !recentWeeklyReset
         && wPct > 1 && (limitWindow.cost > 0 || lwActiveMin > 0)) {
       var parts = [];
@@ -4798,8 +4889,11 @@ function initRateLimits(){
 
     // "0% · 100% remaining" next to nonzero rolling-7d stats reads as broken
     // right after a window reset — say so explicitly (P2-11)
+    // Only relevant on the F2 fallback path: window-anchored stats reset
+    // WITH the window, so there is nothing to explain away when
+    // limit_window is present.
     var weeklyNote = null;
-    if (wPct < 1 && (weekCost > 0 || weekActiveMin > 0)) {
+    if (!limitWindow && wPct < 1 && (weekCost > 0 || weekActiveMin > 0)) {
       weeklyNote = 'window just reset \u2014 the rolling-7d stats below carry over';
     }
 
@@ -5842,6 +5936,208 @@ renderBillingReadings();
     }).observe(modal, { attributes:true, attributeFilter:['class'] });
   });
 })();
+
+/* ---- Spend History (windows + monthly cost, secondary analytics) ----
+   Fetched once at boot — this data moves slowly, so unlike /api/rate-limits
+   there is no poller. Chart.js is deferred, so both the fetch callback and a
+   DOMContentLoaded listener attempt the render; maybeRenderSpendHistory() is
+   idempotent (guarded by _spendHistoryRendered) so whichever fires last (or
+   both) just no-ops past the first successful paint. On fetch failure the
+   section stays hidden — it's secondary analytics, no error banner (that's
+   reserved for primary data per the house error rules). */
+var _spendHistoryData = null;
+var _spendHistoryRendered = false;
+
+var SPEND_HISTORY_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function spShortDate(epochSeconds){
+  if(typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return '';
+  var d = new Date(epochSeconds * 1000);
+  return SPEND_HISTORY_MONTHS[d.getMonth()] + ' ' + d.getDate();
+}
+
+function spMonthLabel(ym){
+  var parts = String(ym).split('-');
+  var mi = parseInt(parts[1], 10) - 1;
+  var yy = parts[0].slice(2);
+  // "Mar ’26", not "Mar 26" — bare "Mar 26" reads as March 26th,
+  // which is exactly what the windows chart's labels ARE next door.
+  return (SPEND_HISTORY_MONTHS[mi] || '?') + ' ’' + yy;
+}
+
+function spWindowDays(startEpoch, endEpoch){
+  var end = (endEpoch != null) ? endEpoch : (Date.now() / 1000);
+  return ((end - startEpoch) / 86400).toFixed(1);
+}
+
+/* Appends a 2-digit hex alpha suffix to a plain '#rrggbb' color — the same
+   8-digit-hex-color convention the other charts in this file use for
+   translucent fills (e.g. '#1a4b8c80'), rather than pulling in rgba(). */
+function spAlpha(hex, alpha){
+  var a = Math.round(alpha * 255);
+  var suffix = (a < 16 ? '0' : '') + a.toString(16);
+  return hex + suffix;
+}
+
+var SPEND_WINDOW_COLORS = { natural: '#1a4b8c', granted: '#e63329', ongoing: '#6b6860' };
+function spWindowColor(w){
+  var base = SPEND_WINDOW_COLORS[w.end_kind] || SPEND_WINDOW_COLORS.ongoing;
+  return w.inferred ? spAlpha(base, 0.45) : base;
+}
+function spWindowKindLabel(kind){
+  if(kind === 'natural') return 'natural rollover';
+  if(kind === 'granted') return 'granted reset';
+  return 'in progress';
+}
+
+function renderSpendWindowsChart(windows){
+  var canvas = document.getElementById('cSpendWindows');
+  if(!canvas || !hasChart()) return;
+  var labels = [], barData = [], barColors = [], peakData = [];
+  for(var i = 0; i < windows.length; i++){
+    var w = windows[i];
+    var ongoing = w.end_kind === 'ongoing';
+    labels.push(ongoing ? 'now' : spShortDate(w.end_epoch));
+    barData.push(w.cost || 0);
+    barColors.push(spWindowColor(w));
+    peakData.push((w.peak_pct == null) ? null : w.peak_pct);
+  }
+  upsertChart('spendWindows', canvas, {
+    data: {
+      labels: labels,
+      datasets: [
+        { type: 'bar', label: 'Cost', data: barData, backgroundColor: barColors, yAxisID: 'y' },
+        {
+          type: 'line', label: 'Peak %', data: peakData,
+          showLine: false, spanGaps: false,
+          pointRadius: function(ctx){ return (ctx.raw == null) ? 0 : 4; },
+          pointBackgroundColor: '#1a1a1a', pointBorderColor: '#1a1a1a',
+          yAxisID: 'y2'
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { grid:{display:false}, ticks:{color:'#3a352f'}, border:{color:'#1a1a1a',width:3} },
+        y: {
+          beginAtZero: true, position: 'left',
+          title: { display: !isMobile(), text: '$', color: '#3a352f', font: { size: 10 } },
+          ticks: { callback: function(v){ return '$' + v; }, color: '#3a352f' },
+          grid: { color: '#d8d4cc' }, border: { color: '#1a1a1a', width: 3 }
+        },
+        y2: {
+          beginAtZero: true, position: 'right', min: 0, max: 100,
+          title: { display: !isMobile(), text: '%', color: '#1a1a1a', font: { size: 10 } },
+          ticks: { color: '#1a1a1a' }, grid: { display: false }, border: { color: '#1a1a1a', width: 3 }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: function(item){ return item.datasetIndex === 0; },
+          callbacks: {
+            title: function(items){
+              var w = windows[items[0].dataIndex];
+              var endLbl = (w.end_kind === 'ongoing') ? 'now' : spShortDate(w.end_epoch);
+              return spShortDate(w.start_epoch) + ' → ' + endLbl;
+            },
+            label: function(item){
+              var w = windows[item.dataIndex];
+              var lines = [
+                spWindowDays(w.start_epoch, w.end_epoch) + 'd window',
+                fC(w.cost || 0),
+                (w.peak_pct == null) ? 'peak n/a' : 'peak ' + Math.round(w.peak_pct) + '%',
+                spWindowKindLabel(w.end_kind)
+              ];
+              if(w.inferred) lines.push('(boundaries inferred)');
+              return lines;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderSpendMonthlyChart(months){
+  var canvas = document.getElementById('cSpendMonthly');
+  if(!canvas || !hasChart()) return;
+  var totals = {}, mi, name;
+  for(mi = 0; mi < months.length; mi++){
+    var bm = months[mi].by_model || {};
+    for(name in bm){ if(bm.hasOwnProperty(name)) totals[name] = (totals[name] || 0) + bm[name]; }
+  }
+  var modelNames = Object.keys(totals).sort(function(a, b){ return totals[b] - totals[a]; });
+  var labels = months.map(function(m){ return spMonthLabel(m.month); });
+  var datasets = modelNames.map(function(modelName){
+    return {
+      label: modelName,
+      data: months.map(function(m){ return (m.by_model && m.by_model[modelName]) || 0; }),
+      backgroundColor: months.map(function(m){
+        return m.partial ? spAlpha(mColor(modelName), 0.55) : mColor(modelName);
+      })
+    };
+  });
+  upsertChart('spendMonthly', canvas, {
+    type: 'bar',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, grid:{display:false}, ticks:{color:'#3a352f'}, border:{color:'#1a1a1a',width:3} },
+        y: {
+          stacked: true, beginAtZero: true,
+          ticks: { callback: function(v){ return '$' + v; }, color: '#3a352f' },
+          grid: { color: '#d8d4cc' }, border: { color: '#1a1a1a', width: 3 }
+        }
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 8, font: { size: 10, weight: 700 }, color: '#1a1a1a' } },
+        tooltip: {
+          callbacks: {
+            label: function(item){ return item.dataset.label + ': ' + fC(item.raw); },
+            afterBody: function(items){
+              var m = months[items[0].dataIndex];
+              var lines = ['total ' + fC(m.total || 0)];
+              if(m.partial) lines.push('(month in progress)');
+              return lines;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function maybeRenderSpendHistory(){
+  if(_spendHistoryRendered || !hasChart() || !_spendHistoryData) return;
+  var data = _spendHistoryData;
+  var shownAny = false;
+  if(data.windows && data.windows.length){
+    renderSpendWindowsChart(data.windows);
+    document.getElementById('spendHistoryWindowsCard').hidden = false;
+    shownAny = true;
+  }
+  if(data.months && data.months.length){
+    renderSpendMonthlyChart(data.months);
+    document.getElementById('spendHistoryMonthlyCard').hidden = false;
+    shownAny = true;
+  }
+  if(shownAny){
+    document.getElementById('spendHistorySection').style.display = 'block';
+    _spendHistoryRendered = true;
+  }
+}
+
+(function initSpendHistory(){
+  var spendHistoryUrl = '/api/spend-history?scope=' + encodeURIComponent(TF_SCOPE);
+  fetch(spendHistoryUrl)
+    .then(function(r){ if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
+    .then(function(data){ _spendHistoryData = data; maybeRenderSpendHistory(); })
+    .catch(function(){ /* secondary analytics — stay hidden, no error banner */ });
+})();
+document.addEventListener('DOMContentLoaded', maybeRenderSpendHistory);
 </script>
 </body>
 </html>
