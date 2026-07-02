@@ -398,3 +398,18 @@ Adversarial review (opus): FIX_FIRST with 1 HIGH — all addressed, suite
   ongoing gray + peak dots), monthly stack shows model-mix shift with
   distinct colors, "Mar '26" month labels, zero page errors, no
   horizontal scroll at 1440/960/768/390.
+
+---
+
+## Workstream F deployed 2026-07-02
+
+Pushed `bc9784c..6a4a6f4`, box fast-forwarded, image rebuilt, container
+recreated. Live verification: 401/200 auth gates on /api/spend-history;
+personal months Jan $148.83 -> Jun $9,219.33 (7 true-UTC months); 26 window
+segments (pre-historization windows inferred with null peak, ongoing window
+$225.32 at peak 11%); all emitted epochs minute-floored; enterprise scope
+gets NO windows key and a scope-filtered 3-month axis (first enterprise
+events mid-May); `limit_window` = {start 2026-07-02T08:00Z (the natural
+rollover), $224.51, 3h05m active} feeding the new "spent · this window"
+subpanel rows; spendHistorySection + Fable 5 color entries live in the
+served template.
