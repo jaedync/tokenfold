@@ -97,6 +97,8 @@ def _cost_from_usage(entry: dict) -> float:
     if not (isinstance(ws, int) and ws > 0):
         ws = 0
 
+    # Deliberately no ts_epoch: notifications price events that just happened,
+    # so wall-clock "now" is by definition the correct pricing era.
     return compute_cost(dname, inp, out, cw, cr, web_search=ws)
 
 

@@ -103,11 +103,16 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         dd["cache_creation_tokens"] += cc
         dd["cache_read_tokens"] += cr
 
+        # Era selection keys on the request's first_ts, so re-summarizing an
+        # old day after a pricing-era flip keeps its original rates. A local-TZ
+        # day can straddle the UTC era boundary by a few hours; pricing each
+        # request at its own first_ts is the accepted approximation.
         req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"],
                                 effective_geo(r["inference_geo"],
                                               enterprise=bool(r["is_ent"])),
                                 cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                                web_search=r["ws"] or 0)
+                                web_search=r["ws"] or 0,
+                                ts_epoch=r["first_ts"])
         dd["cost"] += req_cost
         dd["project"][r["project_dir"]]["cost"] += req_cost
 

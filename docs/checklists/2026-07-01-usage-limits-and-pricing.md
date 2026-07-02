@@ -63,7 +63,7 @@ armed in `main.py:46`). So **no manual backfill mechanism is needed — history
 self-heals within ~1h of deploying a fix** — but the same sweeps are the
 corruption vector that makes event-time eras mandatory before September.
 
-- [ ] **A1** (P0/M) Date-effective pricing eras in `pricing.py`, keyed on event
+- [x] **A1** (P0/M) Date-effective pricing eras in `pricing.py`, keyed on event
   time. `MODEL_PRICING` values become either a plain 4-tuple (all existing
   entries unchanged) or an ascending list of `(effective_from_epoch_utc,
   4-tuple)`. `get_pricing(model, ts_epoch=None)` and `compute_cost(...,
@@ -74,7 +74,7 @@ corruption vector that makes event-time eras mandatory before September.
   Accept: constant-tuple models identical with/without `ts_epoch`; era-list
   models flip at the boundary; existing `test_pricing.py` /
   `test_pricing_unknown.py` pass unchanged.
-- [ ] **A2** (P0/S) Add Sonnet 5 entries. `MODEL_DISPLAY['claude-sonnet-5'] =
+- [x] **A2** (P0/S) Add Sonnet 5 entries. `MODEL_DISPLAY['claude-sonnet-5'] =
   'Sonnet 5'` (explicit, not munging-dependent); `MODEL_PRICING['Sonnet 5']` =
   intro `(2.00, 10.00, 2.50, 0.20)` from epoch 0, then `(3.00, 15.00, 3.75,
   0.30)` from 2026-09-01T00:00:00Z — with a comment flagging 3.75/0.30 as an
@@ -84,7 +84,7 @@ corruption vector that makes event-time eras mandatory before September.
   Accept: `display_model('claude-sonnet-5') == display_model('claude-sonnet-5-20260930') == 'Sonnet 5'`;
   era lookups return the right tuples; `is_priced('Sonnet 5')` true with
   dynamic pricing cleared; sorts above Sonnet 4.6.
-- [ ] **A3** (P0/S) Era-listed static entries win over LiteLLM. `get_pricing`
+- [x] **A3** (P0/S) Era-listed static entries win over LiteLLM. `get_pricing`
   checks `_dynamic_pricing` FIRST (`pricing.py:201-204`), so the poisoned
   `pricing_cache` would override A2. Flip precedence ONLY for models whose
   static value is an era list (plain-tuple models keep dynamic-first so
@@ -92,7 +92,7 @@ corruption vector that makes event-time eras mandatory before September.
   Accept: seeded `_dynamic_pricing['Sonnet 5'] = (3.0, 15.0, 3.75, 0.30)`
   still yields intro rates for an August `ts_epoch`, no cache invalidation
   needed; existing dynamic-override test for plain-tuple models still passes.
-- [ ] **A4** (P0/M) Thread event timestamps through all cost call sites.
+- [x] **A4** (P0/M) Thread event timestamps through all cost call sites.
   `summarizer.py` passes `r['first_ts']` (already selected, line 54);
   `cost_windows.py` prices at per-request granularity so a window straddling
   2026-08-31/09-01 sums both eras correctly (its outer
@@ -103,12 +103,12 @@ corruption vector that makes event-time eras mandatory before September.
   Accept: seeded Sonnet 5 requests at Aug 31 23:00Z + Sep 1 01:00Z price as
   2.00·M_aug + 3.00·M_sep through `compute_window_cost`; `summarize_days` on
   an August day with mocked wall-clock in September still stores intro cost.
-- [ ] **A5** (P1/S) Boundary + modifier guard tests. Both sides of the era
+- [x] **A5** (P1/S) Boundary + modifier guard tests. Both sides of the era
   flip for input/output/cache-write/cache-read; 1h-cache premium = 2x the
   era's base input ($4 intro vs $6 standard); `GEO_US_MULT` 1.1x multiplies
   era rates (preserve current behavior — prod applies it to vertech rows
   today). Test docstrings state which rates are assumptions.
-- [ ] **A6** (P1/S) Regression: unknown-model fallback unchanged. Unknown
+- [x] **A6** (P1/S) Regression: unknown-model fallback unchanged. Unknown
   models still bill $0 + `unpriced` flag + one rate-limited forced LiteLLM
   refresh, with or without `ts_epoch` (this contract is what prevented a
   repeat of the Fable 5 undercount); web-search fee still charged for
@@ -118,7 +118,7 @@ corruption vector that makes event-time eras mandatory before September.
   drop to exactly 2/3 of current values (total 26.8133 → 17.8756 ± 0.001,
   e.g. vertech 2026-07-01: 13.70926 → 9.13951); no other model's fields
   change. One-shot read-only SQL on ms01 + dashboard check.
-- [ ] **A8** (P2/S) Housekeeping: `MODEL_BENCHMARKS` entry only if
+- [x] **A8** (P2/S) Housekeeping: `MODEL_BENCHMARKS` entry only if
   Anthropic-published scores exist (never fabricate); `water.py` explicit
   `'Sonnet 5'` Sonnet-class energy entry; aggregator model-table renders a
   Sonnet 5 row without KeyError.
@@ -270,7 +270,7 @@ regression vs crossing-pair instantaneous rates (only ~6 readings/hr)?
 
 ## Workstream E — Test hygiene (independent)
 
-- [ ] **E1** (P1/S) Fix the 10 `test_session_burn.py` reds. Root cause
+- [x] **E1** (P1/S) Fix the 10 `test_session_burn.py` reds. Root cause
   verified: hardcoded `NOW=1781000000` (2026-06-09, line 15) drifted outside
   `_build_recent_sessions`' `now − RECENCY_DAYS(14)` cutoff → empty
   `recent_sessions`, 8 ERROR + 2 FAIL. These test the per-session $/hr

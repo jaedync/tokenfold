@@ -3,6 +3,7 @@
 import json
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 from .config import LITELLM_URL, PRICING_CACHE_TTL
 from .db import get_conn
@@ -13,6 +14,7 @@ MODEL_DISPLAY = {
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-5-20251101": "Opus 4.5",
+    "claude-sonnet-5": "Sonnet 5",
     "claude-sonnet-4-6": "Sonnet 4.6",
     "claude-sonnet-4-5-20250929": "Sonnet 4.5",
     "claude-sonnet-4-20250514": "Sonnet 4",
@@ -21,13 +23,26 @@ MODEL_DISPLAY = {
     "claude-3-5-haiku-20241022": "Haiku 3.5",
 }
 
-# Pricing per MTok: (input, output, cache_write_5m, cache_read)
+# Sonnet 5 intro pricing ends here; billing cutover timezone assumed UTC.
+SEPT1_2026_UTC = datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp()
+
+# Pricing per MTok: (input, output, cache_write_5m, cache_read).
+# Values are either a constant 4-tuple, or an ASCENDING list of
+# (effective_from_epoch_utc, 4-tuple) eras selected by EVENT timestamp —
+# never wall clock — so re-summarizing history can't reprice old usage.
 MODEL_PRICING = {
     "Fable 5":   (10.00, 50.00, 12.50, 1.00),
     "Opus 4.8":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.7":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.6":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.5":  (5.00, 25.00, 6.25, 0.50),
+    # Sonnet 5: intro rates through August 2026, standard from Sept 1 UTC.
+    # Standard-period cache rates 3.75/0.30 are ASSUMED 1.25x/0.1x of the $3
+    # base pending Anthropic confirmation (only intro cache rates published).
+    "Sonnet 5": [
+        (0.0, (2.00, 10.00, 2.50, 0.20)),
+        (SEPT1_2026_UTC, (3.00, 15.00, 3.75, 0.30)),
+    ],
     "Sonnet 4.6": (3.00, 15.00, 3.75, 0.30),
     "Sonnet 4.5": (3.00, 15.00, 3.75, 0.30),
     "Sonnet 4":   (3.00, 15.00, 3.75, 0.30),
@@ -84,6 +99,7 @@ def model_sort_key(name: str) -> int:
     except ValueError:
         return len(MODEL_ORDER)  # unknown models sort last
 
+# No "Sonnet 5" entry: no Anthropic-published scores on file — never fabricate.
 MODEL_BENCHMARKS = {
     "Opus 4.6":   {"SWE-bench": 80.8, "Terminal-Bench": 65.4, "OSWorld": 72.7, "ARC-AGI-2": 68.8},
     "Opus 4.5":   {"SWE-bench": 80.9, "Terminal-Bench": 59.8, "OSWorld": 66.3, "ARC-AGI-2": 37.6},
@@ -197,11 +213,34 @@ def _maybe_refresh_for_unknown(model_name: str):
         print(f"[pricing] forced refresh failed: {e}")
 
 
-def get_pricing(model_name: str) -> tuple:
+def _resolve_eras(era_list: list, ts_epoch: float) -> tuple:
+    """Select the last era with effective_from <= ts_epoch (list is ascending)."""
+    rates = era_list[0][1]
+    for eff, r in era_list:
+        if eff <= ts_epoch:
+            rates = r
+    return rates
+
+
+def era_boundaries() -> list[float]:
+    """Every effective_from > 0 across era-listed models, sorted ascending.
+    cost_windows splits its SQL aggregation groups at these edges."""
+    bounds = {eff for val in MODEL_PRICING.values() if isinstance(val, list)
+              for eff, _ in val if eff > 0}
+    return sorted(bounds)
+
+
+def get_pricing(model_name: str, ts_epoch: float | None = None) -> tuple:
+    static = MODEL_PRICING.get(model_name)
+    if isinstance(static, list):
+        # Era-listed models: static wins over LiteLLM, which carries a single
+        # undated price that is guaranteed wrong for one era (the live
+        # pricing_cache is already poisoned with standard-rate Sonnet 5).
+        return _resolve_eras(static, time.time() if ts_epoch is None else ts_epoch)
     if model_name in _dynamic_pricing:
         return _dynamic_pricing[model_name]
-    if model_name in MODEL_PRICING:
-        return MODEL_PRICING[model_name]
+    if static is not None:
+        return static
     # Unknown: maybe LiteLLM knows it and our cache is just older than the
     # model — refresh once, then re-check. Otherwise it is unpriced ($0).
     _maybe_refresh_for_unknown(model_name)
@@ -212,10 +251,15 @@ def get_pricing(model_name: str) -> tuple:
 
 def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
                  speed: str | None = None, inference_geo: str | None = None,
-                 cw_5m: int = 0, cw_1h: int = 0, web_search: int = 0) -> float:
+                 cw_5m: int = 0, cw_1h: int = 0, web_search: int = 0,
+                 ts_epoch: float | None = None) -> float:
     """List-price cost. Optional speed='fast' (Opus only) and inference_geo='us'
     modifiers layer on the LiteLLM-or-static base rate; defaults reproduce prior
     pricing exactly. Mirrors claude-usage-telemetry's effective_rates().
+
+    ts_epoch selects the pricing era for date-effective models (None = now);
+    the 1h-cache premium and fast/geo multipliers derive from the era-resolved
+    base, so every modifier tracks the era.
 
     cw is the TOTAL cache-write tokens; cw_5m/cw_1h are the ephemeral-duration
     split when known. 5m writes bill at 1.25x base input (the cw_p rate), 1h
@@ -226,7 +270,7 @@ def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
     web_search is the request COUNT (not tokens): flat WEB_SEARCH_PER_1K fee,
     charged even for unpriced models — the fee is confirmed, model-independent
     pricing, unlike token rates which are $0 when unconfirmed."""
-    base_in, out_p, cw_p, cr_p = get_pricing(model_name)
+    base_in, out_p, cw_p, cr_p = get_pricing(model_name, ts_epoch)
     if (speed or "").lower() == "fast" and model_name in FAST_OPUS_BASE:
         b_in, b_out = FAST_OPUS_BASE[model_name]
         base_in, out_p, cw_p, cr_p = b_in, b_out, b_in * 1.25, b_in * 0.1

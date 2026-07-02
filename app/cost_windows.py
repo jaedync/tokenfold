@@ -7,7 +7,7 @@ then sums costs across models using pricing.compute_cost().
 import sqlite3
 
 from .config import DEFAULT_SCOPE, scope_predicate
-from .pricing import compute_cost, display_model, effective_geo
+from .pricing import compute_cost, display_model, effective_geo, era_boundaries
 
 
 def compute_window_cost(
@@ -29,14 +29,33 @@ def compute_window_cost(
     to their preferred precision.
     """
     pred = scope_predicate(scope)
+    # Era-split: the outer GROUP BY discards timestamps, so a window straddling
+    # a pricing-era boundary would price both sides at one era. A SQL-side
+    # bucket column ((first_ts >= b1) + (first_ts >= b2) + ...) splits groups
+    # at each boundary — every row in a group then shares every boundary side,
+    # so the group's MIN(first_ts) is a valid pricing representative. Kept in
+    # SQL (no per-request Python loop): this is a hot path.
+    bounds = era_boundaries()
+    if bounds:
+        era_sel = ("(" + " + ".join("(first_ts >= ?)" for _ in bounds)
+                   + ") as era, MIN(first_ts) as first_ts, ")
+        inner_ts = "MIN(ts_epoch) as first_ts, "
+        era_grp = ", era"
+        params: tuple = (*bounds, start_epoch, end_epoch)
+    else:
+        # No era-listed models: query is structurally identical to the
+        # pre-era version.
+        era_sel = inner_ts = era_grp = ""
+        params = (start_epoch, end_epoch)
     total = 0.0
     for r in conn.execute(
         "SELECT model, speed, inference_geo, "
+        f"{era_sel}"
         "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
         "SUM(ws) as ws "
         "FROM ("
-        "  SELECT model, request_id, "
+        f"  SELECT model, request_id, {inner_ts}"
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
@@ -47,8 +66,8 @@ def compute_window_cost(
         f"  AND {pred} "
         "  AND ts_epoch >= ? AND ts_epoch < ? "
         "  GROUP BY model, request_id"
-        ") GROUP BY model, speed, inference_geo",
-        (start_epoch, end_epoch),
+        f") GROUP BY model, speed, inference_geo{era_grp}",
+        params,
     ):
         dm = display_model(r["model"])
         total += compute_cost(
@@ -62,5 +81,6 @@ def compute_window_cost(
             cw_5m=r["c5m"] or 0,
             cw_1h=r["c1h"] or 0,
             web_search=r["ws"] or 0,
+            ts_epoch=r["first_ts"] if bounds else None,
         )
     return total

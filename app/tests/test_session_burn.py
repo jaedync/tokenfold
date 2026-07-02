@@ -7,12 +7,24 @@ sessions fall back to their project name. Scope-partitioned like
 everything else — an enterprise session must never appear in personal.
 """
 
+import time
 import unittest
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
+from app.config import TZ_NAME
 from app.tests._support import TempDBTestCase
 
 
-NOW = 1781000000.0  # within the recent window when paired with day below
+# Single wall-clock anchor, computed ONCE at import: fixtures must never age
+# out of _build_recent_sessions' now-RECENCY_DAYS cutoff (a hardcoded epoch
+# went stale on 2026-06-23 and broke the module). 1h back keeps every NOW+
+# offset (max +1800) in the past; deriving TS/DAY from the same instant keeps
+# the seeded rows coherent even across a Chicago midnight mid-run.
+NOW = float(int(time.time()) - 3600)
+TS = datetime.fromtimestamp(NOW, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# Mirror ingest._parse_ts: day = TZ_NAME-local date of the event instant.
+DAY = datetime.fromtimestamp(NOW, ZoneInfo(TZ_NAME)).strftime("%Y-%m-%d")
 
 
 class SessionBurnTest(TempDBTestCase):
@@ -28,10 +40,10 @@ class SessionBurnTest(TempDBTestCase):
             "source_machine,project_dir,model,is_sidechain,agent_id,input_tokens,"
             "output_tokens,cache_creation_tokens,cache_read_tokens,is_human_prompt,"
             "account_email,org_type) "
-            "VALUES(?,'assistant','2026-06-09T12:00:00Z',?,'2026-06-09',?,?,?,?,?,0,"
+            "VALUES(?,'assistant',?,?,?,?,?,?,?,?,0,"
             "NULL,?,1000,0,0,0,?,?)",
-            (uuid, ts, session, "r-" + uuid, machine, project, model, inp,
-             acct, org_type),
+            (uuid, TS, ts, DAY, session, "r-" + uuid, machine, project, model,
+             inp, acct, org_type),
         )
         self.conn.commit()
 
@@ -44,7 +56,7 @@ class SessionBurnTest(TempDBTestCase):
     def _build(self, scope="personal"):
         from app.summarizer import summarize_days
         from app.aggregator import build_dashboard_data
-        summarize_days(["2026-06-09"])
+        summarize_days([DAY])
         return build_dashboard_data(scope)
 
     def test_session_rollup_with_burn_rate(self):
@@ -155,7 +167,7 @@ class AiTitleCaptureTest(TempDBTestCase):
 
     def _assistant(self, uuid, session):
         return {
-            "uuid": uuid, "type": "assistant", "timestamp": "2026-06-09T12:00:00Z",
+            "uuid": uuid, "type": "assistant", "timestamp": TS,
             "sessionId": session, "requestId": "r-" + uuid,
             "message": {"model": "claude-opus-4-8", "id": "m1",
                         "usage": {"input_tokens": 1000000, "output_tokens": 1000}},
@@ -171,7 +183,7 @@ class AiTitleCaptureTest(TempDBTestCase):
         self.assertEqual(row["title"], "Fix the frobnicator")
         from app.summarizer import summarize_days
         from app.aggregator import build_dashboard_data
-        summarize_days(["2026-06-09"])
+        summarize_days([DAY])
         s = [x for x in build_dashboard_data("personal")["recent_sessions"]
              if x["session_id"] == "sessA"][0]
         self.assertEqual(s["title"], "Fix the frobnicator")
@@ -198,7 +210,7 @@ class AiTitleCaptureTest(TempDBTestCase):
         from app.summarizer import summarize_days
         from app.aggregator import build_dashboard_data
         import app.aggregator as _agg
-        summarize_days(["2026-06-09"])
+        summarize_days([DAY])
         _agg._cached_data.clear()
         s = [x for x in build_dashboard_data("personal")["recent_sessions"]
              if x["session_id"] == "sessA"][0]
@@ -230,15 +242,16 @@ class SessionCostPartsTest(TempDBTestCase):
             "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
             "cache_ephemeral_5m,cache_ephemeral_1h,web_search_requests,"
             "is_human_prompt) "
-            "VALUES(?,'assistant','2026-06-09T12:00:00Z',?,'2026-06-09','sessA',?,"
+            "VALUES(?,'assistant',?,?,?,'sessA',?,"
             "'mac1','projA',?,0,NULL,?,?,?,?,?,?,?,0)",
-            (uuid, NOW, "r-" + uuid, model, inp, outp, cc, cr, c5m, c1h, ws))
+            (uuid, TS, NOW, DAY, "r-" + uuid, model, inp, outp, cc, cr, c5m,
+             c1h, ws))
         self.conn.commit()
 
     def _session(self):
         from app.summarizer import summarize_days
         from app.aggregator import build_dashboard_data
-        summarize_days(["2026-06-09"])
+        summarize_days([DAY])
         return [x for x in build_dashboard_data("personal")["recent_sessions"]
                 if x["session_id"] == "sessA"][0]
 
@@ -280,12 +293,12 @@ class SessionDetailFieldsTest(TempDBTestCase):
         conn.execute(
             "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
             "source_machine,project_dir,is_sidechain,is_human_prompt) "
-            "VALUES('p1','user','2026-06-09T12:00:00Z',?, '2026-06-09','sessA',"
-            "'mac1','projA',0,1)", (NOW,))
+            "VALUES('p1','user',?,?,?,'sessA',"
+            "'mac1','projA',0,1)", (TS, NOW, DAY))
         conn.commit()
         from app.summarizer import summarize_days
         from app.aggregator import build_dashboard_data
-        summarize_days(["2026-06-09"])
+        summarize_days([DAY])
         s = [x for x in build_dashboard_data("personal")["recent_sessions"]
              if x["session_id"] == "sessA"][0]
         self.assertEqual(s["input"], 3_000_000)

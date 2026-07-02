@@ -33,6 +33,7 @@ MODEL_ENERGY_WH_PER_MTOK = {
     # (output_wh_per_mtok, input_wh_per_mtok)
     "Opus 4.6":   (2_800, 560),
     "Opus 4.5":   (2_800, 560),
+    "Sonnet 5":   (1_950, 390),
     "Sonnet 4.6": (1_950, 390),
     "Sonnet 4.5": (1_950, 390),
     "Sonnet 4":   (1_950, 390),

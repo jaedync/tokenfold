@@ -310,17 +310,24 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
                        "cache_1h": 0.0, "cache_read": 0.0, "web_search": 0.0},
         })
         dm = display_model(r["model"])
+        # Group min_ts as the era representative: data-derived, so displayed
+        # historical session costs can't move when the wall clock crosses a
+        # pricing-era boundary. A session straddling the boundary prices
+        # entirely at its start era — including sessions resumed days later
+        # under the same session_id. Accepted coarseness; bounded to this
+        # card, daily totals are unaffected.
         c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
                          r["cr"] or 0, r["speed"],
                          effective_geo(r["inference_geo"], enterprise=enterprise),
                          cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                         web_search=r["ws"] or 0)
+                         web_search=r["ws"] or 0, ts_epoch=r["min_ts"])
         st["cost"] += c
         st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
         # per-kind dollar parts for the expanded row's cost-mix card — same
-        # list-price convention as the model breakdown (no geo/fast modifiers)
+        # list-price convention as the model breakdown (no geo/fast modifiers),
+        # era-resolved at the same min_ts as the cost above
         parts = st["_parts"]
-        p = get_pricing(dm)
+        p = get_pricing(dm, r["min_ts"])
         if p:
             c5, c1 = _tiered_cw_parts(r["cc"] or 0, r["c1h"] or 0, p)
             parts["input"] += (r["inp"] or 0) * p[0] / 1e6
@@ -552,12 +559,13 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
         idx = epoch_to_idx.get(r["bucket"])
         if idx is not None:
             dm = display_model(r["model"])
+            # hour-bucket epoch as era representative for this group
             hourly_list[idx]["cost"] += compute_cost(
                 dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
                 r["speed"],
                 effective_geo(r["inference_geo"], enterprise=enterprise),
                 cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                web_search=r["ws"] or 0)
+                web_search=r["ws"] or 0, ts_epoch=r["bucket"])
 
     for hl in hourly_list:
         hl["cost"] = round(hl["cost"], 2)
@@ -597,6 +605,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         cw = md.get("cache_write", 0)
         cr = md.get("cache_read", 0)
         cost = md.get("cost", 0.0)
+        # Today's tokens: wall-clock now is by definition the correct era.
         p = get_pricing(mname)
         main_cost = md.get("main_cost", 0.0)
         agent_cost = round(cost - main_cost, 2)
@@ -754,6 +763,14 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
         "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
         "cost": 0.0, "recent_cost": 0.0,
+        # Dollar-parts decomposition, accumulated per-day at that day's era so
+        # displayed historical costs never move when the wall clock crosses a
+        # pricing-era boundary (see the model_json merge loop).
+        "cost_input": 0.0, "cost_output": 0.0, "cost_cache_5m": 0.0,
+        "cost_cache_1h": 0.0, "cost_cache_read": 0.0,
+        "recent_cost_input": 0.0, "recent_cost_output": 0.0,
+        "recent_cost_cache_5m": 0.0, "recent_cost_cache_1h": 0.0,
+        "recent_cost_cache_read": 0.0,
     })
     project_seconds: Counter = Counter()
     project_cost: Counter = Counter()
@@ -788,6 +805,13 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     for row in rows:
         day = row["day"]
         is_recent = day >= cutoff_date
+        # Local-day start epoch: era representative for this day's dollar-parts
+        # decomposition. Coarser than summarizer (which prices per-request at
+        # first_ts): on a local day straddling the UTC era boundary, the
+        # boundary-evening requests decompose at the day-start era while the
+        # day's `cost` was priced per-request, so that one day's cost-mix may
+        # not reconcile exactly. Accepted; stable across wall clock either way.
+        day_epoch = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=TZ).timestamp()
 
         # Scalar daily fields — accumulate to support multiple enterprise accounts per day
         dm = daily_map.setdefault(day, {
@@ -843,6 +867,20 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             ms["agent_invocations"] += md.get("agent_invocations", 0)
             ms["active_s"] += md.get("active_s", 0.0)
             ms["cost"] += md.get("cost", 0.0)
+            # List-price dollar parts (no geo/fast modifiers), priced at THIS
+            # day's era — a Sonnet 5 aggregate spanning the intro/standard flip
+            # decomposes each day at its own rates.
+            p = get_pricing(mname, day_epoch)
+            c5, c1 = _tiered_cw_parts(md.get("cache_write", 0),
+                                      md.get("cache_1h", 0), p)
+            d_inp = md.get("input", 0) * p[0] / 1e6
+            d_out = md.get("output", 0) * p[1] / 1e6
+            d_cr = md.get("cache_read", 0) * p[3] / 1e6
+            ms["cost_input"] += d_inp
+            ms["cost_output"] += d_out
+            ms["cost_cache_5m"] += c5
+            ms["cost_cache_1h"] += c1
+            ms["cost_cache_read"] += d_cr
             if day > ms["last_seen"]:
                 ms["last_seen"] = day
             if is_recent:
@@ -856,6 +894,11 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
                 ms["recent_main_cost"] += md.get("main_cost", 0.0)
                 ms["recent_active_s"] += md.get("active_s", 0.0)
                 ms["recent_cost"] += md.get("cost", 0.0)
+                ms["recent_cost_input"] += d_inp
+                ms["recent_cost_output"] += d_out
+                ms["recent_cost_cache_5m"] += c5
+                ms["recent_cost_cache_1h"] += c1
+                ms["recent_cost_cache_read"] += d_cr
 
         # ── gen_json (generation time — stored separately from model_json) ──
         gen_data = json.loads(row["gen_json"] or "{}")
@@ -956,7 +999,6 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         ms = model_stats[name]
         total_tok = ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
         cost = ms["cost"]
-        p = get_pricing(name)
         total_cost += cost
         main_cost = round(ms["main_cost"], 2)
         agent_cost = round(cost - ms["main_cost"], 2)
@@ -1004,12 +1046,13 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "output_tok_per_s": round(output_tok_per_s, 1) if output_tok_per_s is not None else None,
             "cache_5m": ms["cache_5m"], "cache_1h": ms["cache_1h"],
             "recent_cache_5m": ms["recent_cache_5m"], "recent_cache_1h": ms["recent_cache_1h"],
-            "cost_input": round(ms["input"] * p[0] / 1e6, 2),
-            "cost_output": round(ms["output"] * p[1] / 1e6, 2),
-            "cost_cache_write": round(_tiered_cw_cost(ms["cache_write"], ms["cache_1h"], p), 2),
-            "cost_cache_5m": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[0], 2),
-            "cost_cache_1h": round(_tiered_cw_parts(ms["cache_write"], ms["cache_1h"], p)[1], 2),
-            "cost_cache_read": round(ms["cache_read"] * p[3] / 1e6, 2),
+            # dollar parts come from the per-day era-priced accumulators
+            "cost_input": round(ms["cost_input"], 2),
+            "cost_output": round(ms["cost_output"], 2),
+            "cost_cache_write": round(ms["cost_cache_5m"] + ms["cost_cache_1h"], 2),
+            "cost_cache_5m": round(ms["cost_cache_5m"], 2),
+            "cost_cache_1h": round(ms["cost_cache_1h"], 2),
+            "cost_cache_read": round(ms["cost_cache_read"], 2),
             "web_search": ms["web_search"],
             "web_fetch": ms["web_fetch"],
             "cost_web_search": round(ms["web_search"] * _WS_FEE, 2),
@@ -1021,12 +1064,12 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_cost": round(recent_cost, 2),
             "recent_main_cost": round(ms["recent_main_cost"], 2),
             "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
-            "recent_cost_input": round(ms["recent_input"] * p[0] / 1e6, 2),
-            "recent_cost_output": round(ms["recent_output"] * p[1] / 1e6, 2),
-            "recent_cost_cache_write": round(_tiered_cw_cost(ms["recent_cache_write"], ms["recent_cache_1h"], p), 2),
-            "recent_cost_cache_5m": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[0], 2),
-            "recent_cost_cache_1h": round(_tiered_cw_parts(ms["recent_cache_write"], ms["recent_cache_1h"], p)[1], 2),
-            "recent_cost_cache_read": round(ms["recent_cache_read"] * p[3] / 1e6, 2),
+            "recent_cost_input": round(ms["recent_cost_input"], 2),
+            "recent_cost_output": round(ms["recent_cost_output"], 2),
+            "recent_cost_cache_write": round(ms["recent_cost_cache_5m"] + ms["recent_cost_cache_1h"], 2),
+            "recent_cost_cache_5m": round(ms["recent_cost_cache_5m"], 2),
+            "recent_cost_cache_1h": round(ms["recent_cost_cache_1h"], 2),
+            "recent_cost_cache_read": round(ms["recent_cost_cache_read"], 2),
             "recent_cost_web_search": round(ms["recent_web_search"] * _WS_FEE, 2),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
@@ -1166,6 +1209,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             name: MODEL_BENCHMARKS.get(name, {})
             for name in model_stats if MODEL_BENCHMARKS.get(name)
         },
+        # CURRENT list-price tables (rate columns on the dashboard): wall-clock
+        # era is semantically intended — they show what a model costs now, not
+        # a historical blend, so no ts_epoch here.
         "output_pricing": {name: get_pricing(name)[1] for name in model_stats},
         "model_pricing": {name: {"input": p[0], "output": p[1], "cache_write": p[2],
                                  "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]}

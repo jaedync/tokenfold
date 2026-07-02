@@ -122,7 +122,7 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     hourly_costs = []
     for r in conn.execute(
         "SELECT CAST((first_ts - ?) / 3600 AS INTEGER) as h, "
-        "model, speed, inference_geo, "
+        "model, speed, inference_geo, MIN(first_ts) as min_ts, "
         "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
         "SUM(ws) as ws "
@@ -142,6 +142,10 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         (week_start_epoch, week_start_epoch, window_end),
     ):
         dm = display_model(r["model"])
+        # Era representative = the group's earliest event ts (data-derived, so
+        # the same historical events never re-price as the sliding week window
+        # moves; a group straddling the boundary prices at its start era —
+        # accepted hour-scale approximation).
         c = compute_cost(
             dm, r["inp"] or 0, r["outp"] or 0,
             r["cc"] or 0, r["cr"] or 0,
@@ -149,7 +153,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
             effective_geo(r["inference_geo"],
                           enterprise=(effective == "enterprise")),
             cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-            web_search=r["ws"] or 0)
+            web_search=r["ws"] or 0,
+            ts_epoch=r["min_ts"])
         if c > 0:
             h_idx = r["h"]
             found = False
