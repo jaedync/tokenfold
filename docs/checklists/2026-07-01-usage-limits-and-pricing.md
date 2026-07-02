@@ -113,7 +113,7 @@ corruption vector that makes event-time eras mandatory before September.
   refresh, with or without `ts_epoch` (this contract is what prevented a
   repeat of the Fable 5 undercount); web-search fee still charged for
   unpriced models.
-- [ ] **A7** (P0/S) Verify healing on prod after deploy. Within ~1h (periodic
+- [x] **A7** (P0/S) Verify healing on prod after deploy. Within ~1h (periodic
   sweep) the five `model_json` "Sonnet 5" cost fields for 2026-06-30/07-01
   drop to exactly 2/3 of current values (total 26.8133 → 17.8756 ± 0.001,
   e.g. vertech 2026-07-01: 13.70926 → 9.13951); no other model's fields
@@ -301,3 +301,15 @@ regression vs crossing-pair instantaneous rates (only ~6 readings/hr)?
 - **Privacy invariant**: `resets_at` is stored raw but minute-scrubbed at
   every read boundary (`api.py:22-38`, `ha.py` `_truncate_to_minute`) — new
   endpoints included.
+
+---
+
+## Deployed 2026-07-02
+
+Pushed `59de3f5..9f79506`, box fast-forwarded, image rebuilt, container
+recreated. Verified live: 401/200 auth gates; `oauth.buckets` carries
+`scoped:fable` with real data; `limit_readings` historizing (first poll 72s
+after boot); `/api/ha` `model_buckets.fable` minute-scrubbed; **A7: Sonnet 5
+cost for 06-30+07-01 re-rolled $33.85 -> $22.57, ratio 0.6667 — exactly the
+standard->intro 2/3 repricing** (totals grew past the audit's $26.81 snapshot
+as 07-01 usage accrued; the ratio is the proof).
