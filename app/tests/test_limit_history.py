@@ -72,7 +72,12 @@ class LimitHistoryEndpointTest(_LimitHistoryBase):
         resets = body["resets"]
         self.assertEqual(len(resets), 1)
         self.assertEqual(resets[0]["bucket"], "seven_day")
-        self.assertAlmostEqual(resets[0]["at_epoch"], now - 600, places=2)
+        # Fix 2: at_epoch is minute-floored like every other epoch field this
+        # endpoint emits (resets_at above, resets_at_epoch_before/after
+        # below) — it is NOT raw fetched_epoch precision anymore.
+        expect_at_epoch = ((now - 600) // 60) * 60.0
+        self.assertEqual(resets[0]["at_epoch"], expect_at_epoch)
+        self.assertEqual(resets[0]["at_epoch"] % 60, 0)
         for key in ("utilization_before", "utilization_after",
                     "resets_at_epoch_before", "resets_at_epoch_after"):
             self.assertIn(key, resets[0])
@@ -81,9 +86,11 @@ class LimitHistoryEndpointTest(_LimitHistoryBase):
         self.assertNotIn(raw, r.text)
 
     def test_reset_event_epochs_never_leak_sub_minute_precision(self):
-        """Privacy: resets_at_epoch_before/after must be minute-floored in
-        the JSON response — a raw sub-minute offset is account-derived and
-        could fingerprint the account across responses."""
+        """Privacy: at_epoch/resets_at_epoch_before/after must be
+        minute-floored in the JSON response — a raw sub-minute offset is
+        account-derived and could fingerprint the account across responses
+        (Fix 2 extends this to at_epoch, which used to leave the server at
+        full fetched_epoch precision)."""
         now = time.time()
         raw = "2026-07-02T08:00:12.345678+00:00"
         resets_epoch = datetime.fromisoformat(raw).timestamp()
@@ -96,7 +103,8 @@ class LimitHistoryEndpointTest(_LimitHistoryBase):
         self.assertEqual(r.status_code, 200, r.text)
         resets = r.json()["resets"]
         self.assertEqual(len(resets), 1)
-        for key in ("resets_at_epoch_before", "resets_at_epoch_after"):
+        for key in ("at_epoch", "resets_at_epoch_before",
+                    "resets_at_epoch_after"):
             value = resets[0][key]
             if value is not None:
                 self.assertEqual(value % 60, 0,

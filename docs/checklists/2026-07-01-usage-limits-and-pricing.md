@@ -206,7 +206,7 @@ marker) now that `resets_at` is available? (Cheap once B3 lands.)
   detected resets. 403/absent on enterprise scope or locked instance —
   mirror `test_enterprise_only.py`. Validate bucket `[a-z0-9_]{1,64}`,
   clamp hours ≤ 2160.
-- [ ] **C4** (P1/M) Dashboard reset visibility: utilization series + vertical
+- [x] **C4** (P1/M) Dashboard reset visibility: utilization series + vertical
   reset markers on the existing pace-chart modal (~4742+), plus a
   "reset <time>" annotation on the weekly gauge when a reset falls inside
   the current window. Seed a synthetic mid-window reset; template test +
@@ -227,7 +227,7 @@ follow-on)?
 
 ## Workstream D — Sub-window burn rate & projections (P1, needs C)
 
-- [ ] **D1** (P1/M) `app/limit_trends.py`: `compute_burn(conn, bucket, now,
+- [x] **D1** (P1/M) `app/limit_trends.py`: `compute_burn(conn, bucket, now,
   window_s)` → `{pct_per_hr, samples, resets_in_window}`. Math: load window
   + one straddling reading each side; split at reset boundaries (C2), keep
   trailing post-reset segment; piecewise-linear interpolation through
@@ -236,30 +236,35 @@ follow-on)?
   ±poll-interval uncertainty); burn = `(û(now) − û(now−window_s)) /
   (window_s/3600)`; `None` under 2 readings or <15 min span. Exact-value
   unit tests with frozen `now`.
-- [ ] **D2** (P1/M) Trend block in `/api/rate-limits`:
+  AMENDED at review: the denominator is the OBSERVED span
+  `now - max(boundary, first_reading)` rather than the full `window_s`,
+  so a reset-trimmed or cold-start segment reports its true rate instead
+  of a diluted one (the spec formula overstated time-to-limit up to 2x
+  right after a reset).
+- [x] **D2** (P1/M) Trend block in `/api/rate-limits`:
   `oauth.trend[bucket] = {burn_1h_pct_per_hr, burn_6h_pct_per_hr,
   eta_100_epoch, pace}` for every bucket in readings (bucket-generic — a new
   scoped bucket appears with zero code change). `eta = now +
   (100−pct)/burn` (6h burn for weekly, 1h for five_hour), null when burn ≤ 0;
   `pace ∈ {under,on,over}` vs even-drain `100/window_hours` ± 10% deadband.
   Enterprise invariant re-asserted.
-- [ ] **D3** (P1/M) Gauge rendering: "≈X%/hr (last 6h)" + "limit ~<relative
+- [x] **D3** (P1/M) Gauge rendering: "≈X%/hr (last 6h)" + "limit ~<relative
   time>" + under/on/over label; existing whole-window projection relabeled
   "window avg"; 5-Hour gauge gets the same treatment (today it has zero pace
   analysis); graceful degradation when trend absent (renders exactly as
   today — asserted).
-- [ ] **D4** (P1/L) Utilization-over-window chart: server-downsampled series
+- [x] **D4** (P1/L) Utilization-over-window chart: server-downsampled series
   (≤200 pts) in `oauth.trend[bucket].series` riding the existing 60s
   `/api/rate-limits` poll (no new endpoint, no #tf-data bloat); even-drain
   reference diagonal; NOW-line plugin reuse (~4835); reset markers from C2.
   Real-browser visual check.
-- [ ] **D5** (P1/S) Fix the mixed-window "budget left" estimate — visible bug
+- [x] **D5** (P1/S) Fix the mixed-window "budget left" estimate — visible bug
   today: `dashboard.html:4634-4641` divides ROLLING-7d cost by LIMIT-window
   pct, so right after any reset it shows absurd numbers. Either compute over
   the actual limit window `[resets_at−7d, now]` (server has
   `compute_window_cost`) or suppress when a reset was detected in the last
   24h / `wExpected` below a floor.
-- [ ] **D6** (P2/S) Clamp/hide the "expected" pace marker when `resets_at <=
+- [x] **D6** (P2/S) Clamp/hide the "expected" pace marker when `resets_at <=
   now` (stale snapshot currently pins the marker at 100% against old
   utilization during idle periods between 5h windows).
 

@@ -371,6 +371,251 @@ class ScopedBucketGaugesTest(unittest.TestCase):
         self.assertNotIn("SCOPED_FALLBACK[sbi", self.tpl)
 
 
+class TrendGaugeNoteTest(unittest.TestCase):
+    """D3/C4: sub-window burn/ETA/pace verdict + reset annotation on the
+    Weekly and 5-Hour gauges, built from oauth.trend[bucketKey] (D2)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_reads_oauth_trend(self):
+        self.assertIn("oauth.trend", self.tpl)
+
+    def test_fmt_relative_helper_exists(self):
+        """Tiny relative-time helper lives near fmtReset, seconds-epoch in."""
+        self.assertIn("function fmtRelative(epochSeconds)", self.tpl)
+        fmt_reset_pos = self.tpl.index("function fmtReset(")
+        fmt_rel_pos = self.tpl.index("function fmtRelative(")
+        self.assertGreater(fmt_rel_pos, fmt_reset_pos,
+                            "fmtRelative should sit near/after fmtReset")
+
+    def test_build_trend_note_reads_burn_and_eta_fields(self):
+        self.assertIn("function buildTrendNote(", self.tpl)
+        self.assertIn("burn_6h_pct_per_hr", self.tpl)
+        self.assertIn("burn_1h_pct_per_hr", self.tpl)
+        self.assertIn("eta_100_epoch", self.tpl)
+
+    def test_burn_labels_distinguish_window(self):
+        """Weekly reads the 6h burn, 5-Hour reads the 1h burn — each call
+        site labels which sub-window the rate covers."""
+        self.assertIn("'burn_6h_pct_per_hr', '(6h)'", self.tpl)
+        self.assertIn("'burn_1h_pct_per_hr', '(1h)'", self.tpl)
+
+    def test_pace_verdict_reuses_existing_over_pace_style(self):
+        """'over' pace must reuse the SAME .proj-warn class the whole-window
+        projection already uses — never a new color, never var(--red) as a
+        fill (that token is reserved for the over-pace overflow bar)."""
+        self.assertIn('<strong class="proj-warn">over pace</strong>', self.tpl)
+        self.assertIn("'on pace'", self.tpl)  # new verdict state, wasn't in the old code
+
+    def test_whole_window_projection_relabeled(self):
+        """The existing whole-window linear projection is now explicitly
+        labeled so it can't be confused with the new sub-window burn note."""
+        self.assertIn("(window avg)", self.tpl)
+
+    def test_reset_annotation_uses_current_window_boundaries(self):
+        """C4: a reset only annotates the gauge when it falls inside THAT
+        bucket's current window (7d for weekly, 5h for five_hour)."""
+        self.assertIn("nowSeconds - windowSeconds", self.tpl)
+        self.assertIn("buildTrendNote(trend.seven_day, 'burn_6h_pct_per_hr', '(6h)', 7 * 86400)", self.tpl)
+        self.assertIn("buildTrendNote(trend.five_hour, 'burn_1h_pct_per_hr', '(1h)', 5 * 3600)", self.tpl)
+
+    def test_trend_note_wired_into_both_gauges(self):
+        self.assertIn("trendNote: weeklyTrendNote", self.tpl)
+        self.assertIn("trendNote: fiveHourTrendNote", self.tpl)
+        self.assertIn("opts.trendNote", self.tpl)
+
+    def test_missing_trend_renders_nothing_extra(self):
+        """buildTrendNote returns null on every guarded miss, so a payload
+        with no oauth.trend renders the gauge exactly as before."""
+        start = self.tpl.index("function buildTrendNote(")
+        end = self.tpl.index("function buildGauge(")
+        block = self.tpl[start:end]
+        self.assertIn("if(!trendEntry) return null;", block)
+
+    def test_past_reset_annotated_with_ago_phrasing(self):
+        """Fix 3: resets[] events are always historical (at_epoch is a past
+        reading's fetched_epoch) — the gauge must annotate them with past
+        'reset <N> ago' phrasing, not fmtReset's future-tense
+        'resets <day> <time>' wording (wrong for something that already
+        happened)."""
+        self.assertIn("function fmtAgo(epochSeconds)", self.tpl)
+        fmt_rel_pos = self.tpl.index("function fmtRelative(")
+        fmt_ago_pos = self.tpl.index("function fmtAgo(")
+        self.assertGreater(fmt_ago_pos, fmt_rel_pos,
+                            "fmtAgo should sit near/after fmtRelative")
+        start = self.tpl.index("function buildTrendNote(")
+        end = self.tpl.index("function buildGauge(")
+        block = self.tpl[start:end]
+        self.assertIn("fmtAgo(rv.at_epoch)", block)
+        self.assertIn("'reset ' + agoTxt", block)
+        # Negative pin: the old future-tense call on a past epoch is gone.
+        self.assertNotIn("fmtReset(new Date(rv.at_epoch", block)
+
+
+class FiveHourExpiredGaugeTest(unittest.TestCase):
+    """D6: a stale (already-past) 5-hour resets_at must not pin an 'expected'
+    marker at 100% against old utilization — bar coloring falls back to
+    absolute-pct bands (buildGauge/barColor already handle a null expected)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_expired_five_hour_reset_nulls_expected(self):
+        self.assertIn("hResetMs <= Date.now()) hExpected = null;", self.tpl)
+
+    def test_guard_sits_right_after_hexpected_is_computed(self):
+        pos_h = self.tpl.index(
+            "var hExpected = calcExpectedPct(oauth.five_hour_resets_at, FIVE_HR_MS);")
+        pos_guard = self.tpl.index("hResetMs <= Date.now()")
+        pos_daylines = self.tpl.index("var weeklyDayLines = [];")
+        self.assertGreater(pos_guard, pos_h)
+        self.assertGreater(pos_daylines, pos_guard,
+                            "D6 guard should run before the rest of gauge math")
+
+
+class BudgetLeftWindowFixTest(unittest.TestCase):
+    """D5: the 'budget left' estimate must divide ONE consistent window's
+    cost/active-time by that SAME window's pct — the old code mixed a
+    rolling-7d cost with a limit-window pct and blew up right after a reset."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_uses_limit_window_inputs(self):
+        self.assertIn("oauth.limit_window", self.tpl)
+        self.assertIn("limitWindow.cost / wPct", self.tpl)
+        self.assertIn("lwActiveMin / wPct", self.tpl)
+
+    def test_old_mixed_window_division_removed(self):
+        """NEGATIVE pin: the removed bug divided rolling-7d wb.week_cost /
+        wb.week_active_s by the limit-window wPct — those exact expressions
+        must never reappear."""
+        self.assertNotIn("weekCost / wPct", self.tpl)
+        self.assertNotIn("weekActiveMin / wPct", self.tpl)
+
+    def test_suppressed_when_limit_window_absent(self):
+        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
+        end = self.tpl.index("var weeklyNote = null;")
+        block = self.tpl[start:end]
+        self.assertIn("if(limitWindow && wExpected >= 2 && !recentWeeklyReset", block)
+
+    def test_suppressed_on_recent_reset(self):
+        """A reset in the trailing 24h suppresses the estimate even if
+        limit_window and wExpected both look fine."""
+        self.assertIn("recentWeeklyReset", self.tpl)
+        self.assertIn("nowSeconds - 86400", self.tpl)
+
+    def test_gate_and_render_use_same_rounded_active_minutes(self):
+        """Fix 7: the D5 gate used to check limitWindow.active_s > 0 (raw
+        seconds) while the render checked lwActiveMin > 0 (rounded minutes,
+        computed only inside the block) — with 0 < active_s < 30 the gate
+        passed but Math.round(active_s/60) rounded down to 0, so the pushed
+        stat had an empty value. Gate and render must use the SAME
+        already-rounded lwActiveMin."""
+        start = self.tpl.index("var remainPct = 100 - wPct;")
+        end = self.tpl.index("var weeklyNote = null;")
+        block = self.tpl[start:end]
+        # lwActiveMin is computed before the gate, not only inside the block.
+        gate_pos = block.index("if(limitWindow && wExpected >= 2")
+        lw_active_min_pos = block.index("var lwActiveMin =")
+        self.assertLess(lw_active_min_pos, gate_pos,
+                         "lwActiveMin must be computed before the gate")
+        self.assertIn("(limitWindow.cost > 0 || lwActiveMin > 0))", block)
+        # Negative pin: the gate no longer compares the raw seconds field.
+        self.assertNotIn("limitWindow.active_s > 0)", block)
+
+
+class PaceChartTrendOverlayTest(unittest.TestCase):
+    """D4: utilization overlay + even-drain reference + reset markers on the
+    pace-chart modal, gated on oauth.trend.seven_day.series and byte-identical
+    to the cost-only chart when that series is absent."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_gated_on_weekly_series(self):
+        self.assertIn("var trend = wb.oauth && wb.oauth.trend;", self.tpl)
+        self.assertIn(
+            "var weeklySeries = trend && trend.seven_day && trend.seven_day.series;",
+            self.tpl)
+        self.assertIn("if(weeklySeries && weeklySeries.length) {", self.tpl)
+
+    def test_series_epochs_scaled_to_milliseconds_for_chart(self):
+        """Chart/Date math needs milliseconds; series epochs arrive in
+        seconds per the /api/rate-limits contract, so the mapping must scale
+        them up (matches the weekStartEpoch*1000 convention already used
+        elsewhere in this same function)."""
+        self.assertIn("var sampleEpochMs = weeklySeries[usi][0] * 1000;", self.tpl)
+
+    def test_utilization_dataset_on_new_right_axis(self):
+        self.assertIn("label: 'Utilization %'", self.tpl)
+        self.assertIn("yAxisID: 'y2'", self.tpl)
+        self.assertIn("scalesCfg.y2 = {", self.tpl)
+        self.assertIn("min: 0,\n            max: 100,", self.tpl)
+
+    def test_even_drain_reference_line_gated_on_limit_window(self):
+        start = self.tpl.index("if(weeklySeries && weeklySeries.length) {")
+        end = self.tpl.index("// Working hours background shading")
+        block = self.tpl[start:end]
+        self.assertIn("if(limitWindow) {", block)
+        self.assertIn("label: 'Even drain'", block)
+        self.assertIn("borderDash: [3, 3]", block)
+        # (b) no tooltip for the reference line
+        self.assertIn(
+            "filter: function(item) { return item.dataset.label !== 'Even drain'; }",
+            self.tpl)
+
+    def test_even_drain_diagonal_clipped_to_chart_range(self):
+        """Fix 1: evenEndIdx = evenStartIdx + 168 exceeds totalHours whenever
+        the weekly reset is in the future (resets_at up to 7d out is the
+        common case) — the old code just dropped that endpoint, leaving a
+        single-point dataset that Chart.js never draws a line for. The fix
+        clips both endpoints to the visible [0, totalHours] range instead of
+        dropping them, so the dataset keeps exactly two points."""
+        start = self.tpl.index("if(limitWindow) {",
+                                self.tpl.index("Even-drain reference diagonal"))
+        end = self.tpl.index("extraDatasets.push({", start)
+        block = self.tpl[start:end]
+        # The clipped-endpoint value expressions (distinctive, not just the
+        # boundary check) — pins the actual clip math, not merely its guard.
+        self.assertIn("(totalHours - evenStartIdx) / 168", block)
+        self.assertIn("(0 - evenStartIdx) / 168", block)
+        # Both endpoints must still be assignable when in-range (the old
+        # unconditional-drop behavior must not survive as dead code).
+        self.assertIn("evenData[totalHours] =", block)
+        self.assertIn("evenData[0] =", block)
+        self.assertIn("evenData[evenEndIdx] = 100", block)
+        self.assertIn("evenData[evenStartIdx] = 0", block)
+        # A comment must explain the clip (per the fix requirement).
+        self.assertIn("Clip the diagonal to the visible", block)
+
+    def test_reset_markers_extend_the_now_line_plugin_pattern(self):
+        """(d): follow the NOW-line plugin's own afterDraw + getPixelForValue
+        + setLineDash pattern rather than inventing a new drawing mechanism."""
+        start = self.tpl.index("afterDraw: function(chart) {")
+        end = self.tpl.index("ctx.fillText('NOW'")
+        block = self.tpl[start:end]
+        self.assertIn("resetMarkers", block)
+        self.assertIn("xAxis.getPixelForValue(resetMarkers[rmk])", block)
+        self.assertIn("ctx.fillText('reset', rx", block)
+
+    def test_now_line_plugin_drawing_unchanged(self):
+        """The NOW-line drawing commands themselves are untouched."""
+        self.assertIn("ctx.strokeStyle = 'rgba(230, 51, 41, 0.8)';", self.tpl)
+        self.assertIn("ctx.fillText('NOW', x, yAxis.top - 4);", self.tpl)
+
+    def test_base_dataset_array_extended_not_replaced(self):
+        """extraDatasets starts empty — a series-absent response concats []
+        onto the original single-dataset array, reproducing it exactly."""
+        self.assertIn("var extraDatasets = [];", self.tpl)
+        self.assertIn("].concat(extraDatasets);", self.tpl)
+
+
 class DashboardServerRenderTest(unittest.TestCase):
     """Server-rendered daily rows follow the same red-is-a-warning rule."""
 

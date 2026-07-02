@@ -170,6 +170,34 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
                              f"'{forbidden}' must not appear in enterprise "
                              f"/api/rate-limits response body")
 
+    def test_trend_and_limit_window_never_leak_to_enterprise(self):
+        """D2/D5 compliance: even with limit_readings historized AND the live
+        oauth fixture seeded, an enterprise-scope /api/rate-limits response must
+        never carry 'trend' or 'limit_window' (both live inside the suppressed
+        oauth block) — no burn, ETA, series, or budget-window data may leak."""
+        now = time.time()
+        # Seed real history so the assertions are non-vacuous (server WOULD
+        # build a trend block for a personal request against this data).
+        for i in range(30):
+            self.conn.execute(
+                "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+                "utilization, resets_at, resets_at_epoch) "
+                "VALUES(?, 'server', 'seven_day', ?, "
+                "'2026-07-02T08:00:00+00:00', ?)",
+                (now - 6 * 3600 + i * 600, 10 + i, now + 3 * 3600))
+        self.conn.commit()
+        self._seed_live_fixture()  # limits[] -> scoped:fable, seven_day, etc.
+        c = self.client()
+        resp = c.get("/api/rate-limits")  # default scope -> enterprise
+        wb = resp.json().get("weekly_budget", {})
+        self.assertNotIn("oauth", wb)
+        raw = resp.text
+        for forbidden in ("trend", "limit_window", "burn_1h_pct_per_hr",
+                          "eta_100_epoch", "pace"):
+            self.assertNotIn(forbidden, raw,
+                             f"'{forbidden}' must not appear in enterprise "
+                             f"/api/rate-limits response body")
+
     def test_rate_limits_personal_has_oauth_gauges(self):
         """Personal /api/rate-limits with a seeded oauth_usage row must return the
         'oauth' sub-object with all required gauge fields."""

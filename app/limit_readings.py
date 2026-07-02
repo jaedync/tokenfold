@@ -15,9 +15,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-# No import cycle: api.py never imports this module (checked), so the shared
-# fail-closed minute-scrub helper is imported rather than duplicated.
-from .api import _scrub_to_minute_or_none
+# No import cycle: api.py never imports this module at module level (its one
+# dependency, .limit_trends -> bucket_trend/distinct_buckets, is imported
+# LAZILY inside the route body — see app/api.py), so both shared helpers
+# (fail-closed minute-scrub, ISO-to-epoch parse) are imported rather than
+# duplicated (Fix 9: this used to have its own _epoch_or_none, byte-identical
+# to api._iso_to_epoch — consolidated onto the one copy).
+from .api import _scrub_to_minute_or_none, _iso_to_epoch
 from .auth import require_dashboard_auth
 from .db import get_conn
 from .usage_buckets import normalize_usage_buckets
@@ -44,16 +48,6 @@ def log(msg, *args):
     print(f"[limit_readings] {formatted}", flush=True)
 
 
-def _epoch_or_none(iso_str) -> Optional[float]:
-    """Parse an ISO-8601 string to epoch seconds; None on ANY failure."""
-    if not isinstance(iso_str, str) or not iso_str:
-        return None
-    try:
-        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
-
-
 def _floor_to_minute_or_none(epoch: Optional[float]) -> Optional[float]:
     """Floor an epoch-seconds value to whole-minute precision; None passes
     through unchanged. Mirrors _scrub_to_minute_or_none (app/api.py): a raw
@@ -62,6 +56,20 @@ def _floor_to_minute_or_none(epoch: Optional[float]) -> Optional[float]:
     server at full precision.
     """
     return None if epoch is None else (epoch // 60) * 60.0
+
+
+def floor_reset_events(events):
+    """Return a NEW list of reset-event dicts (never mutates ``events`` or
+    its dicts) with ``at_epoch`` floored to the minute, matching every other
+    epoch-valued field emitted on this surface (series, eta_100_epoch,
+    resets_at_epoch_before/after — the latter already floored inside
+    detect_resets). detect_resets itself stays full-precision so callers that
+    only COUNT/FILTER by at_epoch (e.g. compute_burn's resets_in_window and
+    segment cutoff) are unaffected; only response-shaping call sites
+    (bucket_trend, GET /api/limit-history) floor their own served copy.
+    """
+    return [dict(e, at_epoch=_floor_to_minute_or_none(e["at_epoch"]))
+            for e in events]
 
 
 def record_limit_readings(conn, usage_dict, fetched_epoch, source):
@@ -84,7 +92,7 @@ def record_limit_readings(conn, usage_dict, fetched_epoch, source):
                 "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
                 "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
                 (fetched_epoch, source, b["key"], b["utilization"],
-                 b["resets_at"], _epoch_or_none(b["resets_at"])))
+                 b["resets_at"], _iso_to_epoch(b["resets_at"])))
         conn.commit()
     except Exception as e:  # writer must never break the poll/ingest path
         # A failed batch must not leave pending writes on the shared
@@ -205,5 +213,8 @@ async def limit_history(bucket: str = Query(...),
             }
             for r in rows
         ],
-        "resets": detect_resets(rows),
+        # Minute-floored like every other epoch field this endpoint emits
+        # (resets_at above, resets_at_epoch_before/after inside each event) —
+        # detect_resets itself stays full-precision (Fix 2).
+        "resets": floor_reset_events(detect_resets(rows)),
     }

@@ -20,6 +20,49 @@ from .pricing import compute_cost, display_model, effective_geo
 from .usage_buckets import normalize_usage_buckets
 
 
+def _iso_to_epoch(iso_str: Optional[str]) -> Optional[float]:
+    """Parse an ISO-8601 string to epoch seconds; None on ANY failure.
+
+    Also imported by app/limit_readings.py (module-level `from .api import
+    ..._iso_to_epoch`) — that direction is acyclic (this module never imports
+    limit_readings at module scope, only lazily inside the rate_limits route
+    body below), so the helper lives here once rather than being duplicated
+    (Fix 9).
+    """
+    if not isinstance(iso_str, str) or not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _active_seconds(conn, pred, start, end):
+    """Sum intra-session gaps below IDLE_THRESHOLD_S over [start, end) for the
+    given scope predicate. Shared by the rolling-7d week_active_s and the
+    limit-window active_s so both windows accumulate active time identically.
+    """
+    total = 0.0
+    prev_evt = None
+    for e in conn.execute(
+        "SELECT session_id, ts_epoch, type, is_sidechain, "
+        "has_tool_use, has_tool_result, agent_id "
+        "FROM events "
+        "WHERE ts_epoch>=? AND ts_epoch<? "
+        "AND type IN ('user','assistant') "
+        "AND is_sidechain=0 AND agent_id IS NULL "
+        f"AND {pred} "
+        "ORDER BY session_id, ts_epoch",
+        (start, end),
+    ):
+        if prev_evt and prev_evt["session_id"] == e["session_id"]:
+            gap = e["ts_epoch"] - prev_evt["ts_epoch"]
+            if 0 < gap < IDLE_THRESHOLD_S:
+                total += gap
+        prev_evt = e
+    return total
+
+
 def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
 
@@ -105,25 +148,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     # and correctly applies fast/geo pricing modifiers (speed, inference_geo).
     week_cost = compute_window_cost(conn, week_start_epoch, window_end, scope=effective)
 
-    # Active time: sum gaps within rolling window
-    week_active_s = 0.0
-    prev_evt = None
-    for e in conn.execute(
-        "SELECT session_id, ts_epoch, type, is_sidechain, "
-        "has_tool_use, has_tool_result, agent_id "
-        "FROM events "
-        "WHERE ts_epoch>=? AND ts_epoch<? "
-        "AND type IN ('user','assistant') "
-        "AND is_sidechain=0 AND agent_id IS NULL "
-        f"AND {pred} "
-        "ORDER BY session_id, ts_epoch",
-        (week_start_epoch, window_end),
-    ):
-        if prev_evt and prev_evt["session_id"] == e["session_id"]:
-            gap = e["ts_epoch"] - prev_evt["ts_epoch"]
-            if 0 < gap < IDLE_THRESHOLD_S:
-                week_active_s += gap
-        prev_evt = e
+    # Active time: sum gaps within rolling window (shared with limit_window).
+    week_active_s = _active_seconds(conn, pred, week_start_epoch, window_end)
 
     # Hourly cost breakdown for pace chart — mirrors aggregator._build_hourly's
     # cost query with speed + inference_geo so fast/geo events are correctly priced.
@@ -244,6 +270,57 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                         ).timestamp()
                     except (ValueError, TypeError):
                         pass
+
+                # Sub-window burn / ETA / pace / series per bucket (D2).
+                # Bucket-name-generic: every distinct bucket historized in the
+                # last 7d gets a trend entry, so a future scoped bucket appears
+                # with zero code change. Omitted entirely when nothing is
+                # historized yet (response shape unchanged). Lazy import breaks
+                # the api <- limit_trends <- limit_readings <- api cycle.
+                #
+                # Narrow try/except (Fix 6): this used to sit inside only the
+                # broad except below — a bug in trend math would silently
+                # delete EVERY gauge (weekly_pct, buckets, extra_usage, ...),
+                # not just the trend entries. Scope the blast radius to the
+                # 'trend' key alone.
+                try:
+                    from .limit_trends import bucket_trend, distinct_buckets
+                    present = distinct_buckets(conn, now)
+                    if present:
+                        oauth_block["trend"] = {
+                            b: bucket_trend(conn, b, now) for b in present
+                        }
+                except Exception as e:
+                    print(f"[rate-limits] trend computation failed: {e}",
+                          flush=True)
+
+                # Consistent "budget left" inputs (D5): cost + active time over
+                # the ACTUAL weekly limit window [weekly_resets_at - 7d, now],
+                # so the template no longer divides rolling-7d cost by
+                # limit-window pct. Omitted when seven_day.resets_at is
+                # unparseable. start_epoch is minute-floored (limit timestamps
+                # never leave the server at sub-minute precision).
+                #
+                # Narrow try/except (Fix 6): same reasoning as the trend block
+                # above — a bug here must only drop 'limit_window', never the
+                # whole oauth block.
+                try:
+                    weekly_resets_epoch = _iso_to_epoch(
+                        seven_day.get("resets_at"))
+                    if weekly_resets_epoch is not None:
+                        lw_start = (((weekly_resets_epoch // 60) * 60.0)
+                                    - 7 * 86400)
+                        oauth_block["limit_window"] = {
+                            "start_epoch": lw_start,
+                            "cost": round(compute_window_cost(
+                                conn, lw_start, now, scope=effective), 2),
+                            "active_s": round(
+                                _active_seconds(conn, pred, lw_start, now)),
+                        }
+                except Exception as e:
+                    print(f"[rate-limits] limit_window computation failed: "
+                          f"{e}", flush=True)
+
                 weekly_budget["oauth"] = oauth_block
             except (ValueError, KeyError, TypeError):
                 pass  # malformed row — no oauth key

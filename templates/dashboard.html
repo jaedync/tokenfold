@@ -4449,6 +4449,13 @@ function initRateLimits(){
     var FIVE_HR_MS = 5 * 60 * 60 * 1000;
     var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+    // D3/C4/D5: oauth.trend[bucketKey] (D2 server block) is OPTIONAL — absent
+    // until limit_readings has samples. nowSeconds anchors both the C4
+    // reset-in-current-window check and the D5 recent-reset suppression to
+    // one consistent instant per render.
+    var trend = oauth.trend || {};
+    var nowSeconds = Date.now() / 1000;
+
     // Fill colors stay saturated; yellow TEXT on the cream bg must use the
     // darkened token or it's unreadable (see --yellow-text).
     function textColorFor(color) {
@@ -4481,6 +4488,43 @@ function initRateLimits(){
       } catch(e) { return ''; }
     }
 
+    // D3: compact relative-from-now string for a SECONDS epoch (eta_100_epoch
+    // etc. arrive in seconds per the /api/rate-limits contract — unlike
+    // fmtReset above this never touches Chart.js/Date-in-ms conversions, it
+    // just floors to whole minutes/hours/days). '' on any bad input, same
+    // fail-closed contract as fmtReset.
+    function fmtRelative(epochSeconds) {
+      if(typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return '';
+      var diffS = epochSeconds - (Date.now() / 1000);
+      if(diffS < 0) diffS = 0;
+      var totalMin = Math.round(diffS / 60);
+      var days = Math.floor(totalMin / 1440);
+      var hours = Math.floor((totalMin % 1440) / 60);
+      var mins = totalMin % 60;
+      if(days > 0) return days + 'd ' + hours + 'h';
+      if(hours > 0) return hours + 'h ' + mins + 'm';
+      return mins + 'm';
+    }
+
+    // C4 (Fix 3): compact PAST-tense "how long ago" string for a SECONDS
+    // epoch. resets[] events (fed to buildTrendNote below) always describe
+    // something that already happened — fmtReset's 'resets <day> <time>'
+    // wording is future-tense and reads wrong pinned to a historical event
+    // ("resets Mon 3p" for a reset that already occurred). Same arithmetic
+    // as fmtRelative with the sign flipped, same fail-closed '' contract.
+    function fmtAgo(epochSeconds) {
+      if(typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return '';
+      var diffS = (Date.now() / 1000) - epochSeconds;
+      if(diffS < 0) diffS = 0;
+      var totalMin = Math.round(diffS / 60);
+      var days = Math.floor(totalMin / 1440);
+      var hours = Math.floor((totalMin % 1440) / 60);
+      var mins = totalMin % 60;
+      if(days > 0) return days + 'd ' + hours + 'h ago';
+      if(hours > 0) return hours + 'h ' + mins + 'm ago';
+      return mins + 'm ago';
+    }
+
     function calcExpectedPct(resetIso, periodMs) {
       if(!resetIso) return null;
       try {
@@ -4491,6 +4535,64 @@ function initRateLimits(){
         if(elapsed > periodMs) elapsed = periodMs;
         return (elapsed / periodMs) * 100;
       } catch(e) { return null; }
+    }
+
+    // D3/C4: sub-window burn rate + ETA + pace verdict + reset annotation for
+    // one gauge, built from oauth.trend[bucketKey] (the D2 server block —
+    // absent entirely until limit_readings has accumulated samples, and
+    // per-field null whenever that ONE field can't be computed yet). Every
+    // access below is individually guarded so a partial trend entry still
+    // renders whatever pieces it has, and a missing trendEntry renders
+    // nothing at all — the gauge looks exactly like it does today.
+    function buildTrendNote(trendEntry, burnField, burnLabel, windowSeconds) {
+      if(!trendEntry) return null;
+      var parts = [];
+
+      var burn = trendEntry[burnField];
+      if(typeof burn === 'number') {
+        parts.push('≈' + burn.toFixed(2) + '%/hr ' + burnLabel);
+      }
+
+      if(typeof trendEntry.eta_100_epoch === 'number') {
+        var rel = fmtRelative(trendEntry.eta_100_epoch);
+        if(rel) parts.push('limit ~' + rel);
+      }
+
+      // Pace verdict — 'over' reuses the SAME .proj-warn class the whole-window
+      // projection already uses for its over-100% state (never a new color,
+      // never var(--red) as a fill).
+      if(trendEntry.pace === 'over') {
+        parts.push('<strong class="proj-warn">over pace</strong>');
+      } else if(trendEntry.pace === 'on') {
+        parts.push('on pace');
+      } else if(trendEntry.pace === 'under') {
+        parts.push('under pace');
+      }
+
+      // C4: annotate a reset that falls inside THIS bucket's current window
+      // (weekly/scoped: trailing 7d: five_hour: trailing 5h — windowSeconds
+      // is the caller's choice of which). One note is enough even if more
+      // than one reset landed in-window.
+      //
+      // Fix 3: resets[] events are always something that ALREADY happened
+      // (at_epoch is a past reading's fetched_epoch) — annotate with fmtAgo's
+      // past phrasing ('reset 4h 20m ago'), not fmtReset's future-tense
+      // 'resets <day> <time>' wording (which read as if a reset were still
+      // upcoming).
+      var resets = trendEntry.resets;
+      if(resets && resets.length) {
+        for(var ri = 0; ri < resets.length; ri++) {
+          var rv = resets[ri];
+          if(rv && typeof rv.at_epoch === 'number'
+              && rv.at_epoch > (nowSeconds - windowSeconds)) {
+            var agoTxt = fmtAgo(rv.at_epoch);
+            if(agoTxt) parts.push('reset ' + agoTxt);
+            break;
+          }
+        }
+      }
+
+      return parts.length ? parts.join(' · ') : null;
     }
 
     function buildGauge(label, pct, resetLabel, expectedPct, opts) {
@@ -4518,8 +4620,11 @@ function initRateLimits(){
       if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
         var projRound = Math.round(opts.projectedPct);
         var projClass = projRound > 100 ? 'proj-warn' : '';
+        // '(window avg)' distinguishes this whole-window linear projection
+        // from the D3 sub-window burn note (trendNoteHtml) below it.
         projHtml = '<div class="rate-gauge-projection">'
           + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
+          + ' (window avg)'
           + '</div>';
       }
 
@@ -4560,6 +4665,13 @@ function initRateLimits(){
       var noteHtml = opts.note
         ? '<div class="rate-gauge-projection">' + opts.note + '</div>' : '';
 
+      // D3/C4: sub-window burn/ETA/pace verdict + in-window reset annotation.
+      // buildTrendNote returns null for every guarded miss (no oauth.trend,
+      // no entry for this bucket, no fields yet) — omitting this div entirely
+      // reproduces today's markup byte-for-byte.
+      var trendNoteHtml = opts.trendNote
+        ? '<div class="rate-gauge-projection">' + opts.trendNote + '</div>' : '';
+
       return '<div class="rate-gauge">'
         + '<div class="rate-gauge-head">'
         + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
@@ -4574,6 +4686,7 @@ function initRateLimits(){
         + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
         + '</div>'
         + noteHtml
+        + trendNoteHtml
         + projHtml
         + statsHtml2
         + '</div>';
@@ -4583,6 +4696,16 @@ function initRateLimits(){
     var hPct = oauth.five_hour_pct || 0;
     var wExpected = calcExpectedPct(oauth.weekly_resets_at, WEEK_MS);
     var hExpected = calcExpectedPct(oauth.five_hour_resets_at, FIVE_HR_MS);
+
+    // D6: a stale snapshot (resets_at already in the past — the poller lags
+    // behind the actual 5h boundary during idle periods) must not pin an
+    // 'expected' marker at 100% against old utilization. Null it so
+    // buildGauge skips the marker/split-fill and barColor falls back to its
+    // absolute-pct bands (both already treat a null expectedPct that way).
+    if(hExpected !== null) {
+      var hResetMs = oauth.five_hour_resets_at ? new Date(oauth.five_hour_resets_at).getTime() : NaN;
+      if(!isNaN(hResetMs) && hResetMs <= Date.now()) hExpected = null;
+    }
 
     // Build day boundary lines at actual midnight within the weekly window
     var weeklyDayLines = [];
@@ -4632,11 +4755,43 @@ function initRateLimits(){
     weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
     weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
 
+    // D5: budget-left estimate MUST divide one consistent window's cost/
+    // active-time by that SAME window's pct. The old code divided the
+    // ROLLING-7d weekCost/weekActiveMin (a moving window) by the LIMIT-window
+    // wPct, producing absurd numbers right after any reset (numerator barely
+    // moved, denominator near zero). oauth.limit_window (D5/server) carries
+    // cost + active_s over the actual [weekly_resets_at-7d, now] limit
+    // window, so both sides of the division now agree; suppressed entirely
+    // when: limit_window is absent, wExpected hasn't cleared the noise floor,
+    // or a reset landed in the last 24h (falls back to the existing
+    // weeklyNote below, same as it always did for wPct < 1).
+    var limitWindow = oauth.limit_window || null;
+    var recentWeeklyReset = false;
+    if(trend.seven_day && trend.seven_day.resets && trend.seven_day.resets.length) {
+      for(var wri = 0; wri < trend.seven_day.resets.length; wri++) {
+        var wrEvt = trend.seven_day.resets[wri];
+        if(wrEvt && typeof wrEvt.at_epoch === 'number'
+            && wrEvt.at_epoch > (nowSeconds - 86400)) {
+          recentWeeklyReset = true;
+          break;
+        }
+      }
+    }
+
     var remainPct = 100 - wPct;
-    if(wPct > 1 && (weekCost > 0 || weekActiveMin > 0)) {
+    // Fix 7: gate and render on the SAME rounded quantity. lwActiveMin used
+    // to be computed only inside this block, so the gate compared the raw
+    // limitWindow.active_s (seconds) while the render compared the rounded
+    // minutes — with 0 < active_s < 30 the gate passed (active_s > 0) but
+    // Math.round(active_s/60) rounded down to 0, so neither part pushed and
+    // the stat rendered with an empty value. Computing lwActiveMin up front
+    // and gating on it directly keeps the two checks consistent.
+    var lwActiveMin = limitWindow ? Math.round((limitWindow.active_s || 0) / 60) : 0;
+    if(limitWindow && wExpected >= 2 && !recentWeeklyReset
+        && wPct > 1 && (limitWindow.cost > 0 || lwActiveMin > 0)) {
       var parts = [];
-      if(weekCost > 0) parts.push('~' + fC((weekCost / wPct) * remainPct));
-      if(weekActiveMin > 0) parts.push('~' + fHM((weekActiveMin / wPct) * remainPct));
+      if(limitWindow.cost > 0) parts.push('~' + fC((limitWindow.cost / wPct) * remainPct));
+      if(lwActiveMin > 0) parts.push('~' + fHM((lwActiveMin / wPct) * remainPct));
       var remColor = remainPct <= 15 ? 'var(--red)' : remainPct <= 35 ? 'var(--yellow-text)' : null;
       weeklyStats.push({ value: parts.join(' · '), label: Math.round(remainPct) + '% budget left', color: remColor });
     }
@@ -4648,15 +4803,25 @@ function initRateLimits(){
       weeklyNote = 'window just reset \u2014 the rolling-7d stats below carry over';
     }
 
+    // D3/C4: sub-window burn/ETA/pace verdict + in-window reset note, per
+    // gauge. Weekly reads the 6h burn against the 7d window; 5-Hour reads the
+    // 1h burn against the 5h window (D2's bucket_trend picks the "relevant"
+    // burn the same way server-side; this just labels which one it is).
+    var weeklyTrendNote = buildTrendNote(trend.seven_day, 'burn_6h_pct_per_hr', '(6h)', 7 * 86400);
+    var fiveHourTrendNote = buildTrendNote(trend.five_hour, 'burn_1h_pct_per_hr', '(1h)', 5 * 3600);
+
     var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
     gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
       dayLines: weeklyDayLines,
       projectedPct: weeklyProjected,
       stats: weeklyStats,
       note: weeklyNote,
+      trendNote: weeklyTrendNote,
       chartBtn: true
     });
-    gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected);
+    gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected, {
+      trendNote: fiveHourTrendNote
+    });
     gaugeHtml += '</div>';
 
     // Per-model rows from oauth.buckets 'scoped:' entries (limits[]-driven;
@@ -4851,6 +5016,104 @@ function initRateLimits(){
         }
       }
 
+      // ── D4: utilization trend overlay ──
+      // Only when the server has historized utilization for the weekly
+      // (seven_day) bucket — an older/fresh install with no limit_readings
+      // yet must render this chart byte-identical to today's cost-only view.
+      var trend = wb.oauth && wb.oauth.trend;
+      var weeklySeries = trend && trend.seven_day && trend.seven_day.series;
+      var limitWindow = wb.oauth && wb.oauth.limit_window;
+      var extraDatasets = [];
+      var resetMarkers = [];
+
+      if(weeklySeries && weeklySeries.length) {
+        // (a) Utilization % as a second dataset on a NEW right-hand 0-100
+        // axis. The x-axis here is a plain hour-index category scale (see
+        // 'labels'/'actualData' above), so each sample is placed at the same
+        // fractional hour-index the cost dataset uses — epochs arrive in
+        // SECONDS (the /api/rate-limits contract) and, matching the *1000
+        // seconds->ms convention already used for weekStartEpoch/epochMs
+        // throughout this function, get scaled to ms before the offset math.
+        var utilByHour = {};
+        for(var usi = 0; usi < weeklySeries.length; usi++) {
+          var sampleEpochMs = weeklySeries[usi][0] * 1000;
+          var sIdx = Math.round((sampleEpochMs - weekStartEpoch * 1000) / 3600000);
+          if(sIdx >= 0 && sIdx <= totalHours) utilByHour[sIdx] = weeklySeries[usi][1];
+        }
+        var utilData = [];
+        for(var uh = 0; uh <= totalHours; uh++) {
+          utilData.push(utilByHour.hasOwnProperty(uh) ? utilByHour[uh] : null);
+        }
+        extraDatasets.push({
+          label: 'Utilization %',
+          data: utilData,
+          borderColor: '#f5c518',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHitRadius: 6,
+          tension: 0.1,
+          spanGaps: true,
+          yAxisID: 'y2',
+          order: 1
+        });
+
+        // (b) Even-drain reference diagonal: (limit_window.start_epoch, 0) ->
+        // (start_epoch + 7d, 100), only when oauth.limit_window exists. Two
+        // sparse points + spanGaps draws the straight segment between them —
+        // thin/dashed, tooltip suppressed via the 'Even drain' filter below.
+        if(limitWindow) {
+          var evenStartIdx = Math.round(
+            (limitWindow.start_epoch * 1000 - weekStartEpoch * 1000) / 3600000);
+          var evenEndIdx = evenStartIdx + 7 * 24;
+          var evenData = [];
+          for(var eh = 0; eh <= totalHours; eh++) evenData.push(null);
+          // Clip the diagonal to the visible [0, totalHours] chart range
+          // instead of dropping an out-of-range endpoint outright: whenever
+          // the weekly reset sits far enough in the future (or past) that
+          // evenEndIdx (or evenStartIdx) falls off the chart, dropping that
+          // endpoint left a single-point dataset and Chart.js draws nothing
+          // for it. Placing the endpoint AT the boundary with the value the
+          // (evenStartIdx,0)->(evenEndIdx,100) line would have there keeps
+          // exactly two points — the visible portion of the same diagonal.
+          if(evenEndIdx > totalHours) {
+            evenData[totalHours] = ((totalHours - evenStartIdx) / 168) * 100;
+          } else if(evenEndIdx >= 0) {
+            evenData[evenEndIdx] = 100;
+          }
+          if(evenStartIdx < 0) {
+            evenData[0] = ((0 - evenStartIdx) / 168) * 100;
+          } else if(evenStartIdx <= totalHours) {
+            evenData[evenStartIdx] = 0;
+          }
+          extraDatasets.push({
+            label: 'Even drain',
+            data: evenData,
+            borderColor: 'rgba(58, 53, 47, 0.35)',
+            backgroundColor: 'transparent',
+            borderWidth: 1,
+            borderDash: [3, 3],
+            pointRadius: 0,
+            pointHitRadius: 0,
+            tension: 0,
+            spanGaps: true,
+            yAxisID: 'y2',
+            order: 3
+          });
+        }
+
+        // (d) Vertical reset markers — hour-index positions for the afterDraw
+        // plugin below (same drawing pattern as the NOW line: getPixelForValue
+        // + dashed stroke), one per resets[] event inside the charted week.
+        var resetsList = trend.seven_day.resets || [];
+        for(var rmi = 0; rmi < resetsList.length; rmi++) {
+          var rmEvt = resetsList[rmi];
+          if(!rmEvt || typeof rmEvt.at_epoch !== 'number') continue;
+          var rmIdx = (rmEvt.at_epoch * 1000 - weekStartEpoch * 1000) / 3600000;
+          if(rmIdx >= 0 && rmIdx <= totalHours) resetMarkers.push(rmIdx);
+        }
+      }
+
       // Working hours background shading + "Now" line plugin
       var chartPlugins = {
         id: 'workHoursAndNow',
@@ -4868,11 +5131,33 @@ function initRateLimits(){
           ctx.restore();
         },
         afterDraw: function(chart) {
-          if(nowExact < 0 || nowExact > totalHours) return;
           var xAxis = chart.scales.x;
           var yAxis = chart.scales.y;
-          var x = xAxis.getPixelForValue(nowExact);
           var ctx = chart.ctx;
+
+          // (d) Vertical dashed reset markers — same afterDraw + getPixelForValue
+          // + setLineDash pattern as the NOW line just below, a neutral (already-
+          // used-in-this-plugin) dark color so it's never mistaken for NOW, and
+          // labeled 'reset'. No-op when resetMarkers is empty (guarded above).
+          for(var rmk = 0; rmk < resetMarkers.length; rmk++) {
+            var rx = xAxis.getPixelForValue(resetMarkers[rmk]);
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([2, 3]);
+            ctx.strokeStyle = 'rgba(26, 26, 26, 0.45)';
+            ctx.lineWidth = 1.5;
+            ctx.moveTo(rx, yAxis.top);
+            ctx.lineTo(rx, yAxis.bottom);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(26, 26, 26, 0.6)';
+            ctx.font = '600 9px "DM Sans", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('reset', rx, yAxis.bottom + 12);
+            ctx.restore();
+          }
+
+          if(nowExact < 0 || nowExact > totalHours) return;
+          var x = xAxis.getPixelForValue(nowExact);
           ctx.save();
           ctx.beginPath();
           ctx.setLineDash([4, 3]);
@@ -4889,25 +5174,29 @@ function initRateLimits(){
         }
       };
 
+      // Base dataset + D4 overlay datasets (empty when weeklySeries is absent,
+      // so .concat([]) reproduces the original single-dataset array exactly).
+      var chartDatasets = [
+        {
+          label: 'Actual usage',
+          data: actualData,
+          borderColor: '#1a4b8c',
+          backgroundColor: 'rgba(26, 75, 140, 0.08)',
+          borderWidth: 2.5,
+          fill: 'origin',
+          pointRadius: 0,
+          pointHitRadius: 6,
+          tension: 0.15,
+          spanGaps: false,
+          order: 2
+        }
+      ].concat(extraDatasets);
+
       usageChart = new Chart(canvas, {
         type: 'line',
         data: {
           labels: labels,
-          datasets: [
-            {
-              label: 'Actual usage',
-              data: actualData,
-              borderColor: '#1a4b8c',
-              backgroundColor: 'rgba(26, 75, 140, 0.08)',
-              borderWidth: 2.5,
-              fill: 'origin',
-              pointRadius: 0,
-              pointHitRadius: 6,
-              tension: 0.15,
-              spanGaps: false,
-              order: 2
-            }
-          ]
+          datasets: chartDatasets
         },
         options: {
           responsive: true,
@@ -4927,8 +5216,11 @@ function initRateLimits(){
               cornerRadius: 0,
               borderColor: '#1a1a1a',
               borderWidth: 2,
+              // (b) Even-drain reference line is a visual aid only — no tooltip.
+              filter: function(item) { return item.dataset.label !== 'Even drain'; },
               callbacks: {
                 title: function(items) {
+                  if(!items.length) return '';
                   var idx = items[0].dataIndex;
                   var epochMs = (weekStartEpoch + idx * 3600) * 1000;
                   var d = new Date(epochMs + cstOff * 60000);
@@ -4940,45 +5232,76 @@ function initRateLimits(){
                 },
                 label: function(ctx) {
                   if(ctx.raw === null) return '';
+                  if(ctx.dataset.label === 'Utilization %') {
+                    return ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + '%';
+                  }
                   return ctx.dataset.label + ': $' + ctx.raw.toFixed(2);
                 }
               }
             }
           },
-          scales: {
-            x: {
-              grid: { color: 'rgba(216,212,204,0.5)', lineWidth: 1 },
-              border: { color: '#1a1a1a', width: 3 },
-              ticks: {
-                font: { family: '"DM Sans"', size: 10, weight: '600' },
-                color: '#3a352f',
-                maxRotation: 0,
-                autoSkip: false,
-                callback: function(val, idx) {
-                  return labels[idx] || '';
-                }
-              }
-            },
-            y: {
-              beginAtZero: true,
-              grid: { color: 'rgba(216,212,204,0.4)' },
-              border: { color: '#1a1a1a', width: 3 },
-              title: {
-                display: true,
-                text: yLabel,
-                font: { family: '"DM Sans"', size: 10, weight: '700' },
-                color: '#3a352f'
-              },
-              ticks: {
-                font: { family: '"DM Sans"', size: 10 },
-                color: '#3a352f',
-                callback: function(v) { return '$' + v; }
-              }
-            }
-          }
+          scales: buildChartScales()
         },
         plugins: [chartPlugins]
       });
+
+      // (a) NEW right-hand 0-100 utilization axis — only added when the D4
+      // overlay datasets exist, so a series-absent response keeps the exact
+      // scales object (and therefore chart) the template rendered before D4.
+      function buildChartScales() {
+        var scalesCfg = {
+          x: {
+            grid: { color: 'rgba(216,212,204,0.5)', lineWidth: 1 },
+            border: { color: '#1a1a1a', width: 3 },
+            ticks: {
+              font: { family: '"DM Sans"', size: 10, weight: '600' },
+              color: '#3a352f',
+              maxRotation: 0,
+              autoSkip: false,
+              callback: function(val, idx) {
+                return labels[idx] || '';
+              }
+            }
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: 'rgba(216,212,204,0.4)' },
+            border: { color: '#1a1a1a', width: 3 },
+            title: {
+              display: true,
+              text: yLabel,
+              font: { family: '"DM Sans"', size: 10, weight: '700' },
+              color: '#3a352f'
+            },
+            ticks: {
+              font: { family: '"DM Sans"', size: 10 },
+              color: '#3a352f',
+              callback: function(v) { return '$' + v; }
+            }
+          }
+        };
+        if(weeklySeries && weeklySeries.length) {
+          scalesCfg.y2 = {
+            position: 'right',
+            min: 0,
+            max: 100,
+            grid: { display: false },
+            border: { color: '#1a1a1a', width: 3 },
+            title: {
+              display: true,
+              text: 'Utilization %',
+              font: { family: '"DM Sans"', size: 10, weight: '700' },
+              color: '#3a352f'
+            },
+            ticks: {
+              font: { family: '"DM Sans"', size: 10 },
+              color: '#3a352f',
+              callback: function(v) { return v + '%'; }
+            }
+          };
+        }
+        return scalesCfg;
+      }
     }
 
     trigger.addEventListener('click', function(e) {
