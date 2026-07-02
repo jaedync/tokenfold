@@ -154,13 +154,13 @@ populate them), but `limits[]` is the primary source.
   Accept: fable bucket flows end-to-end; enterprise scope emits no `oauth`
   key and `"buckets"` joins the forbidden-strings list in
   `test_enterprise_only.py`.
-- [~] **B3** (P0/M) Dynamic gauge rendering in `dashboard.html` (replaces the
+- [x] **B3** (P0/M) Dynamic gauge rendering in `dashboard.html` (replaces the
   hardcoded Opus/Sonnet rows at ~4663-4684). Label map (`Fable · 7-Day` etc.)
   with a derived fallback label for unknown buckets; per-bucket `resets_at`
   shown via `fmtReset` (legacy rows never had it). Written test-first: seed
   a fable-only payload → exactly one Fable row, zero Sonnet/Opus rows.
   **Visual verification in a real browser before calling it done.**
-- [~] **B4** (P2/S) Deterministic color strategy: opus=var(--black),
+- [x] **B4** (P2/S) Deterministic color strategy: opus=var(--black),
   sonnet=var(--blue), fable=distinct (yellow + --yellow-text, or one new
   token); unknown buckets draw from a fixed cycle indexed by sorted key so
   colors are stable across the 60s poll; **var(--red) never assigned**

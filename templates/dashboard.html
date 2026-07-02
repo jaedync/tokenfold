@@ -5120,6 +5120,9 @@ function initRateLimits(){
         beforeDatasetsDraw: function(chart) {
           var xAxis = chart.scales.x;
           var yAxis = chart.scales.y;
+          // Scales can be gone mid-teardown (modal close/resize destroy pass)
+          // — a throw here kills every later draw callback for the chart.
+          if(!xAxis || !yAxis) return;
           var ctx = chart.ctx;
           ctx.save();
           ctx.fillStyle = 'rgba(26, 26, 26, 0.03)';
@@ -5133,6 +5136,7 @@ function initRateLimits(){
         afterDraw: function(chart) {
           var xAxis = chart.scales.x;
           var yAxis = chart.scales.y;
+          if(!xAxis || !yAxis) return;  // teardown draw pass — see above
           var ctx = chart.ctx;
 
           // (d) Vertical dashed reset markers — same afterDraw + getPixelForValue
