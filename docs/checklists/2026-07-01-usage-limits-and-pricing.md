@@ -313,3 +313,88 @@ after boot); `/api/ha` `model_buckets.fable` minute-scrubbed; **A7: Sonnet 5
 cost for 06-30+07-01 re-rolled $33.85 -> $22.57, ratio 0.6667 — exactly the
 standard->intro 2/3 repricing** (totals grew past the audit's $26.81 snapshot
 as 07-01 usage accrued; the ratio is the proof).
+
+---
+
+## Workstream F — Follow-on 2026-07-02: window-true spend + look-back charts
+
+User report: weekly subpanel shows `spent · rolling 7d` (never resets) where
+the current-limit-window spend belongs; granted mid-window resets must also
+truncate the window. Plus two new look-back charts. Design approved
+2026-07-02 with one amendment: window-history entries are per reset-bounded
+SEGMENT (a granted reset splits a week → multiple entries per week), never
+one-per-calendar-week.
+
+- [x] **F1** (P0/S) `limit_window.start_epoch` respects granted resets:
+  `max(weekly_resets_at − 7d, last detect_resets boundary in-window)`,
+  minute-floored. Lazy import (api ← limit_readings cycle).
+- [x] **F2** (P0/S) Weekly subpanel rows become `spent · this window` /
+  `active · this window` fed from `oauth.limit_window`; rolling-7d rows
+  remain only as fallback when `limit_window` absent; carry-over note gated
+  on the fallback path only.
+- [x] **F3** (P1/M) `compute_window_cost_by_model()` in cost_windows.py —
+  same dedupe/era/geo semantics, returns {display_model: cost};
+  `compute_window_cost` delegates (sum of values, behavior identical).
+- [x] **F4** (P1/M) `app/spend_history.py`: weekly window segmentation —
+  natural boundaries from observed `resets_at_epoch` transitions, granted
+  boundaries from `detect_resets` (merge within 3600s, double-fire safe),
+  pre-historization boundaries inferred by 7d back-stepping (flagged
+  `inferred`), ongoing segment last. Per segment: cost, peak_pct (null
+  pre-historization), end_kind natural|granted|ongoing. All emitted epochs
+  minute-floored.
+- [x] **F5** (P1/M) UTC monthly costs per model from raw events (NOT local-TZ
+  day summaries), oldest event → now.
+- [x] **F6** (P1/M) `GET /api/spend-history?scope=` — months always
+  (scope-filtered); `windows` key ONLY personal scope + not
+  enterprise-locked + oauth_usage present (mirrors rate-limits oauth
+  gating). Dashboard auth.
+- [x] **F7** (P2/S) `limit_readings` RETENTION_DAYS 90 → 400;
+  `/api/limit-history` HOURS_MAX matches.
+- [x] **F8** (P1/L) New dashboard section "Spend history": (a) limit-window
+  chart — bars = $ per segment labeled by end date (multiple bars per week
+  possible), peak-% dots on 0–100 right axis, granted/ongoing visually
+  distinct, inferred windows marked; (b) monthly UTC chart — stacked by
+  model, current month partial. Personal scope only for (a).
+- [x] **F9** (P1/M) Tests: segmentation (multi-reset week, double-fire
+  merge, inferred stepping, minute flooring), by_model delegation equality,
+  UTC month boundary vs local TZ, endpoint gating + auth, F1 truncation,
+  template labels.
+- [x] **F10** (P1/M) Playwright visual pass with extended seed (granted
+  reset mid-week → 2+ bars in one week; multi-month events).
+
+### Workstream F review + fix record (2026-07-02)
+
+Adversarial review (opus): FIX_FIRST with 1 HIGH — all addressed, suite
+606/606 OK:
+
+- **H1 (fixed)**: unbounded look-back from unvalidated ancient ts_epoch
+  (epoch-0 event => ~24k month queries / ~105k segment builds per dashboard
+  load). Fix: `_oldest_event_epoch` clamped (segments: MAX_SEGMENTS+2
+  windows; months: MAX_MONTHS=72 x 32d), loop caps as belt-and-braces,
+  months wrapped in its own narrow try/except (was the one blast-radius
+  gap). Ingest-side ts_epoch range validation deliberately NOT touched in
+  this batch (shared writer; legit legacy imports carry old timestamps) —
+  read-side clamps fully neutralize the DoS. Open item if ever revisited.
+- **M1 (fixed)**: stale/out-of-order client snapshot (55->40->55) read as a
+  granted reset, moving limit_window.start_epoch (headline undercount) and
+  painting a fake red bar. Fix: `persistent_resets()` in limit_readings
+  (drop events whose NEXT reading recovered above before-10pts; trailing
+  events kept provisionally); F1 uses it; `_pair_boundary` requires drop
+  persistence + only forward anchor jumps count. Burn/trend paths keep raw
+  detect_resets (spurious cut is benign there).
+- **L1 (fixed)**: ongoing segment inherited inferred=True on fresh installs
+  -> live window rendered faded. Ongoing is now never inferred.
+- **L2 (won't fix, rationale)**: windows chart labels use browser-local
+  dates while monthly chart is UTC. Deliberate: window boundaries are
+  moments (match the gauges' local "resets Sat 8:57a" convention); months
+  are UTC billing periods. Different kinds of time.
+- Bonus fix surfaced by visual pass: MODEL_COLORS predated the Claude 5
+  family — Sonnet 5 hash-collided to Sonnet 4.6's exact blue (ambiguous
+  stacked charts on PROD today), Fable 5 to gray, Opus 4.8 to red. Added
+  explicit family-hue/era-shade entries (Fable teal #0f6b5c, Opus 4.8
+  #b8231a, Opus 4.7 #e08a1e, Sonnet 5 #4f83bd).
+- Visual pass (Playwright, seeded multi-window scenario): F2 rows
+  window-true, 19 window bars (inferred faded blue / granted red /
+  ongoing gray + peak dots), monthly stack shows model-mix shift with
+  distinct colors, "Mar '26" month labels, zero page errors, no
+  horizontal scroll at 1440/960/768/390.
