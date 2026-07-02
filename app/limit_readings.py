@@ -33,10 +33,13 @@ RESET_DROP_PTS = 10.0  # utilization drop that can't be jitter (1-2pt dips seen)
 RESET_JUMP_S = 1200    # resets_at forward jump > 2x the 600s poll interval
                        # (tolerates poll jitter without flagging every refresh)
 
-RETENTION_DAYS = 90  # limit_readings rows older than this are pruned
+# F7: 400 days (was 90) — the spend-history window chart derives peak-%
+# per limit window from these rows, so retention IS the chart's horizon.
+# Volume stays trivial: ~450 rows/day => ~180k rows/400d.
+RETENTION_DAYS = 400
 
 HOURS_DEFAULT = 168   # one weekly window
-HOURS_MAX = 2160      # 90 days — matches retention, larger asks are noise
+HOURS_MAX = 9600      # 400 days — matches retention, larger asks are noise
 # The checklist said [a-z0-9_]; ':' is deliberately added because scoped
 # bucket keys look like 'scoped:fable' (see usage_buckets normalizer).
 _BUCKET_RE = re.compile(r"^[a-z0-9_:]{1,64}$")
@@ -151,6 +154,36 @@ def detect_resets(rows):
                     })
         prev = cur
     return events
+
+
+def persistent_resets(rows):
+    """detect_resets minus one-poll flukes, for COST-BEARING consumers.
+
+    A stale/out-of-order client push (a lagging machine POSTs a snapshot
+    captured minutes earlier) can replay a lower utilization for one row,
+    which detect_resets reads as a >=10pt drop — a fake granted reset. The
+    tell: on the very next reading the meter is back near its pre-"reset"
+    level, which a REAL grant makes impossible (usage restarts near zero).
+    So: drop any event whose next reading recovered to within
+    RESET_DROP_PTS of utilization_before. Events with no subsequent
+    reading yet are kept provisionally (self-corrects next poll).
+
+    Burn/trend consumers keep using raw detect_resets — a spurious segment
+    cut there only shortens the interpolation span, while here a spurious
+    event moves limit_window.start_epoch and undercounts the headline
+    spend (M1).
+    """
+    events = detect_resets(rows)
+    kept = []
+    for e in events:
+        nxt = next((r for r in rows
+                    if r["fetched_epoch"] > e["at_epoch"]), None)
+        if (nxt is not None and nxt["utilization"] is not None
+                and nxt["utilization"]
+                > e["utilization_before"] - RESET_DROP_PTS):
+            continue
+        kept.append(e)
+    return kept
 
 
 def prune_limit_readings(conn, now_epoch=None):

@@ -98,6 +98,7 @@ from .ha import router as ha_router
 from .desktop_sessions import router as desktop_sessions_router
 from .billing_readings import router as billing_readings_router
 from .limit_readings import router as limit_readings_router
+from .spend_history import router as spend_history_router
 from .install import router as install_router
 
 app.include_router(ingest_router)
@@ -109,6 +110,7 @@ app.include_router(ha_router)
 app.include_router(desktop_sessions_router)
 app.include_router(billing_readings_router)
 app.include_router(limit_readings_router)
+app.include_router(spend_history_router)
 app.include_router(install_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"

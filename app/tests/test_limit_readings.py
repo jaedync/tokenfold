@@ -282,6 +282,41 @@ class DetectResetsTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# persistent_resets — stale-replay filter over detect_resets (review M1)
+# ---------------------------------------------------------------------------
+
+class PersistentResetsTest(unittest.TestCase):
+
+    def _rows(self, triples, anchor):
+        return [{"bucket": "seven_day", "fetched_epoch": t,
+                 "utilization": u, "resets_at_epoch": anchor}
+                for t, u in triples]
+
+    def test_real_grant_kept(self):
+        from app.limit_readings import persistent_resets
+        rows = self._rows([(1000.0, 55.0), (1600.0, 3.0), (2200.0, 4.0)],
+                          anchor=900000.0)
+        self.assertEqual(len(persistent_resets(rows)), 1)
+
+    def test_stale_replay_dropped(self):
+        """One-row dip that recovers on the next reading = out-of-order
+        client snapshot, not a grant."""
+        from app.limit_readings import detect_resets, persistent_resets
+        rows = self._rows([(1000.0, 55.0), (1600.0, 40.0), (2200.0, 55.0)],
+                          anchor=900000.0)
+        self.assertEqual(len(detect_resets(rows)), 1)  # raw fires
+        self.assertEqual(persistent_resets(rows), [])  # filter drops
+
+    def test_trailing_event_kept_provisionally(self):
+        """No subsequent reading yet: keep the event (self-corrects on
+        the next poll)."""
+        from app.limit_readings import persistent_resets
+        rows = self._rows([(1000.0, 55.0), (1600.0, 40.0)],
+                          anchor=900000.0)
+        self.assertEqual(len(persistent_resets(rows)), 1)
+
+
+# ---------------------------------------------------------------------------
 # C5 — retention
 # ---------------------------------------------------------------------------
 
@@ -295,16 +330,16 @@ class RetentionTest(TempDBTestCase):
         self.conn.commit()
 
     def test_old_rows_pruned_recent_survive(self):
-        from app.limit_readings import prune_limit_readings
+        from app.limit_readings import RETENTION_DAYS, prune_limit_readings
         now = time.time()
-        self._seed(now - 91 * 86400)
-        self._seed(now - 89 * 86400)
+        keep_t = now - (RETENTION_DAYS - 1) * 86400
+        self._seed(now - (RETENTION_DAYS + 1) * 86400)
+        self._seed(keep_t)
         prune_limit_readings(self.conn, now_epoch=now)
         rows = self.conn.execute(
             "SELECT fetched_epoch FROM limit_readings").fetchall()
         self.assertEqual(len(rows), 1)
-        self.assertAlmostEqual(rows[0]["fetched_epoch"], now - 89 * 86400,
-                               places=2)
+        self.assertAlmostEqual(rows[0]["fetched_epoch"], keep_t, places=2)
 
     def test_empty_table_noop(self):
         from app.limit_readings import prune_limit_readings
@@ -315,8 +350,9 @@ class RetentionTest(TempDBTestCase):
 
     def test_fetcher_prune_hook_runs_at_most_daily(self):
         from app import usage_fetcher
+        from app.limit_readings import RETENTION_DAYS
         now = time.time()
-        self._seed(now - 91 * 86400)
+        self._seed(now - (RETENTION_DAYS + 1) * 86400)
         saved = usage_fetcher._last_prune_epoch
         usage_fetcher._last_prune_epoch = 0.0
         try:

@@ -452,6 +452,67 @@ class TrendEndpointTest(TempDBTestCase):
         self.assertGreaterEqual(lw["cost"], 4.99)  # the $5 event is inside
         self.assertGreaterEqual(lw["active_s"], 0)
 
+    def test_limit_window_truncated_by_granted_reset(self):
+        """F1: a GRANTED mid-window reset (utilization plunges while
+        resets_at stays put — the exact detect_resets signature) moves
+        limit_window.start_epoch forward to the reset boundary, so spend
+        from before the grant is excluded. Natural rollovers already move
+        the start via resets_at itself; this covers the case where
+        Anthropic wipes the meter without moving the window."""
+        now = time.time()
+        resets = now + 3 * 86400        # natural window: [now-4d, now+3d)
+        grant_t = now - 86400           # Anthropic granted a reset 1d ago
+        self._seed_oauth(resets)
+        # Consecutive readings straddling the grant: 55 -> 3 while the
+        # window is still active (resets_at_epoch in the future).
+        for t, pct in ((grant_t - 600, 55.0), (grant_t, 3.0),
+                       (grant_t + 600, 3.0)):
+            self.conn.execute(
+                "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+                "utilization, resets_at, resets_at_epoch) "
+                "VALUES(?, 'server', 'seven_day', ?, NULL, ?)",
+                (t, pct, resets))
+        self.conn.commit()
+        # $5 of personal Opus BEFORE the grant, $5 AFTER: only the post-
+        # grant event may count toward this window's spend.
+        _ins_event(self.conn, "cg1", "rg1", grant_t - 86400, inp=1_000_000)
+        _ins_event(self.conn, "cg2", "rg2", now - 3600, inp=1_000_000)
+        c = self.client()
+        oauth = c.get("/api/rate-limits?scope=personal").json()[
+            "weekly_budget"]["oauth"]
+        lw = oauth["limit_window"]
+        # Start is the minute-floored grant boundary, not resets-7d.
+        self.assertAlmostEqual(lw["start_epoch"], (grant_t // 60) * 60.0,
+                               places=2)
+        self.assertEqual(lw["start_epoch"] % 60, 0)
+        # Pre-grant $5 excluded, post-grant $5 included.
+        self.assertAlmostEqual(lw["cost"], 5.0, places=2)
+
+    def test_limit_window_unmoved_by_stale_replay(self):
+        """Review M1: a stale client snapshot (55 -> 40 -> 55) fires raw
+        detect_resets but must NOT move limit_window.start_epoch — both
+        events on either side of the fake dip stay in the window's cost."""
+        now = time.time()
+        resets = now + 3 * 86400
+        t = now - 3600
+        self._seed_oauth(resets)
+        for tt, pct in ((t - 600, 55.0), (t, 40.0), (t + 600, 55.0)):
+            self.conn.execute(
+                "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+                "utilization, resets_at, resets_at_epoch) "
+                "VALUES(?, 'server', 'seven_day', ?, NULL, ?)",
+                (tt, pct, resets))
+        self.conn.commit()
+        _ins_event(self.conn, "sr1", "rr1", t - 7200, inp=1_000_000)
+        _ins_event(self.conn, "sr2", "rr2", now - 60, inp=1_000_000)
+        c = self.client()
+        oauth = c.get("/api/rate-limits?scope=personal").json()[
+            "weekly_budget"]["oauth"]
+        lw = oauth["limit_window"]
+        expect_start = ((resets // 60) * 60.0) - 7 * 86400
+        self.assertAlmostEqual(lw["start_epoch"], expect_start, places=2)
+        self.assertAlmostEqual(lw["cost"], 10.0, places=2)
+
     def test_limit_window_absent_when_resets_unparseable(self):
         now = time.time()
         stored = {

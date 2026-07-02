@@ -310,6 +310,32 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                     if weekly_resets_epoch is not None:
                         lw_start = (((weekly_resets_epoch // 60) * 60.0)
                                     - 7 * 86400)
+                        # F1: a GRANTED mid-window reset voids pre-grant
+                        # usage — the window's spend starts at the latest
+                        # detected reset, not at resets_at − 7d (which only
+                        # moves on NATURAL rollovers). persistent_resets
+                        # (not raw detect_resets): a stale client replay
+                        # must not move the cost window (review M1) — its
+                        # active-window guard still means these events are
+                        # exactly the granted kind. Lazy import:
+                        # limit_readings imports api at module level, so
+                        # api must never import it back at module level
+                        # (same cycle-break as limit_trends above).
+                        # floor_reset_events keeps start_epoch
+                        # minute-floored either way.
+                        from .limit_readings import (floor_reset_events,
+                                                     persistent_resets)
+                        lr_rows = conn.execute(
+                            "SELECT bucket, fetched_epoch, utilization, "
+                            "resets_at_epoch FROM limit_readings "
+                            "WHERE bucket='seven_day' AND fetched_epoch>=? "
+                            "ORDER BY fetched_epoch ASC",
+                            (lw_start,)).fetchall()
+                        granted = floor_reset_events(
+                            persistent_resets(lr_rows))
+                        if granted:
+                            lw_start = max(lw_start,
+                                           granted[-1]["at_epoch"])
                         oauth_block["limit_window"] = {
                             "start_epoch": lw_start,
                             "cost": round(compute_window_cost(

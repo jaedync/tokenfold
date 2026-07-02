@@ -132,8 +132,8 @@ class LimitHistoryEndpointTest(_LimitHistoryBase):
 
     def test_hours_clamped_not_errored(self):
         now = time.time()
-        # 100 days old: outside even the max window (2160h = 90d).
-        self._seed_row("seven_day", now - 100 * 86400, 40.0)
+        # 500 days old: outside even the max window (9600h = 400d, F7).
+        self._seed_row("seven_day", now - 500 * 86400, 40.0)
         self._seed_row("seven_day", now - 60, 50.0)
         r = self._get("bucket=seven_day&scope=personal&hours=99999")
         self.assertEqual(r.status_code, 200, r.text)

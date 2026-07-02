@@ -18,6 +18,24 @@ def compute_window_cost(
 ) -> float:
     """Sum assistant-event cost over [start_epoch, end_epoch) for the given scope.
 
+    Thin wrapper over compute_window_cost_by_model — one query, identical
+    dedupe/era/geo semantics; this just collapses the per-model split.
+
+    Returns 0.0 if the window is empty. Does not round — callers round
+    to their preferred precision.
+    """
+    return sum(compute_window_cost_by_model(
+        conn, start_epoch, end_epoch, scope).values())
+
+
+def compute_window_cost_by_model(
+    conn: sqlite3.Connection,
+    start_epoch: float,
+    end_epoch: float,
+    scope: str = DEFAULT_SCOPE,
+) -> dict:
+    """Per-display-model cost over [start_epoch, end_epoch) for the given scope.
+
     Streaming API chunks repeat token counts on every message; we dedupe
     with MAX(tokens) per (model, request_id), then sum costs per model.
     Synthetic events and rows missing model/request_id are excluded.
@@ -25,8 +43,9 @@ def compute_window_cost(
     Defaults to enterprise scope (fail-closed for /api/ha and HA integrations).
     Pass scope='personal' for the personal usage view.
 
-    Returns 0.0 if the window is empty. Does not round — callers round
-    to their preferred precision.
+    Returns {} if the window is empty; values are unrounded floats keyed by
+    display_model() names (e.g. 'Sonnet 5'), so raw model-id aliases that
+    share a display name are already merged.
     """
     pred = scope_predicate(scope)
     # Era-split: the outer GROUP BY discards timestamps, so a window straddling
@@ -47,7 +66,7 @@ def compute_window_cost(
         # pre-era version.
         era_sel = inner_ts = era_grp = ""
         params = (start_epoch, end_epoch)
-    total = 0.0
+    by_model: dict = {}
     for r in conn.execute(
         "SELECT model, speed, inference_geo, "
         f"{era_sel}"
@@ -70,7 +89,7 @@ def compute_window_cost(
         params,
     ):
         dm = display_model(r["model"])
-        total += compute_cost(
+        by_model[dm] = by_model.get(dm, 0.0) + compute_cost(
             dm,
             r["inp"] or 0,
             r["outp"] or 0,
@@ -83,4 +102,4 @@ def compute_window_cost(
             web_search=r["ws"] or 0,
             ts_epoch=r["first_ts"] if bounds else None,
         )
-    return total
+    return by_model
