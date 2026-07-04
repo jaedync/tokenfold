@@ -413,3 +413,70 @@ events mid-May); `limit_window` = {start 2026-07-02T08:00Z (the natural
 rollover), $224.51, 3h05m active} feeding the new "spent · this window"
 subpanel rows; spendHistorySection + Fable 5 color entries live in the
 served template.
+
+---
+
+## Workstream G — per-gauge dollar-budget projection + marker overlap fix (2026-07-03)
+
+Request: extend the weekly gauge's dollar treatment to the 5-hour window and
+the per-model scoped gauges — implied total budget (spend / pct), spent, and
+budget-left in API-equivalent dollars, plus the same projected-by-reset pace
+line. Also: the "expected" marker annotation overprints neighboring text at
+low/high percentages; when it overlaps, don't show it.
+
+Server (`app/api.py`):
+- [x] G1 `_bucket_window_start(conn, bucket, resets_epoch, window_s)` —
+  the F1 pattern (minute-floored `resets_at − window`, pushed forward past
+  the bucket's latest persistent granted reset) extracted and shared;
+  weekly `limit_window` refactored onto it behavior-identically.
+- [x] G2 `oauth.five_hour_window = {start_epoch, cost}` — all-model cost
+  over the current 5h window; omitted when `resets_at` is unparseable or
+  already past (stale blob would pair an ended window's pct with fresh
+  cost). Own narrow try/except.
+- [x] G3 scoped `buckets[]` entries gain `window_cost` (family-filtered via
+  `compute_window_cost_by_model`) + `window_start_epoch`; family = first
+  slug token ("scoped:opus_4_8" → "opus"), so versioned display names
+  still match every era of the family (review MEDIUM). Per-bucket
+  try/except; stale/unparseable resets skip the fields.
+
+Client (`templates/dashboard.html`):
+- [x] G4 shared `budgetStats(cost, pct)` → spent / est. window budget
+  (~cost/pct×100) / % budget left; extrapolated cells gated at pct ≥ 5
+  (integer-ish API percents make lower divisions quantization noise).
+- [x] G5 5-Hour gauge: expected marker split-fill, "Projected by reset",
+  dollar cells. Weekly gains the est-budget cell alongside its existing
+  spent/active/budget-left.
+- [x] G6 scoped rows rebuilt through `buildGauge` (new `opts.fillColor`
+  pins identity colors, `opts.rootStyle` keeps the border) — marker,
+  projection, dollar cells; stale `resets_at` nulls the marker (D6
+  analogue).
+- [x] G7 `.rate-gauge-stats` wraps (negative-margin cell borders +
+  container overflow clip) so 5 cells / narrow cards form clean grids.
+- [x] G8 marker-label overlap: measured post-render pass hides (display:
+  none — visibility:hidden ghosts widened scrollWidth into mobile
+  horizontal scroll) any "expected" label that pokes outside its gauge
+  card or intersects title/reset/dayline/chart-btn text (4px pad);
+  re-decides from scratch on debounced resize, armed once globally.
+- [x] G9 split-fill deadband aligned to barColor's (`expectedPct > 2`):
+  minutes after a reset everything is "over pace", and the old `> 0`
+  condition painted a 12%-used bar almost entirely red over noise.
+
+Review (opus, adversarial): verdict SHIP. All eight invariants verified
+(privacy minute-flooring, enterprise gate, failure isolation, weekly
+refactor identical, older-server degradation, no listener leaks, ES5,
+XSS). MEDIUM (fixed): raw-slug family match would silently yield $0 for
+versioned display names — stem match + limits[]-path test added. LOWs
+accepted: scoped staleness check uses minute-floored resets (≤60s edge,
+self-corrects next poll); scoped rows gain markers even from old servers
+(by design).
+
+Tests: 623 green (+9 test_bucket_windows.py, +8 template pins incl. the
+resize re-arm and updated scoped-row color path).
+
+Visual pass (Playwright, seeded: weekly 20% granted-reset window, 5h 46%
+mid-window, Fable 34%, Opus 76% resetting in 40min, Sonnet 12% just
+reset): all dollar cells correct vs API ($14.58 5h spend → ~$31.70
+budget; Opus $8.57 → ~$11.28 with yellow $2.71-left warning; Sonnet $0 →
+bare bar), edge-parked marker labels hidden at every width while
+mid-track labels stay, marker ticks always visible, no horizontal scroll
+at 1440/960/768/390, zero page errors.
