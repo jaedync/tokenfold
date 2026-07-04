@@ -792,20 +792,26 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
 /* Weekly stats row */
 .rate-gauge-stats {
   display: flex;
+  flex-wrap: wrap;
+  /* clips the outer edge of the per-cell divider borders below, so
+     wrapped rows/columns get dividers without doubled outer edges */
+  overflow: hidden;
   margin-top: 0.7rem;
   border: 3px solid var(--black);
   background: var(--white);
 }
 
 .rate-gauge-stat {
-  flex: 1;
+  /* 120px basis: the widest nowrap value ('~$275.36 · ~14h 2m') — cells
+     wrap to a new row instead of squeezing below it */
+  flex: 1 1 120px;
   padding: 0.5rem 0.6rem;
   text-align: center;
   min-width: 0;
-}
-
-.rate-gauge-stat + .rate-gauge-stat {
   border-left: 2px solid var(--black);
+  border-top: 2px solid var(--black);
+  margin-left: -2px;
+  margin-top: -2px;
 }
 
 .rate-gauge-stat-value {
@@ -4623,6 +4629,32 @@ function initRateLimits(){
       } catch(e) { return null; }
     }
 
+    // Dollar-budget stats shared by every limit gauge: the implied window
+    // ceiling is one point of extrapolation (spend ÷ pct), so it's gated
+    // behind pct >= 5 — the API reports coarse percents, and dividing by a
+    // 1-2% reading turns quantization noise into a 2x budget swing. Below
+    // the gate only the 'spent' cell renders. All figures are estimates in
+    // API-equivalent dollars of THIS window's usage mix (cache-heavy vs
+    // fresh-token windows imply different ceilings), hence every '~'.
+    function budgetStats(cost, pct) {
+      var stats = [];
+      if(typeof cost !== 'number' || cost <= 0) return stats;
+      stats.push({ value: fC(cost), label: 'spent · this window' });
+      if(typeof pct === 'number' && pct >= 5) {
+        var budget = (cost / pct) * 100;
+        var remPct = Math.max(0, 100 - pct);
+        var remColor = remPct <= 15 ? 'var(--red)'
+          : remPct <= 35 ? 'var(--yellow-text)' : null;
+        stats.push({ value: '~' + fC(budget), label: 'est. window budget' });
+        stats.push({
+          value: '~' + fC(Math.max(0, budget - cost)),
+          label: Math.round(remPct) + '% budget left',
+          color: remColor
+        });
+      }
+      return stats;
+    }
+
     // D3/C4: sub-window burn rate + ETA + pace verdict + reset annotation for
     // one gauge, built from oauth.trend[bucketKey] (the D2 server block —
     // absent entirely until limit_readings has accumulated samples, and
@@ -4684,7 +4716,10 @@ function initRateLimits(){
     function buildGauge(label, pct, resetLabel, expectedPct, opts) {
       opts = opts || {};
       var clamp = Math.min(pct, 100);
-      var color = barColor(pct, expectedPct);
+      // fillColor pins a fixed identity color (per-model rows) instead of
+      // the pace-reactive palette; the over-expected overflow segment
+      // below stays var(--red) either way.
+      var color = opts.fillColor || barColor(pct, expectedPct);
       var innerHtml = '';
 
       if(opts.dayLines) {
@@ -4729,7 +4764,10 @@ function initRateLimits(){
       }
 
       var fillHtml = '';
-      if(expectedPct !== null && expectedPct > 0 && expectedPct <= 100 && clamp > 0) {
+      // expectedPct > 2, matching barColor's deadband: minutes after a
+      // reset EVERYTHING is "over pace", so the split fill would paint the
+      // whole bar red over noise (a 12%-used bar at 0.2% expected).
+      if(expectedPct !== null && expectedPct > 2 && expectedPct <= 100 && clamp > 0) {
         if(clamp > expectedPct) {
           fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
             + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
@@ -4758,7 +4796,8 @@ function initRateLimits(){
       var trendNoteHtml = opts.trendNote
         ? '<div class="rate-gauge-projection">' + opts.trendNote + '</div>' : '';
 
-      return '<div class="rate-gauge">'
+      return '<div class="rate-gauge"'
+        + (opts.rootStyle ? ' style="' + opts.rootStyle + '"' : '') + '>'
         + '<div class="rate-gauge-head">'
         + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
         + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
@@ -4850,6 +4889,16 @@ function initRateLimits(){
     if(limitWindow) {
       weeklyStats.push({ value: fC(limitWindow.cost || 0), label: 'spent · this window' });
       weeklyStats.push({ value: fHM(lwActiveMin), label: 'active · this window' });
+      // Implied window ceiling (spend ÷ pct) — same math and same >= 5%
+      // noise gate as budgetStats; kept inline here because weekly's
+      // spent/active/budget-left cells predate the shared helper and
+      // carry active-time components budgetStats doesn't.
+      if(limitWindow.cost > 0 && wPct >= 5) {
+        weeklyStats.push({
+          value: '~' + fC((limitWindow.cost / wPct) * 100),
+          label: 'est. window budget'
+        });
+      }
     } else {
       weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
       weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
@@ -4904,6 +4953,18 @@ function initRateLimits(){
     var weeklyTrendNote = buildTrendNote(trend.seven_day, 'burn_6h_pct_per_hr', '(6h)', 7 * 86400);
     var fiveHourTrendNote = buildTrendNote(trend.five_hour, 'burn_1h_pct_per_hr', '(1h)', 5 * 3600);
 
+    // 5-Hour dollar stats + on-pace projection — mirrors the weekly gauge.
+    // oauth.five_hour_window is absent on stale blobs (server skips when
+    // resets_at already passed, the same staleness D6 nulls hExpected for)
+    // and on older servers; budgetStats returns [] for a missing cost, so
+    // the gauge degrades to exactly today's rendering.
+    var fhWindow = oauth.five_hour_window || null;
+    var fiveHourStats = budgetStats(fhWindow ? fhWindow.cost : null, hPct);
+    var fiveHourProjected = null;
+    if(hExpected !== null && hExpected > 2 && hPct > 0) {
+      fiveHourProjected = (hPct / hExpected) * 100;
+    }
+
     var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
     gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
       dayLines: weeklyDayLines,
@@ -4914,7 +4975,9 @@ function initRateLimits(){
       chartBtn: true
     });
     gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected, {
-      trendNote: fiveHourTrendNote
+      trendNote: fiveHourTrendNote,
+      projectedPct: fiveHourProjected,
+      stats: fiveHourStats
     });
     gaugeHtml += '</div>';
 
@@ -4947,19 +5010,30 @@ function initRateLimits(){
         sbColor = SCOPED_FALLBACK[fallbackIdx % SCOPED_FALLBACK.length];
         fallbackIdx++;
       }
-      var sbReset = fmtReset(sb.resets_at);
-      modelRowsHtml += '<div class="rate-gauge" style="border-top:var(--border)">'
-        + '<div class="rate-gauge-head">'
-        + '<span class="rate-gauge-label">' + esc(sb.label) + ' · 7-Day</span>'
-        + (sbReset ? '<span class="rate-gauge-reset">' + sbReset + '</span>' : '')
-        + '</div>'
-        + '<div class="rate-gauge-track">'
-        + '<div class="rate-gauge-fill" style="width:' + Math.min(sbPct, 100).toFixed(1) + '%;background:' + sbColor + '"></div>'
-        + '</div>'
-        + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:' + textColorFor(sbColor) + '">' + Math.round(sbPct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(sbPct)) + '% remaining</span>'
-        + '</div></div>';
+      // Full gauge treatment (expected marker, projected-by-reset, dollar
+      // stats) — same machinery as weekly/5h, with the model's identity
+      // color pinned via fillColor. scoped:* limits are always 7-day
+      // windows (kind weekly_scoped). sb.window_cost comes model-filtered
+      // from the server; absent (older server / stale resets_at) →
+      // budgetStats returns [] and the row degrades to the bare bar.
+      var sbExpected = calcExpectedPct(sb.resets_at, WEEK_MS);
+      // D6 analogue: a resets_at already in the past means the stored pct
+      // describes an ENDED window — no marker, no projection against it.
+      if(sbExpected !== null) {
+        var sbResetMs = sb.resets_at ? new Date(sb.resets_at).getTime() : NaN;
+        if(!isNaN(sbResetMs) && sbResetMs <= Date.now()) sbExpected = null;
+      }
+      var sbProjected = null;
+      if(sbExpected !== null && sbExpected > 2 && sbPct > 0) {
+        sbProjected = (sbPct / sbExpected) * 100;
+      }
+      modelRowsHtml += buildGauge(
+        esc(sb.label) + ' · 7-Day', sbPct, fmtReset(sb.resets_at), sbExpected, {
+          fillColor: sbColor,
+          projectedPct: sbProjected,
+          stats: budgetStats(sb.window_cost, sbPct),
+          rootStyle: 'border-top:var(--border)'
+        });
     }
 
     // Extra usage block (if enabled)
@@ -4984,6 +5058,64 @@ function initRateLimits(){
     }
 
     oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;
+
+    // An 'expected' marker label parked near 0%/100% slides under the gauge
+    // title or the 'resets …' text (they share the strip above the track)
+    // and turns into unreadable overprint. Measure after insertion and drop
+    // any label that intersects neighbor text — the marker LINE stays, it's
+    // the real signal; the word is only a legend. Measured (not a fixed
+    // pct range) so it adapts to any label/reset-text width, and re-runs
+    // naturally with each 60s re-render.
+    function runMarkerOverlapPass() {
+      var panel = document.getElementById('oauthGaugesPanel');
+      if(!panel) return;
+      var labs = panel.querySelectorAll('.rate-gauge-marker-label');
+      var PAD = 4;  // "almost touching" reads as touching at 0.65rem
+      for(var li = 0; li < labs.length; li++) {
+        var lab = labs[li];
+        var gauge = lab.closest ? lab.closest('.rate-gauge') : null;
+        if(!gauge) continue;
+        // Re-decide from scratch every pass — collisions depend on viewport
+        // width, so a label hidden at one width may be fine at another.
+        lab.style.display = '';
+        var r = lab.getBoundingClientRect();
+        // display:none, NOT visibility:hidden — a hidden-but-laid-out label
+        // hanging past a ~99% marker still widens document scrollWidth and
+        // reintroduces horizontal page scroll on mobile.
+        // Case 1: poking outside the gauge card (markers parked at the far
+        // edges) — no neighbor needed to look wrong.
+        var gr = gauge.getBoundingClientRect();
+        if(r.left < gr.left || r.right > gr.right) {
+          lab.style.display = 'none';
+          continue;
+        }
+        // Case 2: overprinting neighbor text.
+        var others = gauge.querySelectorAll(
+          '.rate-gauge-label, .rate-gauge-reset, .rate-gauge-dayline-label, .rate-gauge-chart-btn');
+        for(var oi = 0; oi < others.length; oi++) {
+          var o = others[oi].getBoundingClientRect();
+          if(r.left < o.right + PAD && r.right > o.left - PAD
+              && r.top < o.bottom + PAD && r.bottom > o.top - PAD) {
+            lab.style.display = 'none';
+            break;
+          }
+        }
+      }
+    }
+    runMarkerOverlapPass();
+    // Collisions move with viewport width (rotate / window drag), so the
+    // pass re-runs on resize. Armed ONCE globally — this render block runs
+    // per 60s poll, and one listener per poll would leak (the same trap the
+    // interval-leak tests police). The first poll's closure stays armed; it
+    // re-queries the panel by id so it always sees the freshest render.
+    if(!window._tfMarkerResizeArmed) {
+      window._tfMarkerResizeArmed = true;
+      var _tfMarkerResizeT = null;
+      window.addEventListener('resize', function(){
+        clearTimeout(_tfMarkerResizeT);
+        _tfMarkerResizeT = setTimeout(runMarkerOverlapPass, 150);
+      });
+    }
 
     // Staleness indicator — tied to oauth.updated_at_epoch.
     // renderAllRateLimits is re-run by the 60s poll, so clear the previous

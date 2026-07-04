@@ -343,9 +343,14 @@ class ScopedBucketGaugesTest(unittest.TestCase):
         self.assertIn("esc(sb.label)", self.tpl)
 
     def test_yellow_pct_text_uses_readable_token(self):
-        """Yellow fill needs the darkened --yellow-text token for pct text;
-        the shared textColorFor helper handles the mapping."""
-        self.assertIn("textColorFor(sbColor)", self.tpl)
+        """Yellow fill needs the darkened --yellow-text token for pct text.
+        Scoped rows now render through buildGauge (fillColor: sbColor), so
+        the mapping happens inside buildGauge: textColorFor(color) where
+        color is the fillColor override."""
+        self.assertIn("fillColor: sbColor", self.tpl)
+        self.assertIn("var color = opts.fillColor || barColor(pct, expectedPct);",
+                      self.tpl)
+        self.assertIn("textColorFor(color)", self.tpl)
 
     def test_pct_field_name_pinned(self):
         """The renderer reads sb.pct — the /api/rate-limits buckets[] entries
@@ -725,6 +730,103 @@ class SpendHistorySectionTest(unittest.TestCase):
         self.assertIn("document.getElementById('spendHistorySection').style.display = 'block';", self.tpl)
         catch_pos = self.tpl.index(".catch(function(){ /* secondary analytics")
         self.assertNotIn("spendHistorySection", self.tpl[catch_pos:catch_pos + 120])
+
+
+class BudgetProjectionGaugesTest(unittest.TestCase):
+    """Per-gauge dollar-budget projection: shared budgetStats helper (spent /
+    est. window budget / budget left) wired into the 5-hour gauge and the
+    scoped per-model rows, plus the weekly est-budget cell; all budget
+    extrapolation gated behind pct >= 5 (coarse-percent noise floor)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_budget_stats_helper_present_and_gated(self):
+        self.assertIn("function budgetStats(cost, pct) {", self.tpl)
+        start = self.tpl.index("function budgetStats(cost, pct) {")
+        block = self.tpl[start:start + 1400]
+        # Missing/zero cost -> [] (older servers, empty windows).
+        self.assertIn("if(typeof cost !== 'number' || cost <= 0) return stats;",
+                      block)
+        # Extrapolated cells only past the 5% noise gate.
+        self.assertIn("pct >= 5", block)
+        self.assertIn("'est. window budget'", block)
+        self.assertIn("'% budget left'", block)
+
+    def test_five_hour_gauge_gets_stats_and_projection(self):
+        start = self.tpl.index("var fhWindow = oauth.five_hour_window || null;")
+        end = self.tpl.index("gaugeHtml += '</div>'")
+        block = self.tpl[start:end]
+        self.assertIn("budgetStats(fhWindow ? fhWindow.cost : null, hPct)",
+                      block)
+        self.assertIn("fiveHourProjected = (hPct / hExpected) * 100", block)
+        # Both are wired into the 5-Hour buildGauge call.
+        call = self.tpl.index("buildGauge('5-Hour Window'")
+        call_block = self.tpl[call:call + 300]
+        self.assertIn("projectedPct: fiveHourProjected", call_block)
+        self.assertIn("stats: fiveHourStats", call_block)
+
+    def test_scoped_rows_use_build_gauge_with_identity_color(self):
+        start = self.tpl.index("var scopedBuckets = ")
+        end = self.tpl.index("// Extra usage block")
+        block = self.tpl[start:end]
+        self.assertIn("fillColor: sbColor", block)
+        self.assertIn("budgetStats(sb.window_cost, sbPct)", block)
+        self.assertIn("calcExpectedPct(sb.resets_at, WEEK_MS)", block)
+        # D6 analogue: stale resets_at nulls the marker/projection.
+        self.assertIn("if(!isNaN(sbResetMs) && sbResetMs <= Date.now()) sbExpected = null;",
+                      block)
+        # The hand-rolled bare-bar markup is gone from the scoped loop.
+        self.assertNotIn("'<div class=\"rate-gauge-track\">'", block)
+
+    def test_build_gauge_fill_color_override(self):
+        self.assertIn("var color = opts.fillColor || barColor(pct, expectedPct);",
+                      self.tpl)
+
+    def test_weekly_est_budget_cell_gated(self):
+        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
+        block = self.tpl[start:start + 1600]
+        self.assertIn("if(limitWindow.cost > 0 && wPct >= 5)", block)
+        self.assertIn("(limitWindow.cost / wPct) * 100", block)
+
+
+class MarkerLabelOverlapTest(unittest.TestCase):
+    """The 'expected' marker label near 0%/100% overprints the gauge title or
+    reset text; a measured post-render pass hides any label whose rect
+    intersects neighbor text (the marker LINE always stays)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_overlap_pass_runs_after_panel_render(self):
+        render = self.tpl.index(
+            "oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;")
+        window = self.tpl[render:render + 2200]
+        self.assertIn(".rate-gauge-marker-label", window)
+        self.assertIn("getBoundingClientRect", window)
+        self.assertIn("lab.style.display = 'none';", window)
+
+    def test_overlap_pass_reruns_on_resize_without_leaking(self):
+        """Collisions depend on viewport width, so the pass re-arms on
+        resize — but exactly once globally (the render block runs per 60s
+        poll; a listener per poll leaks), and each pass re-decides from
+        scratch (display reset before measuring)."""
+        self.assertIn("function runMarkerOverlapPass() {", self.tpl)
+        self.assertIn("if(!window._tfMarkerResizeArmed) {", self.tpl)
+        idx = self.tpl.index("function runMarkerOverlapPass() {")
+        block = self.tpl[idx:idx + 2600]
+        self.assertIn("lab.style.display = '';", block)
+        # Debounced, not raw-per-resize-event.
+        self.assertIn("setTimeout(runMarkerOverlapPass, 150)", block)
+
+    def test_overlap_checks_all_neighbor_text(self):
+        idx = self.tpl.index("var others = gauge.querySelectorAll(")
+        sel = self.tpl[idx:idx + 220]
+        for cls_ in (".rate-gauge-label", ".rate-gauge-reset",
+                     ".rate-gauge-dayline-label", ".rate-gauge-chart-btn"):
+            self.assertIn(cls_, sel)
 
 
 if __name__ == "__main__":
