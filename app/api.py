@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from .aggregator import build_dashboard_data, get_cache_version
 from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
-from .cost_windows import compute_window_cost
+from .cost_windows import compute_window_cost, compute_window_cost_by_model
 from .db import get_conn
 from .pricing import compute_cost, display_model, effective_geo
 from .usage_buckets import normalize_usage_buckets
@@ -82,6 +82,31 @@ def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     return (
         dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
     )
+
+
+def _bucket_window_start(conn, bucket_key, resets_epoch, window_s):
+    """Start epoch of the CURRENT limit window for one historized bucket.
+
+    resets_at − window_s (minute-floored — limit timestamps never leave the
+    server at sub-minute precision), pushed forward to the latest persistent
+    GRANTED reset recorded for that bucket: a granted mid-window reset voids
+    pre-grant usage, so spend anchored at resets_at − window would overcount
+    (F1). persistent_resets, not raw detect_resets: a stale client replay
+    must not move the cost window (review M1). Lazy import — limit_readings
+    imports api at module level, so api must never import it back at module
+    scope (same cycle-break as the limit_trends import in rate_limits).
+    """
+    start = ((resets_epoch // 60) * 60.0) - window_s
+    from .limit_readings import floor_reset_events, persistent_resets
+    rows = conn.execute(
+        "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
+        "FROM limit_readings WHERE bucket=? AND fetched_epoch>=? "
+        "ORDER BY fetched_epoch ASC",
+        (bucket_key, start)).fetchall()
+    granted = floor_reset_events(persistent_resets(rows))
+    if granted:
+        start = max(start, granted[-1]["at_epoch"])
+    return start
 
 
 def _resolve_scope(requested):
@@ -308,34 +333,11 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                     weekly_resets_epoch = _iso_to_epoch(
                         seven_day.get("resets_at"))
                     if weekly_resets_epoch is not None:
-                        lw_start = (((weekly_resets_epoch // 60) * 60.0)
-                                    - 7 * 86400)
-                        # F1: a GRANTED mid-window reset voids pre-grant
-                        # usage — the window's spend starts at the latest
-                        # detected reset, not at resets_at − 7d (which only
-                        # moves on NATURAL rollovers). persistent_resets
-                        # (not raw detect_resets): a stale client replay
-                        # must not move the cost window (review M1) — its
-                        # active-window guard still means these events are
-                        # exactly the granted kind. Lazy import:
-                        # limit_readings imports api at module level, so
-                        # api must never import it back at module level
-                        # (same cycle-break as limit_trends above).
-                        # floor_reset_events keeps start_epoch
-                        # minute-floored either way.
-                        from .limit_readings import (floor_reset_events,
-                                                     persistent_resets)
-                        lr_rows = conn.execute(
-                            "SELECT bucket, fetched_epoch, utilization, "
-                            "resets_at_epoch FROM limit_readings "
-                            "WHERE bucket='seven_day' AND fetched_epoch>=? "
-                            "ORDER BY fetched_epoch ASC",
-                            (lw_start,)).fetchall()
-                        granted = floor_reset_events(
-                            persistent_resets(lr_rows))
-                        if granted:
-                            lw_start = max(lw_start,
-                                           granted[-1]["at_epoch"])
+                        # F1 window anchoring + granted-reset truncation now
+                        # lives in _bucket_window_start (shared with the
+                        # five_hour and scoped windows below).
+                        lw_start = _bucket_window_start(
+                            conn, "seven_day", weekly_resets_epoch, 7 * 86400)
                         oauth_block["limit_window"] = {
                             "start_epoch": lw_start,
                             "cost": round(compute_window_cost(
@@ -346,6 +348,64 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                 except Exception as e:
                     print(f"[rate-limits] limit_window computation failed: "
                           f"{e}", flush=True)
+
+                # Same window-anchored spend for the 5-hour gauge — the
+                # dollar-budget projection needs cost over the CURRENT 5h
+                # window, not a rolling figure. Skipped when resets_at has
+                # already passed: the stored blob is stale (the poller lags
+                # the boundary during idle), so its pct describes a window
+                # that ENDED — pairing it with cost through `now` would mix
+                # two windows (the client nulls its expected marker for the
+                # same staleness, D6).
+                try:
+                    fh_resets_epoch = _iso_to_epoch(
+                        five_hour.get("resets_at"))
+                    if fh_resets_epoch is not None and fh_resets_epoch > now:
+                        fh_start = _bucket_window_start(
+                            conn, "five_hour", fh_resets_epoch, 5 * 3600)
+                        oauth_block["five_hour_window"] = {
+                            "start_epoch": fh_start,
+                            "cost": round(compute_window_cost(
+                                conn, fh_start, now, scope=effective), 2),
+                        }
+                except Exception as e:
+                    print(f"[rate-limits] five_hour_window computation "
+                          f"failed: {e}", flush=True)
+
+                # Per-model dollar windows: each scoped:* bucket gains
+                # window_cost = spend on THAT model family over the bucket's
+                # current 7d window (weekly_scoped limits are always 7-day),
+                # granted-reset truncated like limit_window. Family match on
+                # display_model names via the slug's FIRST token: prod sends
+                # bare family words today ('Fable' → scoped:fable), but a
+                # versioned display_name ('Opus 4.8' → scoped:opus_4_8)
+                # would make the raw slug miss every space-separated display
+                # name (review MEDIUM) — the stem ('opus') matches the whole
+                # family, which is exactly what a scoped limit governs.
+                # Per-bucket try/except: one bad bucket must not strip the
+                # others' costs (or anything else in the oauth block).
+                for bkt in buckets:
+                    bkt_key = bkt.get("key") or ""
+                    if not bkt_key.startswith("scoped:"):
+                        continue
+                    try:
+                        sb_resets_epoch = _iso_to_epoch(bkt.get("resets_at"))
+                        if sb_resets_epoch is None or sb_resets_epoch <= now:
+                            continue  # unparseable or stale — no dollars
+                        sb_start = _bucket_window_start(
+                            conn, bkt_key, sb_resets_epoch, 7 * 86400)
+                        family = bkt_key.split(":", 1)[1].split("_")[0].lower()
+                        if not family:
+                            continue
+                        sb_by_model = compute_window_cost_by_model(
+                            conn, sb_start, now, scope=effective)
+                        bkt["window_cost"] = round(sum(
+                            v for k, v in sb_by_model.items()
+                            if family in k.lower()), 2)
+                        bkt["window_start_epoch"] = sb_start
+                    except Exception as e:
+                        print(f"[rate-limits] scoped window cost failed "
+                              f"for {bkt_key}: {e}", flush=True)
 
                 weekly_budget["oauth"] = oauth_block
             except (ValueError, KeyError, TypeError):
