@@ -50,6 +50,11 @@ class BillingReadingRequest(BaseModel):
     note: str | None = None
 
 
+class EnterpriseBudgetRequest(BaseModel):
+    """Enterprise monthly $ budget setting. null clears the stored value."""
+    budget_usd: float | None = None
+
+
 class DesktopSessionUpsert(BaseModel):
     cli_session_id: str
     desktop_session_id: str | None = None

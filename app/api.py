@@ -160,6 +160,13 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
       a limits[]-only payload (legacy dicts nulled) still populates them.
     - enterprise scope, enterprise-locked instance, or no meta row -> the
       'oauth' key is NEVER present (compliance-facing invariant).
+
+    Monthly budget contract (scope-gated, opposite direction):
+    - enterprise scope, with a budget set via /api/enterprise-budget ->
+      weekly_budget.monthly_budget carries the pacing block (see
+      app/monthly_budget.py). No budget set -> key omitted entirely.
+    - personal scope -> the 'monthly_budget' key is NEVER present, even if
+      a budget is set (compliance-facing invariant).
     """
     effective = _resolve_scope(scope)
     import sys
@@ -233,6 +240,17 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         "hourly_costs": hourly_costs,
         "updated_at_epoch": now,
     }
+
+    # ── Enterprise-scope monthly $ budget pacing block ─────────────────────
+    # Only attached when this is an enterprise request AND a budget is set
+    # (monthly_budget_block returns None otherwise). Never attached for
+    # personal scope — mirrors the oauth gating below in the opposite
+    # direction (compliance-facing invariant on both sides).
+    if effective == "enterprise":
+        from .monthly_budget import monthly_budget_block
+        block = monthly_budget_block(conn, now)
+        if block is not None:
+            weekly_budget["monthly_budget"] = block
 
     # ── Personal-scope OAuth gauge fields ──────────────────────────────────
     # Only attach when this is a personal request on an instance that is NOT
