@@ -251,6 +251,12 @@ async def _fetch_usage():
 
     _backoff_until = 0.0  # clear backoff on success
 
+    # Unlike POST /api/usage (see ingest.store_usage's zero-usable-buckets
+    # guard), this write is deliberately unguarded: the poller's token comes
+    # from the mounted credentials.json, which is personal-Max by
+    # construction — the poller IS the healer that repairs a stomped
+    # snapshot. If that credential were ever swapped to an enterprise
+    # account, this write would need the same guard.
     now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
     conn = get_conn()
     conn.execute(

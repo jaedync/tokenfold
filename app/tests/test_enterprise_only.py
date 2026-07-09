@@ -419,6 +419,33 @@ class EnterpriseLockedLimitHistoryTest(TempDBTestCase):
             "SELECT COUNT(*) c FROM limit_readings").fetchone()["c"]
         self.assertEqual(n, 0, "locked instance must persist NO limit history")
 
+    def test_store_usage_locked_null_payload_writes_nothing(self):
+        """The zero-usable-buckets guard runs BEFORE the LOCKED_SCOPE gate:
+        an enterprise-shaped (all-null-limits) push on a locked instance
+        writes neither the meta snapshot nor history — documenting that the
+        'meta snapshot write stays as-is' rule above holds only for
+        payloads that carry usable buckets."""
+        null_usage = {
+            "five_hour": {"utilization": None,
+                          "resets_at": "2026-07-09T22:50:00+00:00"},
+            "seven_day": {"utilization": None,
+                          "resets_at": "2026-07-16T08:00:00+00:00"},
+            "extra_usage": {"utilization": 34.0, "is_enabled": True},
+        }
+        import app.config as cfg
+        from unittest.mock import patch
+        with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
+            c = self.client()
+            r = c.post("/api/usage", json={"usage": null_usage},
+                       headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "ignored_no_limits")
+        self.assertIsNone(self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone())
+        n = self.conn.execute(
+            "SELECT COUNT(*) c FROM limit_readings").fetchone()["c"]
+        self.assertEqual(n, 0)
+
     def test_limit_history_locked_is_404_with_no_data(self):
         """Even with seeded rows, a locked instance must 404 (neutral —
         the endpoint doesn't advertise itself) and leak zero utilization

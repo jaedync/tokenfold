@@ -506,6 +506,24 @@ async def store_usage(request: Request):
     if not isinstance(usage, dict):
         raise HTTPException(status_code=400, detail="Missing usage data")
 
+    # Account-stomp guard (2026-07-09 incident): every machine pushes usage
+    # fetched with ITS OWN OAuth token, and a machine logged into an
+    # enterprise account gets a payload whose limit buckets are all null
+    # (enterprise accounts have no Max limits) — under the blind REPLACE
+    # below, that stomped the personal snapshot (gauges zeroed, scoped
+    # limits gone, extra_usage surfacing org numbers) until the server
+    # poller healed it up to 10 minutes later. A payload that normalizes
+    # to ZERO usable buckets carries nothing any consumer reads (the oauth
+    # block is personal-only by compliance), so it never overwrites.
+    from .usage_buckets import normalize_usage_buckets
+    if not normalize_usage_buckets(usage):
+        machine = body.get("machine") if isinstance(
+            body.get("machine"), str) else "unknown"
+        print(f"[ingest] /api/usage ignored: no usable limit buckets "
+              f"(machine={machine!r} — enterprise-account push?)",
+              flush=True)
+        return {"status": "ignored_no_limits", "updated_at": None}
+
     conn = get_conn()
     now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
     conn.execute(

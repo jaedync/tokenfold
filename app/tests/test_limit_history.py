@@ -220,6 +220,67 @@ class StoreUsageLimitHistoryTest(TempDBTestCase):
             "SELECT COUNT(*) c FROM limit_readings").fetchone()["c"]
         self.assertEqual(n, 0)
 
+    # ── enterprise-account stomp guard (2026-07-09 incident) ────────────
+
+    ENTERPRISE_SHAPED = {
+        # What an enterprise-account machine actually pushes: every limit
+        # bucket null (the account has no Max limits), extra_usage carrying
+        # the org's numbers. Normalizes to ZERO usable buckets.
+        "five_hour": {"utilization": None,
+                      "resets_at": "2026-07-09T22:50:00+00:00"},
+        "seven_day": {"utilization": None,
+                      "resets_at": "2026-07-16T08:00:00+00:00"},
+        "seven_day_opus": None,
+        "limits": [{"kind": "weekly_all", "percent": None,
+                    "resets_at": "2026-07-16T08:00:00+00:00"}],
+        "extra_usage": {"utilization": 34.0, "is_enabled": True},
+        "spend": {},
+    }
+
+    def test_no_usable_limits_does_not_stomp_snapshot(self):
+        """A work machine logged into the enterprise account pushes usage
+        fetched with ITS token; the blind REPLACE let that null-limits
+        payload stomp the personal snapshot (gauges zeroed, Fable gone,
+        extra_usage surfacing enterprise numbers) until the server poller
+        healed it. Zero-usable-bucket payloads must never overwrite."""
+        good = _fixture()
+        self.assertEqual(self._post_usage(good).status_code, 200)
+        r = self.client().post(
+            "/api/usage",
+            json={"machine": "Z000012-Mantle-VM-Dev01",
+                  "usage": self.ENTERPRISE_SHAPED},
+            headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "ignored_no_limits")
+        meta = self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
+        self.assertEqual(json.loads(meta["value"])["data"], good)
+        # and no readings recorded for the ignored push
+        n = self.conn.execute(
+            "SELECT COUNT(*) c FROM limit_readings").fetchone()["c"]
+        self.assertEqual(n, 3)  # the fixture's rows only
+
+    def test_no_usable_limits_never_creates_snapshot(self):
+        """First write on a fresh instance: an enterprise-shaped payload
+        must not seed the snapshot either."""
+        r = self._post_usage(self.ENTERPRISE_SHAPED)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "ignored_no_limits")
+        self.assertIsNone(self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone())
+
+    def test_single_usable_bucket_still_stored(self):
+        """The guard keys on 'normalizes to zero buckets', not payload
+        completeness: one valid bucket is a real (if partial) snapshot."""
+        usage = {"five_hour": {"utilization": 12.0,
+                               "resets_at": "2026-07-09T22:50:00+00:00"}}
+        r = self._post_usage(usage)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "ok")
+        meta = self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
+        self.assertEqual(json.loads(meta["value"])["data"], usage)
+
 
 if __name__ == "__main__":
     unittest.main()
