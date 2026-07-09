@@ -100,11 +100,18 @@ class BudgetStorageTest(TempDBTestCase):
 
 
 # ---------------------------------------------------------------------------
-# monthly_budget_block: pace math
+# monthly_budget_block: pace math (business-day basis)
 # ---------------------------------------------------------------------------
 
+# July 2026 starts on a Wednesday: 31 days, 8 weekend days -> 23 business
+# days. 2026-07-09T12:00Z is a Thursday with 6 full business days behind it
+# (Jul 1-3, 6-8) plus half of Jul 9 -> 6.5 of 23 business days elapsed.
+JULY_2026_BIZ_DAYS = 23
+JULY_9_NOON_BIZ_FRACTION = 6.5 / 23
+
+
 class PaceMathTest(TempDBTestCase):
-    """Mid-month fixture: 2026-07-09T12:00Z, 30-day July, elapsed ~ 8.5/31."""
+    """Mid-month fixture: 2026-07-09T12:00Z, elapsed ~ 6.5/23 business days."""
 
     def setUp(self):
         super().setUp()
@@ -115,7 +122,7 @@ class PaceMathTest(TempDBTestCase):
 
     def test_under_pace(self):
         set_budget(self.conn, 1000.0)
-        # elapsed_fraction ~ 8.5/31 ~= 0.274; expected ~= 274. Spend far under.
+        # elapsed_fraction ~ 6.5/23 ~= 0.283; expected ~= 283. Spend far under.
         _ins_event(self.conn, "e1", self.month_start + 3600, inp=1_000_000)  # $5
         block = monthly_budget_block(self.conn, self.now_epoch)
         self.assertEqual(block["pace"], "under")
@@ -123,7 +130,7 @@ class PaceMathTest(TempDBTestCase):
 
     def test_on_pace(self):
         set_budget(self.conn, 1000.0)
-        elapsed_fraction = (self.now_epoch - self.month_start) / (31 * 86400.0)
+        elapsed_fraction = JULY_9_NOON_BIZ_FRACTION
         # Target ratio exactly 1.0: mtd = elapsed_fraction * budget.
         target_mtd = elapsed_fraction * 1000.0
         # 1M input tokens = $5 (static Opus pricing) -> scale inp accordingly.
@@ -164,7 +171,7 @@ class PaceMathTest(TempDBTestCase):
         'under', not <=). PACE_DEADBAND is the comparison's own constant, so
         this pins the operator (strict <) rather than a hand-copied literal."""
         set_budget(self.conn, 1000.0)
-        elapsed_fraction = (self.now_epoch - self.month_start) / (31 * 86400.0)
+        elapsed_fraction = JULY_9_NOON_BIZ_FRACTION
         from app.monthly_budget import EARLY_MONTH_FRACTION, PACE_DEADBAND
         self.assertGreaterEqual(elapsed_fraction, EARLY_MONTH_FRACTION)
         block = self._pace_for_ratio(elapsed_fraction, 1000.0,
@@ -175,7 +182,7 @@ class PaceMathTest(TempDBTestCase):
         """A ratio a full percentage point under the 0.90 deadband edge must
         be 'under' — sanity check for the boundary test above."""
         set_budget(self.conn, 1000.0)
-        elapsed_fraction = (self.now_epoch - self.month_start) / (31 * 86400.0)
+        elapsed_fraction = JULY_9_NOON_BIZ_FRACTION
         from app.monthly_budget import PACE_DEADBAND
         block = self._pace_for_ratio(elapsed_fraction, 1000.0,
                                      1.0 - PACE_DEADBAND - 0.01)
@@ -185,7 +192,7 @@ class PaceMathTest(TempDBTestCase):
         """ratio == 1 + PACE_DEADBAND (1.10) must be 'on' (> 1.10 is
         'over', not >=)."""
         set_budget(self.conn, 1000.0)
-        elapsed_fraction = (self.now_epoch - self.month_start) / (31 * 86400.0)
+        elapsed_fraction = JULY_9_NOON_BIZ_FRACTION
         from app.monthly_budget import PACE_DEADBAND
         block = self._pace_for_ratio(elapsed_fraction, 1000.0,
                                      1.0 + PACE_DEADBAND)
@@ -195,7 +202,7 @@ class PaceMathTest(TempDBTestCase):
         """A ratio a full percentage point over the 1.10 deadband edge must
         be 'over' — sanity check for the boundary test above."""
         set_budget(self.conn, 1000.0)
-        elapsed_fraction = (self.now_epoch - self.month_start) / (31 * 86400.0)
+        elapsed_fraction = JULY_9_NOON_BIZ_FRACTION
         from app.monthly_budget import PACE_DEADBAND
         block = self._pace_for_ratio(elapsed_fraction, 1000.0,
                                      1.0 + PACE_DEADBAND + 0.01)
@@ -236,7 +243,7 @@ class MeterFirstTest(TempDBTestCase):
         self.assertEqual(block["meter_machine"], "vm-a")
         self.assertEqual(block["meter_updated_epoch"],
                          self.now_epoch - 600)
-        # pace math runs on the meter numbers: 217.94/0.274 ~= $795 EOM
+        # pace math runs on the meter numbers: 217.94/(6.5/23) ~= $771 EOM
         self.assertEqual(block["pace"], "under")
 
     def test_fresh_meter_includes_measured_cross_check(self):
@@ -291,6 +298,61 @@ class MeterFirstTest(TempDBTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Business-day pacing basis
+# ---------------------------------------------------------------------------
+
+class BusinessDayBasisTest(TempDBTestCase):
+    """Pacing runs on Mon-Fri UTC business days: weekends add no elapsed
+    time, the block carries business_days for the dashboard's day ticks, and
+    projections divide by the business fraction."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        set_budget(self.conn, 1000.0)
+
+    def test_block_carries_business_days_count(self):
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        block = monthly_budget_block(self.conn, now)
+        self.assertEqual(block["business_days"], JULY_2026_BIZ_DAYS)
+
+    def test_elapsed_fraction_is_business_based(self):
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        block = monthly_budget_block(self.conn, now)
+        self.assertAlmostEqual(block["elapsed_fraction"],
+                               JULY_9_NOON_BIZ_FRACTION, places=4)
+
+    def test_weekend_does_not_advance_fraction(self):
+        # 2026-07-04 is a Saturday: 3 business days (Jul 1-3) fully elapsed.
+        sat = datetime(2026, 7, 4, 18, 0, 0, tzinfo=timezone.utc).timestamp()
+        sun = datetime(2026, 7, 5, 23, 0, 0, tzinfo=timezone.utc).timestamp()
+        frac_sat = monthly_budget_block(self.conn, sat)["elapsed_fraction"]
+        frac_sun = monthly_budget_block(self.conn, sun)["elapsed_fraction"]
+        self.assertEqual(frac_sat, frac_sun)
+        self.assertAlmostEqual(frac_sat, 3 / 23.0, places=4)
+
+    def test_projection_divides_by_business_fraction(self):
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        import app.monthly_budget as mb
+        orig = mb.compute_window_cost
+        mb.compute_window_cost = lambda *a, **k: 130.0
+        try:
+            block = monthly_budget_block(self.conn, now)
+        finally:
+            mb.compute_window_cost = orig
+        self.assertAlmostEqual(block["projected_eom_usd"],
+                               round(130.0 / JULY_9_NOON_BIZ_FRACTION, 2),
+                               places=2)
+
+    def test_expected_usd_is_business_based(self):
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        block = monthly_budget_block(self.conn, now)
+        self.assertAlmostEqual(block["expected_usd"],
+                               round(JULY_9_NOON_BIZ_FRACTION * 1000.0, 2),
+                               places=2)
+
+
+# ---------------------------------------------------------------------------
 # Early-month suppression
 # ---------------------------------------------------------------------------
 
@@ -304,7 +366,7 @@ class EarlyMonthTest(TempDBTestCase):
         set_budget(self.conn, 1000.0)
         now = datetime(2026, 7, 1, 6, 0, 0, tzinfo=timezone.utc)  # 6h into July
         now_epoch = now.timestamp()
-        # elapsed_fraction = 6/(31*24) ~= 0.00806 < 0.05
+        # business elapsed_fraction = 6/(23*24) ~= 0.0109 < 0.05
         block = monthly_budget_block(self.conn, now_epoch)
         self.assertLess(block["elapsed_fraction"], 0.05)
         self.assertIsNone(block["pace"])
@@ -314,8 +376,10 @@ class EarlyMonthTest(TempDBTestCase):
 
     def test_pace_present_at_and_after_threshold(self):
         set_budget(self.conn, 1000.0)
-        # 31-day July: 0.05 * 31 * 86400 = 133,920s = 37.2h into the month.
-        now = datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp() + 133_920
+        # 23-business-day July: 0.05 * 23 * 86400 = 99,360s of business time.
+        # July 1-2 2026 are consecutive weekdays, so business time == calendar
+        # time here and the threshold lands at Jul 2, 03:36 UTC.
+        now = datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp() + 99_360
         block = monthly_budget_block(self.conn, now)
         self.assertGreaterEqual(block["elapsed_fraction"], 0.05)
         self.assertIsNotNone(block["pace"])

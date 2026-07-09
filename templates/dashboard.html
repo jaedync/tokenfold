@@ -640,6 +640,21 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Business-day boundary ticks on the monthly budget track. Deliberately
+   fainter and shorter than the expected-pace marker: they read as a ruler
+   under the fill, never compete with it. z-index 1 sits above the fills
+   (unstacked) but below the marker (z-index 2). */
+.rate-gauge-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--black);
+  opacity: 0.18;
+  z-index: 1;
+  pointer-events: none;
+}
+
 .rate-gauge-marker {
   position: absolute;
   top: -8px;
@@ -4646,6 +4661,19 @@ function initRateLimits(){
         + '</div>';
     }
 
+    // Business-day ticks — the pace basis is Mon-Fri, so each of the month's
+    // business days owns a uniform 1/N slice of the bar; ticks mark the
+    // boundaries. Bounded 2..31 so a garbage payload can't flood the track.
+    var tickHtml = '';
+    var bizDays = mb.business_days;
+    if(typeof bizDays === 'number' && isFinite(bizDays)
+        && bizDays >= 2 && bizDays <= 31) {
+      for(var ti = 1; ti < bizDays; ti++) {
+        tickHtml += '<div class="rate-gauge-tick" style="left:'
+          + (ti / bizDays * 100).toFixed(2) + '%"></div>';
+      }
+    }
+
     // Verdict line — exact wording parity with the oauth trend note.
     var verdictHtml = '';
     if(mb.pace === 'over') verdictHtml = '<strong class="proj-warn">over pace</strong>';
@@ -4658,9 +4686,12 @@ function initRateLimits(){
     var projDiv = '';
     if(typeof mb.projected_eom_usd === 'number') {
       var projClass = mb.projected_eom_usd > budget ? 'proj-warn' : '';
+      var paceNote = (typeof mb.business_days === 'number' && isFinite(mb.business_days))
+        ? '(paced over ' + Math.round(mb.business_days) + ' business days)'
+        : '(window avg)';
       projDiv = '<div class="rate-gauge-projection">'
         + 'Projected by month end: <strong class="' + projClass + '">'
-        + fC(mb.projected_eom_usd) + '</strong> (window avg)'
+        + fC(mb.projected_eom_usd) + '</strong> ' + paceNote
         + '</div>';
     }
 
@@ -4717,7 +4748,7 @@ function initRateLimits(){
       + '<span class="rate-gauge-label">Monthly usage limit</span>'
       + (resetTxt ? '<span class="rate-gauge-reset">' + esc(resetTxt) + '</span>' : '')
       + '</div>'
-      + '<div class="rate-gauge-track">' + fillHtml + markerHtml + '</div>'
+      + '<div class="rate-gauge-track">' + fillHtml + tickHtml + markerHtml + '</div>'
       + '<div class="rate-gauge-foot">'
       + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
       + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct)) + '% remaining</span>'

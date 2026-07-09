@@ -96,6 +96,32 @@ def _month_bounds_utc(now_epoch: float):
     return start.timestamp(), end.timestamp(), "%04d-%02d" % (y, m), days_in_month
 
 
+def _business_elapsed_utc(now_epoch: float):
+    """Return (elapsed_business_fraction, business_days_in_month) for the UTC
+    calendar month containing now_epoch.
+
+    Business days are Mon-Fri UTC. Each contributes 86400s to the
+    denominator; weekends contribute nothing to either side, so the fraction
+    stands still across Sat/Sun. Enterprise usage is work usage — a calendar
+    basis under-states pace during the work week and over-projects across
+    weekends. Every real month has >= 20 business days, so the denominator
+    is never zero."""
+    d = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+    y, m = d.year, d.month
+    _, days_in_month = monthrange(y, m)
+    business_days = 0
+    elapsed = 0.0
+    for day in range(1, days_in_month + 1):
+        day_start = datetime(y, m, day, tzinfo=timezone.utc)
+        if day_start.weekday() >= 5:  # Saturday/Sunday
+            continue
+        business_days += 1
+        overlap = now_epoch - day_start.timestamp()
+        if overlap > 0:
+            elapsed += min(overlap, 86400.0)
+    return elapsed / (business_days * 86400.0), business_days
+
+
 def monthly_budget_block(conn: sqlite3.Connection,
                          now: Optional[float] = None) -> Optional[dict]:
     """Enterprise-scope monthly pacing block, or None when there is neither
@@ -112,9 +138,14 @@ def monthly_budget_block(conn: sqlite3.Connection,
     assumed calendar-aligned; if a used_credits rollover is ever observed
     mid-month the anchor can be inferred from extra_usage_readings.
 
-    elapsed_fraction < 0.05 (first ~1.2 days of the month) suppresses
-    pace/projected_eom_usd (too little signal to project), but expected_usd
-    is still returned.
+    Pacing basis is BUSINESS days (Mon-Fri UTC, _business_elapsed_utc):
+    elapsed_fraction / expected_usd / projected_eom_usd all divide by
+    business time, so a month is "spent" over its ~21-23 workdays and the
+    pace verdict does not drift across weekends.
+
+    elapsed_fraction < 0.05 (first ~1.2 business days of the month)
+    suppresses pace/projected_eom_usd (too little signal to project), but
+    expected_usd is still returned.
     """
     now = time.time() if now is None else now
 
@@ -132,10 +163,12 @@ def monthly_budget_block(conn: sqlite3.Connection,
     if budget is None:
         return None
 
-    month_start, month_end, month_label, days_in_month = _month_bounds_utc(now)
-    total_seconds = days_in_month * 86400.0
-    elapsed_seconds = max(0.0, min(now, month_end) - month_start)
-    elapsed_fraction = elapsed_seconds / total_seconds
+    month_start, month_end, month_label, _days_in_month = _month_bounds_utc(now)
+    # Pace on BUSINESS days (Mon-Fri UTC), not calendar seconds: enterprise
+    # spend accrues on workdays, so weekends neither raise expected_usd nor
+    # dilute the projection. business_days also drives the dashboard's
+    # per-day bar ticks.
+    elapsed_fraction, business_days = _business_elapsed_utc(now)
 
     measured_mtd = compute_window_cost(
         conn, month_start, now, scope="enterprise")
@@ -163,6 +196,7 @@ def monthly_budget_block(conn: sqlite3.Connection,
         "budget_usd": round(budget, 2),
         "month": month_label,
         "month_end_epoch": int(month_end),
+        "business_days": business_days,
         "mtd_cost": round(mtd_cost, 2),
         "elapsed_fraction": round(elapsed_fraction, 4),
         "expected_usd": round(expected_usd, 2),
