@@ -2259,22 +2259,13 @@ th[data-info]:focus::after { opacity: 1; }
   .stat-card:nth-child(7) .stat-value { font-size: 1.2rem; }
   .stat-card { padding: 0.7rem; }
 }
-/* ── Official billing readings (enterprise) ──
+/* ── Anthropic billing meter (enterprise) ──
    The table leans on the dashboard's house table rules (uppercase th,
    right-aligned numeric cells via the global td:not(:first-child) rule,
    tabular-nums). Numeric HEADERS carry .num so they right-align with their
    values; only the deltas from the house style live here. */
 .rate-gauge-sub{font-size:10px;color:var(--gray-dim);margin-left:8px}
-.br-input-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
-.br-input-row input{border:2px solid #1a1a1a;background:var(--bg,#fff);
-  font:inherit;font-size:13px;padding:6px 8px}
-.br-input-row input#brAmount{width:210px}
-.br-input-row input#brNote{flex:1;min-width:140px}
-.br-input-row button{border:2px solid #1a1a1a;background:#f5c518;cursor:pointer;
-  font:inherit;font-size:11px;font-weight:700;padding:7px 14px;letter-spacing:.06em}
-.br-input-row button:hover{background:#1a1a1a;color:#f5c518}
-#brStatus{font-size:11px;color:var(--gray-dim)}
-#billingReadingsTable{overflow-x:auto}
+#billingMeterTable{overflow-x:auto}
 /* Enterprise monthly budget card: inline-edit affordances reuse the gauge
    typography; the budget cell renders as a value-styled button so it reads as
    the figure until clicked. */
@@ -2299,9 +2290,6 @@ th[data-info]:focus::after { opacity: 1; }
 .br-table tbody tr:last-child td{border-bottom:none}
 /* vertical rule separating the two stat groups (and the WHEN column) */
 .br-table .br-sep{border-left:2px solid var(--gray-light);padding-left:.9rem}
-.br-del{border:none;background:none;cursor:pointer;color:var(--gray-dim);
-  font-size:14px;line-height:1;padding:0 4px}
-.br-del:hover{color:#e63329}
 .br-since,.br-empty,.br-legend{font-size:11px;color:var(--gray-dim);margin-top:8px}
 .br-summary{display:flex;align-items:baseline;gap:14px;margin:10px 0 14px;
   padding:10px 14px;border:2px solid var(--black);background:var(--bg)}
@@ -2583,22 +2571,17 @@ th[data-info]:focus::after { opacity: 1; }
     {%- if scope == 'personal' %}<div class="rate-gauge" style="border-top:var(--border)"><div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>{% endif -%}
   </div>
   {%- if scope == 'enterprise' %}
-  <!-- Official billing readings: manually recorded org-page MTD figures.
-       Deltas between consecutive readings vs measured cost = coverage. -->
-  <div id="billingReadingsPanel" class="rate-gauge" style="border-top:var(--border)">
+  <!-- Anthropic billing meter: the oauth/usage extra_usage block captured
+       automatically from enterprise-account pushes. Daily official spend
+       increases vs measured event cost = coverage; the gap is usage that
+       never reaches Tokenfold (claude.ai web etc.). Hidden until the first
+       capture exists (D.meter). -->
+  <div id="billingMeterPanel" class="rate-gauge" style="border-top:var(--border);display:none">
     <div class="rate-gauge-head">
-      <span class="rate-gauge-label">OFFICIAL BILLING READINGS</span>
-      <span class="rate-gauge-sub">org console MTD · UTC months</span>
+      <span class="rate-gauge-label">ANTHROPIC BILLING METER</span>
+      <span class="rate-gauge-sub" id="meterSub">captured from enterprise usage pushes · UTC days</span>
     </div>
-    {%- if readings_writable %}
-    <div class="br-input-row">
-      <input id="brAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="org page $ (month to date)" aria-label="official month-to-date dollars">
-      <input id="brNote" type="text" maxlength="256" placeholder="note (optional)" aria-label="note">
-      <button type="button" id="brRecordBtn">RECORD</button>
-      <span id="brStatus" role="status" aria-live="polite"></span>
-    </div>
-    {%- endif %}
-    <div id="billingReadingsTable"></div>
+    <div id="billingMeterTable"></div>
   </div>
   {%- endif %}
 </div>
@@ -4681,12 +4664,32 @@ function initRateLimits(){
         + '</div>';
     }
 
+    // Meter provenance — when the block runs on Anthropic's own billing
+    // meter, say so and surface what tokenfold measured vs the gap.
+    var fromMeter = mb.source === 'meter';
+    var meterDiv = '';
+    if(fromMeter && typeof mb.measured_mtd_usd === 'number') {
+      var meterAge = '';
+      if(typeof mb.meter_updated_epoch === 'number' && isFinite(mb.meter_updated_epoch)) {
+        var ageMin = Math.max(0, Math.round((Date.now() / 1000 - mb.meter_updated_epoch) / 60));
+        meterAge = ' · updated ' + (ageMin < 60 ? ageMin + 'm' : Math.round(ageMin / 60) + 'h') + ' ago';
+      }
+      meterDiv = '<div class="rate-gauge-projection">'
+        + 'Anthropic billing meter' + meterAge
+        + ' · tokenfold measured ' + fC(mb.measured_mtd_usd)
+        + ' · unaccounted ' + fC(mb.unaccounted_mtd_usd)
+        + '</div>';
+    }
+
     // Detail cells — spent MTD, budget (editable), budget left (floored $0).
     var left = Math.max(0, budget - spent);
     var leftColor = pct >= 85 ? 'var(--red)' : pct >= 65 ? 'var(--yellow-text)' : null;
-    // Editable only on a writable enterprise instance; read-only viewers see
-    // the plain figure (no dead button, matching billing-readings' gating).
-    var editable = (TF_SCOPE === 'enterprise') && BR_WRITABLE;
+    // Editable only on a writable enterprise instance AND when the budget is
+    // the stored scalar — a meter-supplied limit comes from Anthropic's org
+    // settings, so editing the local fallback would change nothing visible.
+    // Gates on budget_from_meter, not source: a fresh meter without a limit
+    // still runs on the stored scalar, which must stay editable.
+    var editable = (TF_SCOPE === 'enterprise') && BR_WRITABLE && !mb.budget_from_meter;
     var budgetCell = editable
       ? '<button type="button" class="mb-edit" id="mbBudgetEdit" '
         + 'title="edit monthly budget" aria-label="edit monthly budget">'
@@ -4694,7 +4697,7 @@ function initRateLimits(){
       : fC(budget);
     var statsHtml = '<div class="rate-gauge-stats">'
       + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + fC(spent)
-      + '</div><div class="rate-gauge-stat-label">spent · MTD</div></div>'
+      + '</div><div class="rate-gauge-stat-label">' + (fromMeter ? 'billed · MTD' : 'spent · MTD') + '</div></div>'
       + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + budgetCell
       + '</div><div class="rate-gauge-stat-label">budget</div></div>'
       + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value"'
@@ -4719,7 +4722,7 @@ function initRateLimits(){
       + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
       + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct)) + '% remaining</span>'
       + '</div>'
-      + verdictDiv + projDiv + statsHtml
+      + verdictDiv + projDiv + meterDiv + statsHtml
       + '<span id="mbStatus" class="mb-status" role="status" aria-live="polite"></span>'
       + '</div>';
   }
@@ -4739,7 +4742,7 @@ function initRateLimits(){
     return 'in ' + mins + 'm';
   }
 
-  // Non-destructive status line for budget edits, auto-clears (mirrors brStatus).
+  // Non-destructive status line for budget edits, auto-clears.
   function mbStatus(msg) {
     var el = document.getElementById('mbStatus');
     if(el){ el.textContent = msg; setTimeout(function(){ if(el.textContent === msg) el.textContent = ''; }, 4000); }
@@ -6021,118 +6024,66 @@ function toggleSess(i){
 renderSessions();
 setInterval(renderSessions, 30000);
 
-/* ---- Official billing readings (enterprise) ----
-   Manually recorded org-console MTD figures. The interesting math (Δofficial
-   vs Δmeasured per interval, coverage %) arrives precomputed in
-   D.billing_readings; this only renders and posts. */
-function renderBillingReadings(){
-  const wrap=document.getElementById('billingReadingsTable');
-  if(!wrap)return;
-  const rows=D.billing_readings||[];
+/* ---- Anthropic billing meter (enterprise) ----
+   D.meter is the extra_usage block captured automatically from enterprise
+   usage pushes: the latest official MTD figure plus per-UTC-day official
+   spend increases vs tokenfold's measured cost over the same intervals.
+   Read-only by construction — the meter records itself. */
+function renderBillingMeter(){
+  const panel=document.getElementById('billingMeterPanel');
+  const wrap=document.getElementById('billingMeterTable');
+  if(!panel||!wrap)return;
+  const m=D.meter;
+  if(!m){panel.style.display='none';return;}
+  panel.style.display='';
+  const dash='—';
+  const fS=v=>(v<0?'−':'+')+fC(Math.abs(v));
+  // head: latest official figure + freshness
+  const sub=document.getElementById('meterSub');
+  if(sub){
+    let s=fC(m.used_usd)+(m.limit_usd!=null?' of '+fC(m.limit_usd):'')+' · billing cycle to date';
+    if(typeof m.fetched_epoch==='number'&&isFinite(m.fetched_epoch)){
+      const ageMin=Math.max(0,Math.round((Date.now()/1000-m.fetched_epoch)/60));
+      s+=' · updated '+(ageMin<60?ageMin+'m':Math.round(ageMin/60)+'h')+' ago';
+    }
+    if(!m.fresh)s+=' · STALE';
+    sub.textContent=s;
+  }
+  const rows=(m.daily||[]).slice().reverse(); // newest day first
   if(!rows.length){
-    wrap.innerHTML='<div class="br-empty">no readings yet — record the org console month-to-date figure; deltas between consecutive readings vs tokenfold’s measured cost quantify coverage</div>';
+    wrap.innerHTML='<div class="br-empty">meter captured — daily deltas appear once the meter moves between two captures</div>';
     return;
   }
-  const dash='—';
-  // signed currency for the gap: official − tokenfold (+ = Anthropic bills more than we see)
-  const fS=v=>(v<0?'−':'+')+fC(Math.abs(v));
-  // confirmed coverage: aggregate over every interval with a real official
-  // delta — the headline answer to "how much of real billing do we see?"
-  const conf=rows.filter(r=>r.coverage_pct!=null);
-  let summary='';
-  if(conf.length){
-    const dOff=conf.reduce((a,r)=>a+r.delta_official,0);
-    const dMeas=conf.reduce((a,r)=>a+r.delta_measured,0);
-    summary='<div class="br-summary">'
-      +'<span class="br-summary-pct">'+(dOff!==0?(100*dMeas/dOff).toFixed(1):'—')+'%</span>'
-      +'<span class="br-summary-text"><b>CONFIRMED COVERAGE</b> — tokenfold measured <b>'
-      +fC(dMeas)+'</b> of <b>'+fC(dOff)+'</b> official growth over '
-      +conf.length+' confirmed interval'+(conf.length>1?'s':'')
-      +' · gap '+fS(dOff-dMeas)+'</span></div>';
-  }
+  // headline coverage: aggregate measured/official across all listed days
+  const dOff=rows.reduce((a,r)=>a+r.official_usd,0);
+  const dMeas=rows.reduce((a,r)=>a+r.measured_usd,0);
+  const summary='<div class="br-summary">'
+    +'<span class="br-summary-pct">'+(dOff!==0?(100*dMeas/dOff).toFixed(1):'—')+'%</span>'
+    +'<span class="br-summary-text"><b>MEASURED COVERAGE</b> — tokenfold measured <b>'
+    +fC(dMeas)+'</b> of <b>'+fC(dOff)+'</b> official spend over '
+    +rows.length+' day'+(rows.length>1?'s':'')
+    +' · unaccounted '+fS(dOff-dMeas)+' (claude.ai web, mobile, anything that never reaches tokenfold)</span></div>';
   let h='<table class="br-table"><thead>'
-    +'<tr><th class="br-corner"></th>'
-    +'<th colspan="3" class="br-group br-sep">AT THIS READING</th>'
-    +'<th colspan="3" class="br-group br-sep">SINCE PREVIOUS READING</th>'
-    +'<th class="br-corner"></th></tr>'
-    +'<tr><th>WHEN · UTC</th>'
-    +'<th class="num br-sep" data-info="the $ you recorded from the Claude org console">OFFICIAL</th>'
-    +'<th class="num" data-info="tokenfold’s measured month-to-date at that instant">TOKENFOLD</th>'
-    +'<th class="num" data-info="official minus tokenfold: + means Anthropic bills more than tokenfold sees">GAP</th>'
-    +'<th class="num br-sep" data-info="how much the org console figure grew since the previous reading">OFFICIAL</th>'
-    +'<th class="num" data-info="what tokenfold measured over that same interval">TOKENFOLD</th>'
-    +'<th class="num" data-info="tokenfold ÷ official for the interval: how much of real billing we capture">COVERAGE</th>'
-    +'<th></th></tr></thead><tbody>';
+    +'<tr><th>DAY · UTC</th>'
+    +'<th class="num br-sep" data-info="how much Anthropic’s billing meter grew that day">OFFICIAL</th>'
+    +'<th class="num" data-info="what tokenfold measured from recorded events over the same intervals">TOKENFOLD</th>'
+    +'<th class="num" data-info="official minus tokenfold: usage that never reaches tokenfold (claude.ai web etc.)">UNACCOUNTED</th>'
+    +'<th class="num" data-info="tokenfold ÷ official for the day: how much of real billing we capture">COVERAGE</th>'
+    +'</tr></thead><tbody>';
   for(const r of rows){
-    const _wt=(r.recorded_epoch!=null&&isFinite(r.recorded_epoch))?new Date(r.recorded_epoch*1000):null;
-    const when=(_wt&&!isNaN(_wt))?_wt.toISOString().slice(0,16).replace('T',' '):'—';
-    const gap=(r.measured_usd!=null)?r.amount_usd-r.measured_usd:null;
-    h+='<tr><td>'+esc(when)
-      +(r.note?' <span title="'+esc(r.note)+'">✎</span>':'')
-      +'</td><td class="br-sep">'+fC(r.amount_usd)
-      +'</td><td>'+(r.measured_usd!=null?fC(r.measured_usd):dash)
-      +'</td><td>'+(gap!=null?fS(gap):dash)
-      +'</td><td class="br-sep">'+(r.delta_official!=null?fS(r.delta_official):dash)
-      +'</td><td>'+(r.delta_measured!=null?fS(r.delta_measured):dash)
-      +'</td><td>'+(r.coverage_pct!=null?esc(r.coverage_pct.toFixed(1))+'%':dash)
-      +'</td><td>'+(BR_WRITABLE?'<button type="button" class="br-del" data-id="'+esc(String(r.id))+'" title="delete reading" aria-label="delete reading">×</button>':'')
+    const cov=r.official_usd>0.005?(100*r.measured_usd/r.official_usd).toFixed(1)+'%':dash;
+    h+='<tr><td>'+esc(r.day)
+      +'</td><td class="br-sep">'+fS(r.official_usd)
+      +'</td><td>'+fS(r.measured_usd)
+      +'</td><td>'+fS(r.unaccounted_usd)
+      +'</td><td>'+cov
       +'</td></tr>';
   }
   h+='</tbody></table>';
-  if(rows[0].measured_since!=null){
-    h+='<div class="br-since">tokenfold has measured <b>'+fC(rows[0].measured_since)+'</b> since the newest reading — record the org console figure again to add a coverage point</div>';
-  }
-  h+='<div class="br-legend">Δ columns compare consecutive readings within the same UTC month · — means no comparable previous reading</div>';
+  h+='<div class="br-legend">each meter increase is attributed to the UTC day it was observed — an interval spanning idle days lands on the day the next push arrived</div>';
   wrap.innerHTML=summary+h;
-  wrap.querySelectorAll('.br-del').forEach(b=>{
-    b.onclick=()=>{
-      if(!confirm('Delete this reading?'))return;
-      fetch('/api/billing-readings/'+encodeURIComponent(b.dataset.id),{method:'DELETE'})
-        .then(r=>{if(!r.ok)throw 0;return r.json();})
-        .then(applyReadingsResponse)
-        .catch(()=>brStatus('delete failed'));
-    };
-  });
 }
-function brStatus(msg){
-  const el=document.getElementById('brStatus');
-  if(el){el.textContent=msg;setTimeout(()=>{if(el.textContent===msg)el.textContent='';},4000);}
-}
-function refreshBillingReadings(){
-  return fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE))
-    .then(r=>r.json())
-    .then(data=>{D.billing_readings=data.billing_readings||[];renderBillingReadings();});
-}
-// Write responses carry the fresh list straight from the DB — render that
-// directly. A /api/stats refetch can race the dashboard-cache rebuild and
-// serve the pre-write payload (the "new reading doesn't appear" bug).
-function applyReadingsResponse(body){
-  if(body&&Array.isArray(body.readings)){
-    D.billing_readings=body.readings;
-    renderBillingReadings();
-    return;
-  }
-  return refreshBillingReadings();
-}
-(function(){
-  const btn=document.getElementById('brRecordBtn');
-  if(!btn)return;
-  btn.onclick=()=>{
-    const amtEl=document.getElementById('brAmount');
-    const amt=parseFloat(amtEl.value);
-    if(!isFinite(amt)||amt<0){brStatus('enter the org console $ figure');return;}
-    const note=(document.getElementById('brNote').value||'').trim();
-    btn.disabled=true;
-    fetch('/api/billing-readings',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({amount_usd:amt,note:note||null})})
-      .then(r=>{if(!r.ok)throw 0;return r.json();})
-      .then(b=>{amtEl.value='';document.getElementById('brNote').value='';
-        brStatus('recorded ✓');return applyReadingsResponse(b);})
-      .catch(()=>brStatus('record failed'))
-      .finally(()=>{btn.disabled=false;});
-  };
-})();
-renderBillingReadings();
+renderBillingMeter();
 
 /* ---- Scroll Animations ---- */
 (function(){
@@ -6203,7 +6154,7 @@ renderBillingReadings();
       renderHeatmap();
       renderHourly();
       renderSessions();
-      renderBillingReadings();
+      renderBillingMeter();
       // Update footer timestamp — target the label span only; rewriting all of
       // .footer-right would destroy the ingest-key reveal button next to it.
       const genLabel=document.getElementById('genTimeLabel');

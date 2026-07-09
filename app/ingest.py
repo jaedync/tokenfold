@@ -519,6 +519,7 @@ async def store_usage(request: Request):
     if not normalize_usage_buckets(usage):
         machine = body.get("machine") if isinstance(
             body.get("machine"), str) else "unknown"
+        machine = machine[:128]  # bound what lands in meta/meter rows
         print(f"[ingest] /api/usage ignored: no usable limit buckets "
               f"(machine={machine!r} — enterprise-account push?)",
               flush=True)
@@ -542,6 +543,8 @@ async def store_usage(request: Request):
                 })),
             )
             conn.commit()
+            from .extra_usage import record_meter_reading
+            record_meter_reading(conn, machine, extra, time.time())
         return {"status": "ignored_no_limits", "updated_at": None,
                 "captured_extra_usage": captured}
 

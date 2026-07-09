@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from datetime import timezone as _timezone
 from zoneinfo import ZoneInfo
 
-from .billing_readings import build_readings_payload
+from .extra_usage import build_meter_payload
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
 from .db import get_conn
@@ -442,9 +442,9 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
         "scope": scope,
         "month_cost": 0.0,
         "month_label": datetime.now(_timezone.utc).strftime("%B %Y") + " · UTC",
-        # Readings are first-class data, independent of daily summaries — they
-        # must survive the no-summaries-yet path (e.g. a fresh enterprise view).
-        "billing_readings": build_readings_payload(get_conn(), scope),
+        # Meter readings are first-class data, independent of daily summaries —
+        # they must survive the no-summaries-yet path (fresh enterprise view).
+        "meter": build_meter_payload(get_conn(), scope),
         "geo_assumed": _geo_assumed(scope),
     }
 
@@ -1231,7 +1231,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d"), pred),
         "scope": scope,
         "month_cost": month_cost,
-        "billing_readings": build_readings_payload(conn, scope),
+        "meter": build_meter_payload(conn, scope),
         "geo_assumed": _geo_assumed(scope),
         "month_label": month_label,
     }

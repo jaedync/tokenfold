@@ -201,6 +201,87 @@ class PaceMathTest(TempDBTestCase):
                                      1.0 + PACE_DEADBAND + 0.01)
         self.assertEqual(block["pace"], "over")
 
+
+# ---------------------------------------------------------------------------
+# monthly_budget_block: authoritative meter first (extra_usage captures)
+# ---------------------------------------------------------------------------
+
+class MeterFirstTest(TempDBTestCase):
+    """When a fresh extra_usage meter reading exists, the block runs on
+    Anthropic's own billing numbers — no stored budget scalar needed."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        self.now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        self.now_epoch = self.now.timestamp()
+        self.month_start = _month_start_epoch(self.now)
+
+    def _record_meter(self, used_cents, limit_cents=100000, age_s=600):
+        from app.extra_usage import record_meter_reading
+        record_meter_reading(
+            self.conn, "vm-a",
+            {"used_credits": used_cents, "monthly_limit": limit_cents},
+            self.now_epoch - age_s)
+
+    def test_fresh_meter_drives_gauge_without_stored_budget(self):
+        self._record_meter(21794.0)  # $217.94 of $1,000.00
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertIsNotNone(block)
+        self.assertEqual(block["source"], "meter")
+        self.assertEqual(block["budget_usd"], 1000.00)
+        self.assertEqual(block["mtd_cost"], 217.94)
+        self.assertEqual(block["measured_mtd_usd"], 0.0)
+        self.assertEqual(block["unaccounted_mtd_usd"], 217.94)
+        self.assertEqual(block["meter_machine"], "vm-a")
+        self.assertEqual(block["meter_updated_epoch"],
+                         self.now_epoch - 600)
+        # pace math runs on the meter numbers: 217.94/0.274 ~= $795 EOM
+        self.assertEqual(block["pace"], "under")
+
+    def test_fresh_meter_includes_measured_cross_check(self):
+        self._record_meter(21794.0)
+        _ins_event(self.conn, "e1", self.month_start + 3600)  # $5
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertEqual(block["measured_mtd_usd"], 5.0)
+        self.assertEqual(block["unaccounted_mtd_usd"], 212.94)
+        self.assertEqual(block["mtd_cost"], 217.94)  # gauge stays official
+
+    def test_fresh_meter_without_limit_uses_stored_budget(self):
+        """budget_from_meter must be False here — the scalar is still the
+        budget, so the dashboard keeps it editable."""
+        self._record_meter(21794.0, limit_cents="lots")  # limit -> NULL
+        set_budget(self.conn, 500.0)
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertEqual(block["source"], "meter")
+        self.assertEqual(block["budget_usd"], 500.0)
+        self.assertEqual(block["mtd_cost"], 217.94)
+        self.assertFalse(block["budget_from_meter"])
+
+    def test_meter_limit_flags_budget_from_meter(self):
+        self._record_meter(21794.0)
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertTrue(block["budget_from_meter"])
+
+    def test_fresh_meter_no_limit_no_budget_returns_none(self):
+        self._record_meter(21794.0, limit_cents="lots")
+        self.assertIsNone(monthly_budget_block(self.conn, self.now_epoch))
+
+    def test_stale_meter_falls_back_to_estimate(self):
+        from app.extra_usage import METER_STALE_S
+        self._record_meter(21794.0, age_s=METER_STALE_S + 3600)
+        set_budget(self.conn, 1000.0)
+        _ins_event(self.conn, "e1", self.month_start + 3600)  # $5
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertEqual(block["source"], "estimate")
+        self.assertEqual(block["mtd_cost"], 5.0)
+        self.assertNotIn("meter_machine", block)
+
+    def test_no_meter_estimate_block_carries_source(self):
+        set_budget(self.conn, 1000.0)
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertEqual(block["source"], "estimate")
+
     def test_zero_spend_mid_month_is_under_with_zero_projection(self):
         set_budget(self.conn, 1000.0)
         block = monthly_budget_block(self.conn, self.now_epoch)

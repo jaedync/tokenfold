@@ -7,7 +7,7 @@ These pin the client-side contract added in Task 2:
   * enterprise renders the affordance / card wiring.
 
 Style mirrors test_dashboard_template.py (source regex) plus a rendered-HTML
-pass for the personal-vs-enterprise invariant, matching test_billing_readings.
+pass for the personal-vs-enterprise invariant.
 """
 
 import re

@@ -177,6 +177,22 @@ CREATE TABLE IF NOT EXISTS billing_readings (
 CREATE INDEX IF NOT EXISTS idx_billing_readings_seq
     ON billing_readings(scope, month, recorded_epoch);
 
+-- Anthropic's server-side billing meter (the oauth/usage extra_usage block,
+-- US cents) captured from enterprise-account usage pushes. FIRST-CLASS data
+-- like billing_readings: not derived from events, never rebuilt. Consecutive
+-- identical (used,limit) readings are deduped at record time.
+CREATE TABLE IF NOT EXISTS extra_usage_readings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_epoch REAL NOT NULL,
+    machine       TEXT,
+    used_cents    REAL NOT NULL,
+    limit_cents   REAL,
+    utilization   REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extra_usage_readings_seq
+    ON extra_usage_readings(fetched_epoch);
+
 -- Append-only per-bucket OAuth usage-limit history (one row per bucket per
 -- poll). No raw-JSON column: the per-bucket fields suffice, and the latest
 -- full raw blob already lives in meta.oauth_usage. resets_at stores the RAW

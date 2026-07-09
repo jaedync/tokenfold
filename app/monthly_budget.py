@@ -2,9 +2,12 @@
 weekly_budget.monthly_budget block served by /api/rate-limits, and the
 GET/POST /api/enterprise-budget setting endpoints.
 
-Budget is a single scalar in meta (key 'enterprise_monthly_budget_usd') —
-no env var, no auto-seeding. Month boundaries are UTC calendar months,
-matching spend_history.monthly_costs exactly. MTD cost reuses
+METER-FIRST since the extra_usage capture (app/extra_usage.py): a fresh
+capture supplies both MTD spend and the budget from Anthropic's own billing
+meter. The meta scalar (key 'enterprise_monthly_budget_usd') survives as the
+fallback when the meter is stale or carries no limit — no env var, no
+auto-seeding. Month boundaries are UTC calendar months, matching
+spend_history.monthly_costs exactly. Estimated MTD cost reuses
 cost_windows.compute_window_cost (same dedupe/era/geo pricing as the
 monthly spend chart) rather than duplicating pricing logic.
 """
@@ -95,23 +98,48 @@ def _month_bounds_utc(now_epoch: float):
 
 def monthly_budget_block(conn: sqlite3.Connection,
                          now: Optional[float] = None) -> Optional[dict]:
-    """Enterprise-scope monthly pacing block, or None when no budget is set.
+    """Enterprise-scope monthly pacing block, or None when there is neither
+    a fresh meter limit nor a stored budget.
 
-    See task brief for the exact JSON shape. elapsed_fraction < 0.05 (first
-    ~1.2 days of the month) suppresses pace/projected_eom_usd (too little
-    signal to project), but expected_usd is still returned.
+    METER-FIRST: a fresh extra_usage capture (Anthropic's own billing meter,
+    see app/extra_usage.py) supplies both the MTD spend and — when present —
+    the budget itself, so nothing needs hand-entering; the event-cost
+    estimate rides along as measured_mtd_usd and the gap as
+    unaccounted_mtd_usd (claude.ai web etc.). A stale/absent meter falls
+    back to the stored budget scalar + estimate (source='estimate').
+
+    Month boundaries are UTC calendar months. The meter's billing cycle is
+    assumed calendar-aligned; if a used_credits rollover is ever observed
+    mid-month the anchor can be inferred from extra_usage_readings.
+
+    elapsed_fraction < 0.05 (first ~1.2 days of the month) suppresses
+    pace/projected_eom_usd (too little signal to project), but expected_usd
+    is still returned.
     """
-    budget = get_budget(conn)
+    now = time.time() if now is None else now
+
+    from .extra_usage import latest_meter, meter_is_fresh
+    meter = latest_meter(conn)
+    use_meter = meter_is_fresh(meter, now)
+
+    budget = None
+    budget_from_meter = False
+    if use_meter and meter["limit_usd"]:
+        budget = meter["limit_usd"]
+        budget_from_meter = True
+    if budget is None:
+        budget = get_budget(conn)
     if budget is None:
         return None
 
-    now = time.time() if now is None else now
     month_start, month_end, month_label, days_in_month = _month_bounds_utc(now)
     total_seconds = days_in_month * 86400.0
     elapsed_seconds = max(0.0, min(now, month_end) - month_start)
     elapsed_fraction = elapsed_seconds / total_seconds
 
-    mtd_cost = compute_window_cost(conn, month_start, now, scope="enterprise")
+    measured_mtd = compute_window_cost(
+        conn, month_start, now, scope="enterprise")
+    mtd_cost = meter["used_usd"] if use_meter else measured_mtd
 
     expected_usd = elapsed_fraction * budget
 
@@ -127,7 +155,11 @@ def monthly_budget_block(conn: sqlite3.Connection,
         else:
             pace = "on"
 
-    return {
+    block = {
+        "source": "meter" if use_meter else "estimate",
+        # Distinct from source: a fresh meter can lack a limit, in which case
+        # the stored scalar is still the budget and must stay editable.
+        "budget_from_meter": budget_from_meter,
         "budget_usd": round(budget, 2),
         "month": month_label,
         "month_end_epoch": int(month_end),
@@ -138,15 +170,20 @@ def monthly_budget_block(conn: sqlite3.Connection,
                               if projected_eom_usd is not None else None),
         "pace": pace,
     }
+    if use_meter:
+        block["measured_mtd_usd"] = round(measured_mtd, 2)
+        block["unaccounted_mtd_usd"] = round(mtd_cost - measured_mtd, 2)
+        block["meter_updated_epoch"] = meter["fetched_epoch"]
+        block["meter_machine"] = meter["machine"]
+    return block
 
 
 # ── HTTP surface ────────────────────────────────────────────────────────────
-# Same auth dependency as the billing-readings endpoints (dashboard/readings
-# Basic-auth) — this is an enterprise-scope SETTING, not a personal-only
-# write, so it is intentionally not scope-restricted.
+# Dashboard Basic-auth — this is an enterprise-scope SETTING, not a
+# personal-only write, so it is intentionally not scope-restricted.
 
 def _require_writable():
-    """Same fail-closed policy as billing_readings._require_writable: writes
+    """Fail-closed write policy (same as the ingest-key reveal): writes
     are human dashboard actions, so an open (password-less) instance must
     still reject them rather than silently accept unauthenticated writes."""
     if not config.DASHBOARD_PASSWORD:
