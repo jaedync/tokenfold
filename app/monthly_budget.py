@@ -81,8 +81,8 @@ def set_budget(conn: sqlite3.Connection, value: Optional[float]) -> None:
 
 
 def _month_bounds_utc(now_epoch: float):
-    """Return (month_start_epoch, month_end_epoch, 'YYYY-MM') for the UTC
-    calendar month containing now_epoch — identical math to
+    """Return (month_start_epoch, month_end_epoch, 'YYYY-MM', days_in_month)
+    for the UTC calendar month containing now_epoch — identical math to
     spend_history.monthly_costs."""
     d = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
     y, m = d.year, d.month

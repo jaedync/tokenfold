@@ -10,6 +10,10 @@ Style mirrors test_dashboard_template.py (source regex) plus a rendered-HTML
 pass for the personal-vs-enterprise invariant, matching test_billing_readings.
 """
 
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -79,6 +83,67 @@ class MonthlyBudgetTemplateSourceTest(unittest.TestCase):
     def test_detail_cells_labels(self):
         self.assertIn("spent · MTD", self.tpl)
         self.assertIn("budget left", self.tpl)
+
+    def test_blur_cancels_not_commits(self):
+        # Final-review fix: blur must CANCEL the in-progress edit (restore the
+        # display), not commit it. Enter (via commit()) remains the only path
+        # that saves — including empty+Enter, which clears the budget.
+        self.assertIn("wireMonthlyBudgetEdit", self.tpl)
+        idx = self.tpl.index("function wireMonthlyBudgetEdit")
+        body = self.tpl[idx:idx + 3200]
+        self.assertIn("input.onblur = cancel;", body)
+        self.assertNotIn("input.onblur = commit;", body)
+        # Enter still commits.
+        self.assertIn("commit();", body)
+
+    def test_poll_skips_render_during_open_edit(self):
+        # Final-review fix: the 60s poll must not blow away an open
+        # .mb-edit-input via innerHTML replace.
+        self.assertIn("querySelector('.mb-edit-input')", self.tpl)
+
+
+class MonthlyBudgetScriptSyntaxTest(unittest.TestCase):
+    """Extract the inline <script> block housing the monthly-budget JS and
+    verify it is syntactically valid, catching typos node can't otherwise
+    see (this JS ships server-rendered, not through a JS test framework)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which("node") is None:
+            raise unittest.SkipTest("node not available on PATH")
+        tpl = TEMPLATE.read_text()
+        scripts = re.findall(r"<script>(.*?)</script>", tpl, re.S)
+        # The big inline app script is the one housing wireMonthlyBudgetEdit /
+        # pollLimits — pick it by content rather than a hardcoded index so a
+        # future extra <script> block doesn't silently break this test.
+        candidates = [s for s in scripts if "wireMonthlyBudgetEdit" in s]
+        assert candidates, "could not locate the monthly-budget inline script"
+        cls.script = candidates[0]
+        # Stub the handful of Jinja expressions so node can parse this as
+        # plain JS (the template is never executed here, only parsed).
+        stubbed = cls.script
+        stubbed = stubbed.replace("{{ scope }}", "personal")
+        stubbed = stubbed.replace(
+            "{{ 'true' if scope_locked else 'false' }}", "false")
+        stubbed = stubbed.replace(
+            "{{ 'true' if readings_writable else 'false' }}", "false")
+        assert "{{" not in stubbed, "unstubbed Jinja expression remains: " + stubbed
+        cls.stubbed = stubbed
+
+    def test_script_parses_with_node(self):
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".js", delete=False) as f:
+            f.write(self.stubbed)
+            path = f.name
+        try:
+            result = subprocess.run(
+                ["node", "--check", path],
+                capture_output=True, text=True, timeout=30)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertEqual(
+            result.returncode, 0,
+            f"node --check failed:\n{result.stderr}")
 
 
 class MonthlyBudgetRenderInvariantTest(TempDBTestCase):

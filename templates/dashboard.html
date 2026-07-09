@@ -4649,8 +4649,8 @@ function initRateLimits(){
         fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
           + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
       } else {
-        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
-          + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp.toFixed(1) + '%;background:' + color + '"></div>'
+          + '<div class="rate-gauge-fill" style="left:' + clamp.toFixed(1) + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
       }
     } else {
       fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
@@ -4790,16 +4790,30 @@ function initRateLimits(){
       function commit() {
         if(done) return; done = true;
         var raw = input.value.trim();
-        if(raw === '') { commitBudget(null); return; }
+        if(raw === '') { input.classList.remove('mb-edit-input'); commitBudget(null); return; }
         var v = parseFloat(raw);
         if(!isFinite(v) || v <= 0) { mbStatus('enter a positive dollar amount'); cancel(); return; }
+        // Drop the marker class immediately: the input stays mounted until
+        // commitBudget's pollLimits() re-render swaps it out, but it must
+        // stop counting as an "open edit" the instant it's submitted —
+        // otherwise the 60s-poll-skip guard (which also matches this class)
+        // would block that very re-render and strand the stale input.
+        input.classList.remove('mb-edit-input');
         commitBudget(v);
       }
       input.onkeydown = function(e) {
         if(e.key === 'Enter') { e.preventDefault(); commit(); }
         else if(e.key === 'Escape') { e.preventDefault(); cancel(); }
       };
-      input.onblur = commit;
+      // Blur cancels rather than commits — clicking away from an in-progress
+      // edit is far more often "changed my mind" than "confirm this value".
+      // Enter remains the only path that saves (including empty+Enter, which
+      // clears the budget). The `done` guard keeps this race-free: Enter's
+      // commit() sets done=true synchronously before the input can blur (it
+      // stays mounted until commitBudget's fetch resolves and re-renders), so
+      // a blur firing after Enter is a no-op instead of double-acting on a
+      // handler whose input may already be torn down.
+      input.onblur = cancel;
     };
   }
 
@@ -4821,6 +4835,11 @@ function initRateLimits(){
 
     if(!oauth) {
       if(mbHtml) {
+        // A 60s poll landing mid-edit would blow away the open .mb-edit-input
+        // (innerHTML replace tears down the live input + its focus/typed
+        // value). Skip this render cycle entirely — the next poll 60s later
+        // will catch up once the edit has committed/cancelled.
+        if(oauthPanel.querySelector('.mb-edit-input')) return;
         // Enterprise: no oauth gauges, but the monthly card (or its empty-state
         // affordance) still lives in this panel. 'block' (not '') so the
         // stylesheet's display:none can't win — same reason as the oauth path.
