@@ -522,7 +522,28 @@ async def store_usage(request: Request):
         print(f"[ingest] /api/usage ignored: no usable limit buckets "
               f"(machine={machine!r} — enterprise-account push?)",
               flush=True)
-        return {"status": "ignored_no_limits", "updated_at": None}
+        # Retain the one billing-grade number these payloads carry:
+        # extra_usage is Anthropic's server-side metered spend for the org's
+        # current billing cycle (monthly_limit / used_credits in US cents).
+        # It lands in its OWN meta key so the personal snapshot invariant
+        # above stays intact; an absent/empty block never clobbers a prior
+        # capture (nothing worth overwriting with).
+        extra = usage.get("extra_usage")
+        captured = isinstance(extra, dict) and bool(extra)
+        if captured:
+            conn = get_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                ("oauth_usage_enterprise", json.dumps({
+                    "machine": machine,
+                    "extra_usage": extra,
+                    "updated_at":
+                        datetime.now(ZoneInfo(TZ_NAME)).isoformat(),
+                })),
+            )
+            conn.commit()
+        return {"status": "ignored_no_limits", "updated_at": None,
+                "captured_extra_usage": captured}
 
     conn = get_conn()
     now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()

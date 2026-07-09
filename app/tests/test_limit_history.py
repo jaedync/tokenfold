@@ -269,6 +269,70 @@ class StoreUsageLimitHistoryTest(TempDBTestCase):
         self.assertIsNone(self.conn.execute(
             "SELECT value FROM meta WHERE key='oauth_usage'").fetchone())
 
+    def test_ignored_push_captures_extra_usage(self):
+        """The guard rejects the snapshot write but must RETAIN the org's
+        extra_usage block (server-side billing dollars, in cents) in its own
+        meta key — that's the only billing-grade number the enterprise side
+        ever sees, and dropping the whole body threw it away."""
+        payload = dict(self.ENTERPRISE_SHAPED)
+        payload["extra_usage"] = {"is_enabled": True, "monthly_limit": 100000,
+                                  "used_credits": 34012.5, "utilization": 34.0}
+        r = self.client().post(
+            "/api/usage",
+            json={"machine": "Z000012-Mantle-VM-Dev01", "usage": payload},
+            headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "ignored_no_limits")
+        self.assertTrue(r.json()["captured_extra_usage"])
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage_enterprise'"
+        ).fetchone()
+        cap = json.loads(row["value"])
+        self.assertEqual(cap["machine"], "Z000012-Mantle-VM-Dev01")
+        self.assertEqual(cap["extra_usage"], payload["extra_usage"])
+        self.assertIn("updated_at", cap)
+        # the personal snapshot is still never touched
+        self.assertIsNone(self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage'").fetchone())
+
+    def test_ignored_push_without_extra_usage_keeps_prior_capture(self):
+        """A null/absent extra_usage must not clobber a previously captured
+        block — an empty push carries nothing worth overwriting with."""
+        payload = dict(self.ENTERPRISE_SHAPED)
+        payload["extra_usage"] = {"is_enabled": True, "used_credits": 5000}
+        self.client().post(
+            "/api/usage", json={"machine": "vm-a", "usage": payload},
+            headers={"X-API-Key": self.api_key})
+        empty = dict(self.ENTERPRISE_SHAPED)
+        empty["extra_usage"] = None
+        r = self.client().post(
+            "/api/usage", json={"machine": "vm-b", "usage": empty},
+            headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["captured_extra_usage"])
+        cap = json.loads(self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage_enterprise'"
+        ).fetchone()["value"])
+        self.assertEqual(cap["machine"], "vm-a")
+        self.assertEqual(cap["extra_usage"]["used_credits"], 5000)
+
+    def test_newer_capture_overwrites_older(self):
+        """Snapshot semantics: the freshest extra_usage wins (same org, the
+        meter only moves forward within a billing cycle)."""
+        first = dict(self.ENTERPRISE_SHAPED)
+        first["extra_usage"] = {"is_enabled": True, "used_credits": 1000}
+        second = dict(self.ENTERPRISE_SHAPED)
+        second["extra_usage"] = {"is_enabled": True, "used_credits": 2000}
+        for machine, usage in (("vm-a", first), ("vm-b", second)):
+            self.client().post(
+                "/api/usage", json={"machine": machine, "usage": usage},
+                headers={"X-API-Key": self.api_key})
+        cap = json.loads(self.conn.execute(
+            "SELECT value FROM meta WHERE key='oauth_usage_enterprise'"
+        ).fetchone()["value"])
+        self.assertEqual(cap["machine"], "vm-b")
+        self.assertEqual(cap["extra_usage"]["used_credits"], 2000)
+
     def test_single_usable_bucket_still_stored(self):
         """The guard keys on 'normalizes to zero buckets', not payload
         completeness: one valid bucket is a real (if partial) snapshot."""
