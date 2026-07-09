@@ -801,12 +801,18 @@ class MarkerLabelOverlapTest(unittest.TestCase):
         cls.tpl = TEMPLATE.read_text()
 
     def test_overlap_pass_runs_after_panel_render(self):
+        # The pass body is hoisted (shared with the enterprise monthly card);
+        # the oauth path CALLS it right after writing the panel HTML.
         render = self.tpl.index(
             "oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;")
-        window = self.tpl[render:render + 2200]
-        self.assertIn(".rate-gauge-marker-label", window)
-        self.assertIn("getBoundingClientRect", window)
-        self.assertIn("lab.style.display = 'none';", window)
+        window = self.tpl[render:render + 400]
+        self.assertIn("runMarkerOverlapPass();", window)
+        # The pass body itself still measures + hides colliding labels.
+        body_idx = self.tpl.index("function runMarkerOverlapPass() {")
+        body = self.tpl[body_idx:body_idx + 2000]
+        self.assertIn(".rate-gauge-marker-label", body)
+        self.assertIn("getBoundingClientRect", body)
+        self.assertIn("lab.style.display = 'none';", body)
 
     def test_overlap_pass_reruns_on_resize_without_leaking(self):
         """Collisions depend on viewport width, so the pass re-arms on
@@ -814,9 +820,12 @@ class MarkerLabelOverlapTest(unittest.TestCase):
         poll; a listener per poll leaks), and each pass re-decides from
         scratch (display reset before measuring)."""
         self.assertIn("function runMarkerOverlapPass() {", self.tpl)
-        self.assertIn("if(!window._tfMarkerResizeArmed) {", self.tpl)
+        # Arming lives in a dedicated once-guarded helper (shared by the oauth
+        # gauges and the enterprise monthly card, same panel). Guard set once.
+        self.assertEqual(self.tpl.count("window._tfMarkerResizeArmed = true"), 1)
+        self.assertIn("function armMarkerResizeOnce() {", self.tpl)
         idx = self.tpl.index("function runMarkerOverlapPass() {")
-        block = self.tpl[idx:idx + 2600]
+        block = self.tpl[idx:idx + 3200]
         self.assertIn("lab.style.display = '';", block)
         # Debounced, not raw-per-resize-event.
         self.assertIn("setTimeout(runMarkerOverlapPass, 150)", block)

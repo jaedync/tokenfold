@@ -2275,6 +2275,19 @@ th[data-info]:focus::after { opacity: 1; }
 .br-input-row button:hover{background:#1a1a1a;color:#f5c518}
 #brStatus{font-size:11px;color:var(--gray-dim)}
 #billingReadingsTable{overflow-x:auto}
+/* Enterprise monthly budget card: inline-edit affordances reuse the gauge
+   typography; the budget cell renders as a value-styled button so it reads as
+   the figure until clicked. */
+.mb-edit{border:none;background:none;padding:0;margin:0;font:inherit;color:inherit;
+  cursor:pointer;border-bottom:1px dashed var(--gray-dim)}
+.mb-edit:hover{color:var(--accent,#c45a2d)}
+.mb-edit-input{font:inherit;width:7.5em;max-width:100%;border:2px solid #1a1a1a;
+  background:var(--bg,#fff);padding:2px 5px}
+.mb-set-affordance{border:none;background:none;padding:6px 0;margin:0;font:inherit;
+  font-size:.72rem;color:var(--gray-dim);cursor:pointer;text-align:left;
+  border-bottom:1px dashed var(--gray-dim)}
+.mb-set-affordance:hover{color:var(--accent,#c45a2d)}
+.mb-status{display:block;font-size:11px;color:var(--gray-dim);margin-top:6px}
 .br-table{font-size:.78rem;min-width:640px}
 .br-table thead th{position:static;padding:.45rem .9rem .45rem 0;font-size:.6rem}
 .br-table thead th:first-child{padding-left:0}
@@ -4516,6 +4529,280 @@ function initRateLimits(){
         + statsHtml;
     }
 
+  // Color based on pace (usage vs expected position in window). Shared by the
+  // oauth gauges (below) and the enterprise monthly card — one definition, no
+  // duplicated palette logic (the marker/split-fill deadband constants match).
+  function barColor(pct, expectedPct) {
+    if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
+      var ratio = pct / expectedPct;
+      if(ratio <= 1.1) return 'var(--blue)';
+      if(ratio <= 1.35) return 'var(--yellow)';
+      return 'var(--red)';
+    }
+    if(pct < 50) return 'var(--blue)';
+    if(pct < 80) return 'var(--yellow)';
+    return 'var(--red)';
+  }
+  function textColorFor(color) {
+    return color === 'var(--yellow)' ? 'var(--yellow-text)' : color;
+  }
+
+  // An 'expected' marker label parked near 0%/100% slides under the gauge
+  // title / reset text and overprints. Measure after insertion, drop any label
+  // that poke outside its card or hits neighbor text — the marker LINE stays.
+  // Hoisted to renderAllRateLimits scope so the enterprise monthly card (which
+  // renders into #oauthGaugesPanel with the same classes) reuses the identical
+  // pass instead of a second copy.
+  function runMarkerOverlapPass() {
+    var panel = document.getElementById('oauthGaugesPanel');
+    if(!panel) return;
+    var labs = panel.querySelectorAll('.rate-gauge-marker-label');
+    var PAD = 4;  // "almost touching" reads as touching at 0.65rem
+    for(var li = 0; li < labs.length; li++) {
+      var lab = labs[li];
+      var gauge = lab.closest ? lab.closest('.rate-gauge') : null;
+      if(!gauge) continue;
+      // Re-decide from scratch every pass — collisions depend on viewport width.
+      lab.style.display = '';
+      var r = lab.getBoundingClientRect();
+      // display:none, NOT visibility:hidden — a hidden-but-laid-out label
+      // hanging past a ~99% marker still widens scrollWidth on mobile.
+      var gr = gauge.getBoundingClientRect();
+      if(r.left < gr.left || r.right > gr.right) {
+        lab.style.display = 'none';
+        continue;
+      }
+      var others = gauge.querySelectorAll(
+        '.rate-gauge-label, .rate-gauge-reset, .rate-gauge-dayline-label, .rate-gauge-chart-btn, .mb-edit');
+      for(var oi = 0; oi < others.length; oi++) {
+        var o = others[oi].getBoundingClientRect();
+        if(r.left < o.right + PAD && r.right > o.left - PAD
+            && r.top < o.bottom + PAD && r.bottom > o.top - PAD) {
+          lab.style.display = 'none';
+          break;
+        }
+      }
+    }
+  }
+  // Alias kept so both scope branches read intently — the monthly card and the
+  // oauth gauges run the SAME pass over the shared panel.
+  function runMonthlyMarkerOverlapPass() { runMarkerOverlapPass(); }
+  // Collisions move with viewport width — re-run on debounced resize. Armed
+  // ONCE globally (one listener per poll would leak); the closure re-queries
+  // the panel by id so it always sees the freshest render.
+  function armMarkerResizeOnce() {
+    if(window._tfMarkerResizeArmed) return;
+    window._tfMarkerResizeArmed = true;
+    var t = null;
+    window.addEventListener('resize', function(){
+      clearTimeout(t);
+      t = setTimeout(runMarkerOverlapPass, 150);
+    });
+  }
+
+  /* ── Enterprise monthly $ budget card ──────────────────────────────────
+     Driven entirely by wb.monthly_budget (server sends it ONLY on enterprise
+     scope with a budget set). Reuses the gauge DOM/CSS + barColor + fC. When
+     enterprise has no budget set, wb has no monthly_budget key, so the
+     empty-state affordance gates on the server-known TF_SCOPE + BR_WRITABLE
+     pair (same "enterprise, may write" signal the billing-readings input row
+     uses) to render a discoverable "Set monthly budget…" line instead of dead
+     space. Personal scope has neither the key nor enterprise TF_SCOPE → this
+     returns '' and nothing new renders (global invariant). */
+  function buildMonthlyBudgetSection(wb) {
+    var mb = wb && wb.monthly_budget;
+    // Enterprise-only: the server sends wb.monthly_budget ONLY on enterprise
+    // scope, so `mb` present is itself an enterprise signal. The empty-state
+    // affordance can't lean on `mb` (it's absent when unset), so it gates on
+    // TF_SCOPE + BR_WRITABLE (the same server-known "enterprise, may write"
+    // pair the billing-readings input row uses). Personal scope has neither
+    // mb nor enterprise TF_SCOPE → returns '' (global "renders nothing").
+    var enterpriseWritable = (TF_SCOPE === 'enterprise') && BR_WRITABLE;
+    // No budget AND not a writable enterprise instance → render nothing.
+    if(!mb && !enterpriseWritable) return '';
+
+    if(!mb) {
+      // Empty-state affordance (enterprise, no budget yet). Click to set.
+      return '<div class="rate-gauge" style="border-top:var(--border)">'
+        + '<div class="rate-gauge-head">'
+        + '<span class="rate-gauge-label">Monthly usage limit</span>'
+        + '</div>'
+        + '<button type="button" class="mb-set-affordance" id="mbSetBtn">'
+        + 'Set monthly budget…</button>'
+        + '<span id="mbStatus" class="mb-status" role="status" aria-live="polite"></span>'
+        + '</div>';
+    }
+
+    var budget = typeof mb.budget_usd === 'number' ? mb.budget_usd : 0;
+    var spent = typeof mb.mtd_cost === 'number' ? mb.mtd_cost : 0;
+    var pct = budget > 0 ? (spent / budget) * 100 : 0;
+    var expectedPct = typeof mb.elapsed_fraction === 'number'
+      ? mb.elapsed_fraction * 100 : null;
+    var clamp = Math.min(pct, 100);
+    var color = barColor(pct, expectedPct);
+
+    // Split fill mirrors the oauth gauges: base color up to expected, red
+    // overflow past it (same >2% deadband so a fresh month isn't all red).
+    var fillHtml;
+    if(expectedPct !== null && expectedPct > 2 && expectedPct <= 100 && clamp > 0) {
+      if(clamp > expectedPct) {
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
+          + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
+      } else {
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
+          + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
+      }
+    } else {
+      fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
+    }
+
+    var markerHtml = '';
+    if(expectedPct !== null && expectedPct >= 0 && expectedPct <= 100) {
+      markerHtml = '<div class="rate-gauge-marker" style="left:' + expectedPct.toFixed(1) + '%">'
+        + '<span class="rate-gauge-marker-label">expected</span>'
+        + '</div>';
+    }
+
+    // Verdict line — exact wording parity with the oauth trend note.
+    var verdictHtml = '';
+    if(mb.pace === 'over') verdictHtml = '<strong class="proj-warn">over pace</strong>';
+    else if(mb.pace === 'on') verdictHtml = 'on pace';
+    else if(mb.pace === 'under') verdictHtml = 'under pace';
+    var verdictDiv = verdictHtml
+      ? '<div class="rate-gauge-projection">' + verdictHtml + '</div>' : '';
+
+    // Projection line — suppressed when null; .proj-warn when over budget.
+    var projDiv = '';
+    if(typeof mb.projected_eom_usd === 'number') {
+      var projClass = mb.projected_eom_usd > budget ? 'proj-warn' : '';
+      projDiv = '<div class="rate-gauge-projection">'
+        + 'Projected by month end: <strong class="' + projClass + '">'
+        + fC(mb.projected_eom_usd) + '</strong> (window avg)'
+        + '</div>';
+    }
+
+    // Detail cells — spent MTD, budget (editable), budget left (floored $0).
+    var left = Math.max(0, budget - spent);
+    var leftColor = pct >= 85 ? 'var(--red)' : pct >= 65 ? 'var(--yellow-text)' : null;
+    // Editable only on a writable enterprise instance; read-only viewers see
+    // the plain figure (no dead button, matching billing-readings' gating).
+    var editable = (TF_SCOPE === 'enterprise') && BR_WRITABLE;
+    var budgetCell = editable
+      ? '<button type="button" class="mb-edit" id="mbBudgetEdit" '
+        + 'title="edit monthly budget" aria-label="edit monthly budget">'
+        + fC(budget) + '</button>'
+      : fC(budget);
+    var statsHtml = '<div class="rate-gauge-stats">'
+      + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + fC(spent)
+      + '</div><div class="rate-gauge-stat-label">spent · MTD</div></div>'
+      + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + budgetCell
+      + '</div><div class="rate-gauge-stat-label">budget</div></div>'
+      + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value"'
+      + (leftColor ? ' style="color:' + leftColor + '"' : '') + '>' + fC(left)
+      + '</div><div class="rate-gauge-stat-label">budget left</div></div>'
+      + '</div>';
+
+    // Month label + reset countdown, reusing the section's relative formatter.
+    var resetTxt = mb.month || '';
+    if(typeof mb.month_end_epoch === 'number') {
+      var rel = fmtRelativeMonthEnd(mb.month_end_epoch);
+      if(rel) resetTxt += ' · resets ' + rel;
+    }
+
+    return '<div class="rate-gauge" style="border-top:var(--border)">'
+      + '<div class="rate-gauge-head">'
+      + '<span class="rate-gauge-label">Monthly usage limit</span>'
+      + (resetTxt ? '<span class="rate-gauge-reset">' + esc(resetTxt) + '</span>' : '')
+      + '</div>'
+      + '<div class="rate-gauge-track">' + fillHtml + markerHtml + '</div>'
+      + '<div class="rate-gauge-foot">'
+      + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
+      + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct)) + '% remaining</span>'
+      + '</div>'
+      + verdictDiv + projDiv + statsHtml
+      + '<span id="mbStatus" class="mb-status" role="status" aria-live="polite"></span>'
+      + '</div>';
+  }
+
+  // Compact "resets in Xd Yh" for a SECONDS epoch (month_end_epoch). Fail-
+  // closed '' on bad input, same contract as the oauth section's fmtRelative.
+  function fmtRelativeMonthEnd(epochSeconds) {
+    if(typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return '';
+    var diffS = epochSeconds - (Date.now() / 1000);
+    if(diffS < 0) diffS = 0;
+    var totalMin = Math.round(diffS / 60);
+    var days = Math.floor(totalMin / 1440);
+    var hours = Math.floor((totalMin % 1440) / 60);
+    if(days > 0) return 'in ' + days + 'd ' + hours + 'h';
+    var mins = totalMin % 60;
+    if(hours > 0) return 'in ' + hours + 'h ' + mins + 'm';
+    return 'in ' + mins + 'm';
+  }
+
+  // Non-destructive status line for budget edits, auto-clears (mirrors brStatus).
+  function mbStatus(msg) {
+    var el = document.getElementById('mbStatus');
+    if(el){ el.textContent = msg; setTimeout(function(){ if(el.textContent === msg) el.textContent = ''; }, 4000); }
+  }
+
+  // POST a new budget (null clears), then re-fetch + re-render on success.
+  function commitBudget(value) {
+    fetch('/api/enterprise-budget', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({budget_usd: value})
+    })
+    .then(function(r){ return r.json().then(function(b){ return {ok: r.ok, body: b}; }); })
+    .then(function(res){
+      if(!res.ok) { mbStatus((res.body && res.body.detail) || 'save failed'); return; }
+      // Re-fetch rate-limits so the card re-renders with fresh pacing math —
+      // reuse the section's single pollLimits() fetch (no second poller URL).
+      pollLimits();
+    })
+    .catch(function(){ mbStatus('save failed'); });
+  }
+
+  // Wire click-to-edit on the budget cell / empty-state affordance. Clicking
+  // swaps the value for a numeric input; Enter/blur commits, Escape cancels,
+  // empty input clears the budget (null). Only interactive on writable
+  // instances (server-gated); read-only viewers just see the figure.
+  function wireMonthlyBudgetEdit(panel) {
+    if(!((TF_SCOPE === 'enterprise') && BR_WRITABLE)) return;
+    var trigger = panel.querySelector('#mbBudgetEdit') || panel.querySelector('#mbSetBtn');
+    if(!trigger) return;
+    trigger.onclick = function() {
+      var current = (wb.monthly_budget && typeof wb.monthly_budget.budget_usd === 'number')
+        ? wb.monthly_budget.budget_usd : '';
+      var input = document.createElement('input');
+      input.type = 'number'; input.min = '0'; input.step = '0.01';
+      input.inputMode = 'decimal';
+      input.className = 'mb-edit-input';
+      input.value = current === '' ? '' : String(current);
+      input.setAttribute('aria-label', 'monthly budget in dollars');
+      input.placeholder = 'monthly $ (blank clears)';
+      var parent = trigger.parentNode;
+      parent.replaceChild(input, trigger);
+      input.focus(); input.select();
+      var done = false;
+      function cancel() {
+        if(done) return; done = true;
+        if(input.parentNode === parent) parent.replaceChild(trigger, input);
+      }
+      function commit() {
+        if(done) return; done = true;
+        var raw = input.value.trim();
+        if(raw === '') { commitBudget(null); return; }
+        var v = parseFloat(raw);
+        if(!isFinite(v) || v <= 0) { mbStatus('enter a positive dollar amount'); cancel(); return; }
+        commitBudget(v);
+      }
+      input.onkeydown = function(e) {
+        if(e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if(e.key === 'Escape') { e.preventDefault(); cancel(); }
+      };
+      input.onblur = commit;
+    };
+  }
+
   /* ── Personal OAuth limit gauges (present only when wb.oauth is set by server) ── */
   /* The server gates this key: enterprise scope or locked instance → no oauth key.  */
   /* JS needs zero scope logic — presence of wb.oauth is the full gate.              */
@@ -4524,9 +4811,29 @@ function initRateLimits(){
     if(!oauthPanel) return;
 
     var oauth = wb && wb.oauth;
+    // Enterprise monthly $ budget card (server sends wb.monthly_budget only on
+    // enterprise scope with a budget set; personal never carries the key, so
+    // this whole branch is dead there — the global "personal renders nothing"
+    // invariant holds by construction). buildMonthlyBudgetGauge below reuses
+    // the same gauge DOM/CSS/helpers as the oauth gauges. When enterprise has
+    // NO budget set, mbHtml is a one-line "Set monthly budget…" affordance.
+    var mbHtml = buildMonthlyBudgetSection(wb);
+
     if(!oauth) {
-      oauthPanel.style.display = 'none';
-      oauthPanel.style.minHeight = '';   // release the reserved loading space
+      if(mbHtml) {
+        // Enterprise: no oauth gauges, but the monthly card (or its empty-state
+        // affordance) still lives in this panel. 'block' (not '') so the
+        // stylesheet's display:none can't win — same reason as the oauth path.
+        oauthPanel.style.display = 'block';
+        oauthPanel.style.minHeight = '';
+        oauthPanel.innerHTML = mbHtml;
+        wireMonthlyBudgetEdit(oauthPanel);
+        runMonthlyMarkerOverlapPass();
+        armMarkerResizeOnce();
+      } else {
+        oauthPanel.style.display = 'none';
+        oauthPanel.style.minHeight = '';   // release the reserved loading space
+      }
       if(staleIntervalId !== null) { clearInterval(staleIntervalId); staleIntervalId = null; }
       return;
     }
@@ -4548,24 +4855,8 @@ function initRateLimits(){
     var trend = oauth.trend || {};
     var nowSeconds = Date.now() / 1000;
 
-    // Fill colors stay saturated; yellow TEXT on the cream bg must use the
-    // darkened token or it's unreadable (see --yellow-text).
-    function textColorFor(color) {
-      return color === 'var(--yellow)' ? 'var(--yellow-text)' : color;
-    }
-
-    // Color based on pace (how usage compares to expected position in window)
-    function barColor(pct, expectedPct) {
-      if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
-        var ratio = pct / expectedPct;
-        if(ratio <= 1.1) return 'var(--blue)';
-        if(ratio <= 1.35) return 'var(--yellow)';
-        return 'var(--red)';
-      }
-      if(pct < 50) return 'var(--blue)';
-      if(pct < 80) return 'var(--yellow)';
-      return 'var(--red)';
-    }
+    // barColor + textColorFor are defined once in renderAllRateLimits scope
+    // (shared with the enterprise monthly card) and reached here via closure.
 
     function fmtReset(iso) {
       if(!iso) return '';
@@ -5059,63 +5350,10 @@ function initRateLimits(){
 
     oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;
 
-    // An 'expected' marker label parked near 0%/100% slides under the gauge
-    // title or the 'resets …' text (they share the strip above the track)
-    // and turns into unreadable overprint. Measure after insertion and drop
-    // any label that intersects neighbor text — the marker LINE stays, it's
-    // the real signal; the word is only a legend. Measured (not a fixed
-    // pct range) so it adapts to any label/reset-text width, and re-runs
-    // naturally with each 60s re-render.
-    function runMarkerOverlapPass() {
-      var panel = document.getElementById('oauthGaugesPanel');
-      if(!panel) return;
-      var labs = panel.querySelectorAll('.rate-gauge-marker-label');
-      var PAD = 4;  // "almost touching" reads as touching at 0.65rem
-      for(var li = 0; li < labs.length; li++) {
-        var lab = labs[li];
-        var gauge = lab.closest ? lab.closest('.rate-gauge') : null;
-        if(!gauge) continue;
-        // Re-decide from scratch every pass — collisions depend on viewport
-        // width, so a label hidden at one width may be fine at another.
-        lab.style.display = '';
-        var r = lab.getBoundingClientRect();
-        // display:none, NOT visibility:hidden — a hidden-but-laid-out label
-        // hanging past a ~99% marker still widens document scrollWidth and
-        // reintroduces horizontal page scroll on mobile.
-        // Case 1: poking outside the gauge card (markers parked at the far
-        // edges) — no neighbor needed to look wrong.
-        var gr = gauge.getBoundingClientRect();
-        if(r.left < gr.left || r.right > gr.right) {
-          lab.style.display = 'none';
-          continue;
-        }
-        // Case 2: overprinting neighbor text.
-        var others = gauge.querySelectorAll(
-          '.rate-gauge-label, .rate-gauge-reset, .rate-gauge-dayline-label, .rate-gauge-chart-btn');
-        for(var oi = 0; oi < others.length; oi++) {
-          var o = others[oi].getBoundingClientRect();
-          if(r.left < o.right + PAD && r.right > o.left - PAD
-              && r.top < o.bottom + PAD && r.bottom > o.top - PAD) {
-            lab.style.display = 'none';
-            break;
-          }
-        }
-      }
-    }
+    // Marker-overlap pass + resize arming are hoisted to renderAllRateLimits
+    // scope (shared with the enterprise monthly card, same #oauthGaugesPanel).
     runMarkerOverlapPass();
-    // Collisions move with viewport width (rotate / window drag), so the
-    // pass re-runs on resize. Armed ONCE globally — this render block runs
-    // per 60s poll, and one listener per poll would leak (the same trap the
-    // interval-leak tests police). The first poll's closure stays armed; it
-    // re-queries the panel by id so it always sees the freshest render.
-    if(!window._tfMarkerResizeArmed) {
-      window._tfMarkerResizeArmed = true;
-      var _tfMarkerResizeT = null;
-      window.addEventListener('resize', function(){
-        clearTimeout(_tfMarkerResizeT);
-        _tfMarkerResizeT = setTimeout(runMarkerOverlapPass, 150);
-      });
-    }
+    armMarkerResizeOnce();
 
     // Staleness indicator — tied to oauth.updated_at_epoch.
     // renderAllRateLimits is re-run by the 60s poll, so clear the previous
