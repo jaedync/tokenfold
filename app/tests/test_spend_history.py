@@ -222,6 +222,53 @@ class SegmentationTest(_SegBase):
         self.assertEqual([s for s in segs if s["end_kind"] == "granted"],
                          [])
 
+    def test_low_util_grant_to_zero_splits_window(self):
+        """2026-07-09 incident: an account-wide grant zeroed the weekly
+        meter at 9% — under RESET_DROP_PTS, so the magnitude rule missed
+        it and the window chart drew straight through the reset. A wipe
+        to zero while the window is active is a granted boundary at any
+        magnitude."""
+        now = 1751500800.0
+        anchor = now + 2 * 86400
+        grant_t = now - 86400
+        self._row(grant_t - 600, 9.0, anchor)
+        self._row(grant_t, 0.0, anchor)       # 9-pt wipe, anchor unchanged
+        self._row(grant_t + 600, 1.0, anchor)
+        _ins_event(self.conn, "e1", "r1", grant_t - 7200, inp=1_000_000)
+        _ins_event(self.conn, "e2", "r2", now - 3600, inp=1_000_000)
+        segs = self._segments(now)
+        granted = [s for s in segs if s["end_kind"] == "granted"]
+        self.assertEqual(len(granted), 1)
+        self.assertEqual(granted[0]["end_epoch"], (grant_t // 60) * 60.0)
+        self.assertAlmostEqual(granted[0]["cost"], 5.0, places=2)
+
+    def test_low_util_replay_to_zero_not_granted(self):
+        """9 -> 0 -> 9: recovery to the pre-event level is the replay
+        fingerprint even below RESET_DROP_PTS (the old fixed-offset
+        recovery test was vacuously true here)."""
+        now = 1751500800.0
+        anchor = now + 2 * 86400
+        t = now - 3600
+        self._row(t - 600, 9.0, anchor)
+        self._row(t, 0.0, anchor)
+        self._row(t + 600, 9.0, anchor)
+        segs = self._segments(now)
+        self.assertEqual([s for s in segs if s["end_kind"] == "granted"],
+                         [])
+
+    def test_drop_to_zero_after_expiry_not_granted(self):
+        """Anchor passed between the two polls while the stored blob still
+        carries the OLD anchor: the zero-wipe is natural expiry, not a
+        grant (the zero rule requires the window active at the later
+        poll)."""
+        now = 1751500800.0
+        expiry = now - 3600
+        self._row(expiry - 600, 9.0, expiry)   # window ends at `expiry`
+        self._row(expiry + 600, 0.0, expiry)   # stale anchor, meter rolled
+        segs = self._segments(now, anchor=expiry + WINDOW_S)
+        self.assertEqual([s for s in segs if s["end_kind"] == "granted"],
+                         [])
+
     def test_ancient_event_bounded_output(self):
         """Review H1: one event with a garbage ts_epoch (epoch 0) must not
         blow up the look-back loops — segments stay <= MAX_SEGMENTS and

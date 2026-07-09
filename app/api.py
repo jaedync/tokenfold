@@ -91,19 +91,18 @@ def _bucket_window_start(conn, bucket_key, resets_epoch, window_s):
     server at sub-minute precision), pushed forward to the latest persistent
     GRANTED reset recorded for that bucket: a granted mid-window reset voids
     pre-grant usage, so spend anchored at resets_at − window would overcount
-    (F1). persistent_resets, not raw detect_resets: a stale client replay
-    must not move the cost window (review M1). Lazy import — limit_readings
-    imports api at module level, so api must never import it back at module
-    scope (same cycle-break as the limit_trends import in rate_limits).
+    (F1). corroborated_resets = persistent_resets (not raw detect_resets: a
+    stale client replay must not move the cost window, review M1) plus
+    account-level resets borrowed from sibling buckets — a grant zeroes
+    every bucket at once, and a bucket whose own decrease is too small for
+    detection still had its window cut (2026-07-09 incident). Lazy import —
+    limit_readings imports api at module level, so api must never import it
+    back at module scope (same cycle-break as the limit_trends import in
+    rate_limits).
     """
     start = ((resets_epoch // 60) * 60.0) - window_s
-    from .limit_readings import floor_reset_events, persistent_resets
-    rows = conn.execute(
-        "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
-        "FROM limit_readings WHERE bucket=? AND fetched_epoch>=? "
-        "ORDER BY fetched_epoch ASC",
-        (bucket_key, start)).fetchall()
-    granted = floor_reset_events(persistent_resets(rows))
+    from .limit_readings import corroborated_resets, floor_reset_events
+    granted = floor_reset_events(corroborated_resets(conn, bucket_key, start))
     if granted:
         start = max(start, granted[-1]["at_epoch"])
     return start

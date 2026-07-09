@@ -41,7 +41,8 @@ from .cost_windows import compute_window_cost, compute_window_cost_by_model
 from .db import get_conn
 # Thresholds single-sourced from limit_readings so a future tuning pass
 # changes burn-segmentation and window-segmentation together.
-from .limit_readings import RESET_DROP_PTS, RESET_JUMP_S
+from .limit_readings import (RESET_DROP_PTS, RESET_JUMP_S,
+                             RESET_RECOVERY_FRACTION)
 from .usage_buckets import normalize_usage_buckets
 
 router = APIRouter()
@@ -92,17 +93,31 @@ def _pair_boundary(prev, cur, nxt):
                 "kind": "granted"}
     # Meter wiped in place (anchor unchanged, window active) — granted,
     # but only if the drop persists into the next reading (or none exists
-    # yet — kept provisionally, self-corrects on the next poll).
+    # yet — kept provisionally, self-corrects on the next poll). Two ways
+    # to qualify, mirroring detect_resets:
+    # - a drop >= RESET_DROP_PTS, or
+    # - a wipe to exactly 0 while the window is still active at CUR's poll
+    #   (stricter anchor guard: a stale anchor whose expiry fell between
+    #   the two polls stays natural). The meter is monotonic within a
+    #   window, so a wipe is a grant at ANY magnitude — the 2026-07-09
+    #   account grant zeroed the weekly meter at 9%, under the threshold.
+    # Recovery is proportional (RESET_RECOVERY_FRACTION of the pre-event
+    # level): the old fixed offset was vacuously true below 10%, so a
+    # low-utilization grant could never persist.
     if (p_anchor is not None and p_anchor > prev["fetched_epoch"]
             and cur["utilization"] is not None
-            and prev["utilization"] is not None
-            and cur["utilization"] <= prev["utilization"] - RESET_DROP_PTS):
-        recovered = (nxt is not None and nxt["utilization"] is not None
-                     and nxt["utilization"]
-                     > prev["utilization"] - RESET_DROP_PTS)
-        if not recovered:
-            return {"epoch": _floor_minute(cur["fetched_epoch"]),
-                    "kind": "granted"}
+            and prev["utilization"] is not None):
+        dropped = (cur["utilization"]
+                   <= prev["utilization"] - RESET_DROP_PTS)
+        zeroed = (cur["utilization"] == 0 and prev["utilization"] > 0
+                  and p_anchor > cur["fetched_epoch"])
+        if dropped or zeroed:
+            recovered = (nxt is not None and nxt["utilization"] is not None
+                         and nxt["utilization"]
+                         >= prev["utilization"] * RESET_RECOVERY_FRACTION)
+            if not recovered:
+                return {"epoch": _floor_minute(cur["fetched_epoch"]),
+                        "kind": "granted"}
     return None
 
 

@@ -226,6 +226,50 @@ class BucketWindowsTest(TempDBTestCase):
         self.assertNotIn("window_cost", by_key["scoped:opus"])
         self.assertNotIn("window_start_epoch", by_key["scoped:opus"])
 
+    # ── 2026-07-09 account-grant regression (low-utilization reset) ─────
+
+    def test_limit_window_truncated_by_low_util_grant(self):
+        """Prod shape from the 2026-07-09 mid-window account grant: the
+        weekly meter wiped 9 -> 0 with the anchor unchanged. Below
+        RESET_DROP_PTS the old heuristic missed it, leaving limit_window
+        anchored at resets-7d and counting ~11h of forgiven spend."""
+        now = time.time()
+        sd_resets = now + 5 * 86400          # weekly window began 2d ago
+        self._seed_oauth(sd_resets, now + 2 * 3600)
+        grant_t = now - 3600
+        for t, pct in ((grant_t - 600, 9.0), (grant_t, 0.0),
+                       (grant_t + 600, 0.0)):
+            _ins_reading(self.conn, "seven_day", t, pct, sd_resets)
+        # $5 pre-grant (forgiven), $5 post-grant (the real window spend).
+        _ins_event(self.conn, "z1", "rz1", grant_t - 7200, inp=1_000_000)
+        _ins_event(self.conn, "z2", "rz2", now - 60, inp=1_000_000)
+        lw = self._oauth()["limit_window"]
+        self.assertEqual(lw["start_epoch"], (grant_t // 60) * 60.0)
+        self.assertAlmostEqual(lw["cost"], 5.0, places=2)
+
+    def test_limit_window_truncated_by_corroborated_sibling_grant(self):
+        """Same incident, harder shape: the weekly meter shows only a
+        DECREASE (9 -> 1, usage resumed inside the poll gap) while a
+        sibling scoped bucket cleared detection outright — the sibling
+        event corroborates the account-level reset for the weekly
+        window."""
+        now = time.time()
+        sd_resets = now + 5 * 86400
+        self._seed_oauth(sd_resets, now + 2 * 3600,
+                         scoped={"fable": sd_resets})
+        grant_t = now - 3600
+        for t, pct in ((grant_t - 600, 90.0), (grant_t, 0.0),
+                       (grant_t + 600, 1.0)):
+            _ins_reading(self.conn, "scoped:fable", t, pct, sd_resets)
+        for t, pct in ((grant_t - 600, 9.0), (grant_t, 1.0),
+                       (grant_t + 600, 1.0)):
+            _ins_reading(self.conn, "seven_day", t, pct, sd_resets)
+        _ins_event(self.conn, "c1", "rc1", grant_t - 7200, inp=1_000_000)
+        _ins_event(self.conn, "c2", "rc2", now - 60, inp=1_000_000)
+        lw = self._oauth()["limit_window"]
+        self.assertEqual(lw["start_epoch"], (grant_t // 60) * 60.0)
+        self.assertAlmostEqual(lw["cost"], 5.0, places=2)
+
     # ── failure isolation ───────────────────────────────────────────────
 
     def test_window_cost_failure_drops_only_dollar_fields(self):

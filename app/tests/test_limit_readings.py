@@ -280,6 +280,51 @@ class DetectResetsTest(unittest.TestCase):
         self.assertEqual(detect_resets([]), [])
         self.assertEqual(detect_resets([_row(T0, 63.0, T0 + 3600)]), [])
 
+    # ── drop-to-zero rule (2026-07-09 incident: account-wide grant zeroed
+    #    a bucket sitting at 9% — below RESET_DROP_PTS, invisible to the
+    #    magnitude rule) ──────────────────────────────────────────────────
+
+    def test_low_util_drop_to_zero_mid_window_is_a_reset(self):
+        """Utilization is a monotonic meter within a window: 9 -> 0 while
+        the window is still active (anchor past BOTH poll times) can only
+        be a grant, no matter how small the drop."""
+        from app.limit_readings import detect_resets
+        anchor = T0 + 5 * 86400
+        rows = [_row(T0, 9.0, anchor),
+                _row(T0 + POLL, 0.0, anchor)]
+        events = detect_resets(rows)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["at_epoch"], T0 + POLL)
+        self.assertEqual(events[0]["utilization_before"], 9.0)
+        self.assertEqual(events[0]["utilization_after"], 0.0)
+
+    def test_drop_to_zero_after_expiry_is_not_a_reset(self):
+        """Anchor passed BETWEEN the two polls (stale anchor not yet
+        refreshed): the meter returning to 0 is natural expiry — the
+        zero rule requires the window still active at the LATER poll."""
+        from app.limit_readings import detect_resets
+        anchor = T0 + 300  # after prev poll, before cur poll
+        rows = [_row(T0, 9.0, anchor),
+                _row(T0 + POLL, 0.0, anchor)]
+        self.assertEqual(detect_resets(rows), [])
+
+    def test_small_drop_not_to_zero_is_not_a_reset(self):
+        """9 -> 5 mid-window: under RESET_DROP_PTS and not a wipe — stays
+        invisible to per-bucket detection (cross-bucket corroboration can
+        still catch it at the window-anchor layer)."""
+        from app.limit_readings import detect_resets
+        anchor = T0 + 5 * 86400
+        rows = [_row(T0, 9.0, anchor),
+                _row(T0 + POLL, 5.0, anchor)]
+        self.assertEqual(detect_resets(rows), [])
+
+    def test_zero_to_zero_is_not_a_reset(self):
+        from app.limit_readings import detect_resets
+        anchor = T0 + 5 * 86400
+        rows = [_row(T0, 0.0, anchor),
+                _row(T0 + POLL, 0.0, anchor)]
+        self.assertEqual(detect_resets(rows), [])
+
 
 # ---------------------------------------------------------------------------
 # persistent_resets — stale-replay filter over detect_resets (review M1)
@@ -314,6 +359,139 @@ class PersistentResetsTest(unittest.TestCase):
         rows = self._rows([(1000.0, 55.0), (1600.0, 40.0)],
                           anchor=900000.0)
         self.assertEqual(len(persistent_resets(rows)), 1)
+
+    # ── proportional recovery test (2026-07-09 incident: the old
+    #    "within RESET_DROP_PTS of before" rule is vacuously true whenever
+    #    utilization_before < 10, so low-utilization grants could NEVER
+    #    survive the filter) ──────────────────────────────────────────────
+
+    def test_low_util_real_grant_kept(self):
+        """9 -> 0 with the meter staying near zero afterwards: a real
+        account-level grant observed at low utilization must survive."""
+        from app.limit_readings import detect_resets, persistent_resets
+        rows = self._rows([(1000.0, 9.0), (1600.0, 0.0), (2200.0, 1.0)],
+                          anchor=900000.0)
+        self.assertEqual(len(detect_resets(rows)), 1)
+        self.assertEqual(len(persistent_resets(rows)), 1)
+
+    def test_low_util_stale_replay_dropped(self):
+        """9 -> 0 -> 9: the meter snapping back to its pre-event level is
+        the replay fingerprint (a real grant restarts near zero)."""
+        from app.limit_readings import detect_resets, persistent_resets
+        rows = self._rows([(1000.0, 9.0), (1600.0, 0.0), (2200.0, 9.0)],
+                          anchor=900000.0)
+        self.assertEqual(len(detect_resets(rows)), 1)
+        self.assertEqual(persistent_resets(rows), [])
+
+    def test_recovery_threshold_is_proportional(self):
+        """Recovery is judged against a FRACTION of the pre-event level,
+        not a fixed point offset: 80 -> 0 recovering to 70 (87.5%) is a
+        replay; recovering only to 50 (62.5%) is a kept grant."""
+        from app.limit_readings import persistent_resets
+        replay = self._rows([(1000.0, 80.0), (1600.0, 0.0), (2200.0, 70.0)],
+                            anchor=900000.0)
+        self.assertEqual(persistent_resets(replay), [])
+        grant = self._rows([(1000.0, 80.0), (1600.0, 0.0), (2200.0, 50.0)],
+                           anchor=900000.0)
+        self.assertEqual(len(persistent_resets(grant)), 1)
+
+
+# ---------------------------------------------------------------------------
+# corroborated_resets — cross-bucket account-level reset corroboration
+# ---------------------------------------------------------------------------
+
+CT0 = 1751000400.0  # minute-aligned base for corroboration fixtures
+
+
+class CorroboratedResetsTest(TempDBTestCase):
+    """An account-wide grant zeroes every bucket in the same poll; a bucket
+    whose own decrease is too small for detect_resets (e.g. 9 -> 1 with
+    usage resuming inside the poll gap) borrows the event from a sibling
+    that DID clear detection."""
+
+    def _ins(self, bucket, fetched, pct, resets_epoch):
+        self.conn.execute(
+            "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+            "utilization, resets_at, resets_at_epoch) "
+            "VALUES(?, 'server', ?, ?, NULL, ?)",
+            (fetched, bucket, pct, resets_epoch))
+        self.conn.commit()
+
+    def _seed_sibling_grant(self, at=CT0 + 1200):
+        """scoped:fable 90 -> 0 mid-window at `at` — a persistent reset."""
+        anchor = CT0 + 5 * 86400
+        self._ins("scoped:fable", at - 600, 90.0, anchor)
+        self._ins("scoped:fable", at, 0.0, anchor)
+        self._ins("scoped:fable", at + 600, 1.0, anchor)
+
+    def test_sibling_grant_corroborates_own_small_decrease(self):
+        from app.limit_readings import corroborated_resets
+        anchor = CT0 + 5 * 86400
+        self._seed_sibling_grant()
+        # Own bucket: 9 -> 1 straddling the sibling event — a decrease the
+        # per-bucket rules can't see (not >=10pts, not to zero).
+        self._ins("seven_day", CT0 + 600, 9.0, anchor)
+        self._ins("seven_day", CT0 + 1200, 1.0, anchor)
+        self._ins("seven_day", CT0 + 1800, 1.0, anchor)
+        events = corroborated_resets(self.conn, "seven_day", CT0)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["at_epoch"], CT0 + 1200)
+        self.assertEqual(events[0]["bucket"], "seven_day")
+        self.assertEqual(events[0]["corroborated_by"], "scoped:fable")
+
+    def test_no_own_decrease_no_corroborated_event(self):
+        from app.limit_readings import corroborated_resets
+        anchor = CT0 + 5 * 86400
+        self._seed_sibling_grant()
+        self._ins("seven_day", CT0 + 600, 9.0, anchor)
+        self._ins("seven_day", CT0 + 1200, 9.0, anchor)  # flat
+        self.assertEqual(
+            corroborated_resets(self.conn, "seven_day", CT0), [])
+
+    def test_sibling_natural_expiry_does_not_corroborate(self):
+        """A sibling event observed AFTER its own window's scheduled end
+        (resets_at_epoch_before <= at_epoch) is an expiry rollover, not an
+        account grant — it must not cut other buckets' windows."""
+        from app.limit_readings import corroborated_resets
+        anchor = CT0 + 5 * 86400
+        # five_hour window expires at CT0+900, between its two polls: the
+        # 39 -> 0 pair clears detect_resets' magnitude rule but is natural.
+        self._ins("five_hour", CT0 + 600, 39.0, CT0 + 900)
+        self._ins("five_hour", CT0 + 1200, 0.0, CT0 + 900 + 5 * 3600)
+        self._ins("five_hour", CT0 + 1800, 0.0, CT0 + 900 + 5 * 3600)
+        # Own bucket shows a 1-pt down-wobble straddling the same moment.
+        self._ins("seven_day", CT0 + 600, 9.0, anchor)
+        self._ins("seven_day", CT0 + 1200, 8.0, anchor)
+        self.assertEqual(
+            corroborated_resets(self.conn, "seven_day", CT0), [])
+
+    def test_own_persistent_event_not_duplicated(self):
+        """When the bucket's own detection already fired for the same
+        real-world reset, the sibling event adds nothing."""
+        from app.limit_readings import corroborated_resets
+        anchor = CT0 + 5 * 86400
+        self._seed_sibling_grant()
+        self._ins("seven_day", CT0 + 600, 9.0, anchor)
+        self._ins("seven_day", CT0 + 1200, 0.0, anchor)  # own zero-drop
+        self._ins("seven_day", CT0 + 1800, 0.0, anchor)
+        events = corroborated_resets(self.conn, "seven_day", CT0)
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("corroborated_by", events[0])
+
+    def test_own_events_sorted_and_shape_matches_detect(self):
+        """corroborated_resets with no siblings degrades to
+        persistent_resets: same events, same dict shape."""
+        from app.limit_readings import corroborated_resets, persistent_resets
+        anchor = CT0 + 5 * 86400
+        self._ins("seven_day", CT0 + 600, 55.0, anchor)
+        self._ins("seven_day", CT0 + 1200, 3.0, anchor)
+        self._ins("seven_day", CT0 + 1800, 4.0, anchor)
+        rows = self.conn.execute(
+            "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
+            "FROM limit_readings WHERE bucket='seven_day' "
+            "ORDER BY fetched_epoch ASC").fetchall()
+        self.assertEqual(corroborated_resets(self.conn, "seven_day", CT0),
+                         persistent_resets(rows))
 
 
 # ---------------------------------------------------------------------------
