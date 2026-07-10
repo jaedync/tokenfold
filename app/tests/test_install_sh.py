@@ -6,6 +6,7 @@ route is unauthenticated. These tests pin that contract (no auth, no key leak),
 the request-time URL baking, and the fail-loud 503 on a broken image.
 """
 
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from unittest.mock import patch
 import app.config
 import app.install
 from app.tests._support import TempDBTestCase
+
+ROOT = Path(__file__).resolve().parents[2]  # app/tests/ -> repo root
 
 
 class InstallScriptTest(TempDBTestCase):
@@ -79,6 +82,73 @@ class InstallScriptTest(TempDBTestCase):
             with self.client() as c:
                 r = c.get("/install.sh")
         self.assertEqual(r.status_code, 503)
+
+
+class WatchModePlistTest(unittest.TestCase):
+    """Part C: the opt-in launchd watch-mode template + installer wiring.
+
+    Source-level contract (mirrors test_hook_scripts.py): the plist has the
+    agreed Label / ProgramArguments / KeepAlive / RunAtLoad / log paths and
+    obvious substitution placeholders, and the installer grows a --watch mode
+    that path-substitutes and launchctl bootstraps it, macOS-only, without
+    changing default (no-flag) behavior."""
+
+    @classmethod
+    def setUpClass(cls):
+        base = ROOT / "client"
+        cls.plist = (base / "com.jaedynchilton.tokenfold-watch.plist").read_text()
+        cls.installer_path = base / "install-tokenfold-hook.sh"
+        cls.installer = cls.installer_path.read_text()
+
+    # ── plist template ──
+    def test_plist_label(self):
+        self.assertIn("<string>com.jaedynchilton.tokenfold-watch</string>", self.plist)
+
+    def test_plist_program_arguments(self):
+        self.assertIn("<string>/usr/bin/python3</string>", self.plist)
+        self.assertIn("tokenfold-push.py", self.plist)
+        self.assertIn("<string>--watch</string>", self.plist)
+
+    def test_plist_keepalive_and_runatload(self):
+        self.assertIn("<key>KeepAlive</key>", self.plist)
+        self.assertIn("<key>RunAtLoad</key>", self.plist)
+
+    def test_plist_logs_to_push_log(self):
+        self.assertIn(".tokenfold-push.log", self.plist)
+        self.assertIn("<key>StandardOutPath</key>", self.plist)
+        self.assertIn("<key>StandardErrorPath</key>", self.plist)
+
+    def test_plist_uses_substitution_placeholders(self):
+        # An obvious token the installer substitutes (mirrors bootstrap.sh's
+        # __TOKENFOLD_URL__ convention).
+        self.assertIn("__TOKENFOLD_HOOKS_DIR__", self.plist)
+        self.assertIn("__HOME__", self.plist)
+
+    # ── installer wiring ──
+    def test_installer_is_valid_bash(self):
+        r = subprocess.run(["bash", "-n", str(self.installer_path)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_installer_has_watch_flag(self):
+        self.assertIn("--watch", self.installer)
+
+    def test_installer_references_plist_and_launchagents(self):
+        self.assertIn("com.jaedynchilton.tokenfold-watch.plist", self.installer)
+        self.assertIn("LaunchAgents", self.installer)
+
+    def test_installer_substitutes_both_placeholders(self):
+        self.assertIn("__TOKENFOLD_HOOKS_DIR__", self.installer)
+        self.assertIn("__HOME__", self.installer)
+
+    def test_installer_bootstraps_with_bootout_first(self):
+        # bootout before bootstrap so a re-run is idempotent, tolerant of "not loaded".
+        self.assertIn("launchctl bootstrap", self.installer)
+        self.assertIn("launchctl bootout", self.installer)
+
+    def test_installer_watch_is_macos_only(self):
+        # Non-macOS must print a clear message and exit nonzero.
+        self.assertIn("Darwin", self.installer)
 
 
 if __name__ == "__main__":

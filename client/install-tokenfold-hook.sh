@@ -27,6 +27,8 @@
 #   --no-push        Install + verify auth, but do NOT fire a real push
 #   --cleanup-only   Only retire the legacy launchd/cron reporter, then exit
 #   --keep-legacy    Do NOT touch any pre-existing launchd/cron reporter
+#   --watch          Also install the resident watcher LaunchAgent (macOS-only):
+#                    events land within ~1s instead of on the next hook fire
 #   -h | --help      Show this help
 #
 # This hook REPLACES the old periodic reporter (a claude-stats-push launchd
@@ -50,6 +52,11 @@ VERIFY_ONLY=0
 DO_PUSH=1
 CLEANUP_ONLY=0
 KEEP_LEGACY=0
+INSTALL_WATCH=0
+
+WATCH_PLIST_SRC="$SCRIPT_DIR/com.jaedynchilton.tokenfold-watch.plist"
+WATCH_LABEL="com.jaedynchilton.tokenfold-watch"
+LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 
 log()  { printf '  %s\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -64,7 +71,8 @@ while [ $# -gt 0 ]; do
     --no-push)     DO_PUSH=0; shift ;;
     --cleanup-only) CLEANUP_ONLY=1; shift ;;
     --keep-legacy) KEEP_LEGACY=1; shift ;;
-    -h|--help)     sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --watch)       INSTALL_WATCH=1; shift ;;
+    -h|--help)     sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)             die "unknown argument: $1 (use --help)" ;;
   esac
 done
@@ -150,6 +158,46 @@ if [ "$CLEANUP_ONLY" -eq 1 ]; then
   cleanup_legacy
   echo; ok "cleanup complete."
   exit 0
+fi
+
+# ── Opt-in resident watcher (macOS launchd) ───────────────────────────────────
+# Installs the --watch daemon as a LaunchAgent: events land within ~1s instead
+# of waiting for the next hook fire. The daemon takes a single-instance flock,
+# so the existing Stop/SessionEnd/PostToolUse hooks keep firing harmlessly
+# (they just skip while the daemon holds the lock). macOS-only for now.
+install_watch_agent() {
+  if [ "$(uname -s)" != "Darwin" ]; then
+    die "watch-mode install is macOS-only for now (launchd). This host is $(uname -s); the hooks alone still report usage."
+  fi
+  [ -f "$WATCH_PLIST_SRC" ] || die "missing $WATCH_PLIST_SRC (run from a tokenfold checkout's client/ dir)"
+  command -v launchctl >/dev/null 2>&1 || die "launchctl not found — cannot install the watch agent"
+
+  mkdir -p "$LAUNCH_AGENTS"
+  local dest="$LAUNCH_AGENTS/$WATCH_LABEL.plist"
+
+  # Path-substitute the placeholders (mirrors bootstrap.sh's __TOKENFOLD_URL__).
+  # sed with '|' delimiters so the HOME/hooks paths (which contain '/') are safe.
+  sed -e "s|__TOKENFOLD_HOOKS_DIR__|$HOOKS_DIR|g" \
+      -e "s|__HOME__|$HOME|g" \
+      "$WATCH_PLIST_SRC" > "$dest" || die "could not write $dest"
+
+  # Idempotent (re)load: bootout first (tolerant of "not loaded"), then bootstrap.
+  local domain="gui/$(id -u)"
+  launchctl bootout "$domain/$WATCH_LABEL" 2>/dev/null || true
+  if launchctl bootstrap "$domain" "$dest" 2>/dev/null; then
+    ok "resident watcher installed + loaded ($WATCH_LABEL)"
+  else
+    # Fall back to the legacy verb on older macOS where bootstrap is unavailable.
+    launchctl unload "$dest" 2>/dev/null || true
+    launchctl load "$dest" 2>/dev/null \
+      && ok "resident watcher installed + loaded ($WATCH_LABEL, legacy load)" \
+      || die "launchctl could not bootstrap $dest"
+  fi
+  echo "  logs: ~/.tokenfold-push.log"
+}
+
+if [ "$INSTALL_WATCH" -eq 1 ] && [ "$VERIFY_ONLY" -eq 1 ]; then
+  die "--watch and --verify-only are mutually exclusive"
 fi
 
 # ── Install phase ─────────────────────────────────────────────────────────────
@@ -267,6 +315,13 @@ PY
     cleanup_legacy
   else
     warn "--keep-legacy: NOT touching any existing launchd/cron reporter (two reporters may run)"
+  fi
+
+  # 5. Opt-in resident watcher (macOS launchd). The push script it runs was just
+  #    installed to $HOOKS_DIR/tokenfold-push.py above.
+  if [ "$INSTALL_WATCH" -eq 1 ]; then
+    echo "installing resident watcher (--watch)…"
+    install_watch_agent
   fi
 fi
 

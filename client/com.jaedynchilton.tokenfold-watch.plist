@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Resident tokenfold watcher (LaunchAgent). Installed opt-in by
+  install-tokenfold-hook.sh --watch, which substitutes __TOKENFOLD_HOOKS_DIR__
+  with the real hooks dir (~/.claude/usage-telemetry) and __HOME__ with $HOME.
+
+  KeepAlive relaunches on crash; RunAtLoad starts it at login. The daemon takes
+  a single-instance flock, so a stray hook-fired one-shot push simply skips
+  while this is running (the daemon picks up its events within ~1s).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jaedynchilton.tokenfold-watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__TOKENFOLD_HOOKS_DIR__/tokenfold-push.py</string>
+        <string>--watch</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.tokenfold-push.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.tokenfold-push.log</string>
+</dict>
+</plist>
