@@ -228,5 +228,110 @@ class UsageGatingTest(_TmpHome):
         self.assertTrue(callable(MOD._usage_fetch_too_soon))
 
 
+# ── Case 7: config-file fallback (URL + API key) ─────────────────────────────
+
+class ConfigFallbackTest(unittest.TestCase):
+    """The launchd watch daemon gets no env, so the client must fall back to the
+    same ~/.config files the hook wrapper reads. These tests patch the module's
+    path constants at a temp dir — no network, no real secrets."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.url_file = self.tmp / "notify-relay-url"
+        self.key_file = self.tmp / "tokenfold-api-key"
+        self.notify_token_file = self.tmp / "notify-relay-token"
+        self._patches = [
+            mock.patch.object(MOD, "URL_FILE", self.url_file),
+            mock.patch.object(MOD, "API_KEY_FILE", self.key_file),
+            mock.patch.object(MOD, "NOTIFY_TOKEN_FILE", self.notify_token_file),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_env_wins_over_file(self):
+        self.url_file.write_text("https://from-file.example")
+        with mock.patch.dict(os.environ, {"TOKENFOLD_URL": "https://from-env.example"}):
+            self.assertEqual(MOD._resolve_url(), "https://from-env.example")
+
+    def test_legacy_env_wins_over_file(self):
+        self.url_file.write_text("https://from-file.example")
+        with mock.patch.dict(os.environ, {"CLAUDE_STATS_URL": "https://legacy-env.example"},
+                             clear=False):
+            os.environ.pop("TOKENFOLD_URL", None)
+            self.assertEqual(MOD._resolve_url(), "https://legacy-env.example")
+
+    def test_url_file_fallback_used_when_env_absent(self):
+        self.url_file.write_text("https://from-file.example")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_URL", None)
+            os.environ.pop("CLAUDE_STATS_URL", None)
+            self.assertEqual(MOD._resolve_url(), "https://from-file.example")
+
+    def test_missing_url_file_yields_empty(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_URL", None)
+            os.environ.pop("CLAUDE_STATS_URL", None)
+            self.assertEqual(MOD._resolve_url(), "")
+
+    def test_url_whitespace_stripped(self):
+        self.url_file.write_text("  https://from-file.example\n")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_URL", None)
+            os.environ.pop("CLAUDE_STATS_URL", None)
+            self.assertEqual(MOD._resolve_url(), "https://from-file.example")
+
+    def test_key_env_wins_over_file(self):
+        self.key_file.write_text("file-key")
+        with mock.patch.dict(os.environ, {"TOKENFOLD_API_KEY": "env-key"}):
+            self.assertEqual(MOD._resolve_api_key(), "env-key")
+
+    def test_key_file_fallback_used_when_env_absent(self):
+        self.key_file.write_text("file-key")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "file-key")
+
+    def test_key_file_precedence_tokenfold_beats_notify_relay(self):
+        # Both files present: the dedicated ingest token must win.
+        self.key_file.write_text("ingest-token")
+        self.notify_token_file.write_text("notify-token")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "ingest-token")
+
+    def test_key_falls_through_to_notify_relay_when_dedicated_absent(self):
+        self.notify_token_file.write_text("notify-token")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "notify-token")
+
+    def test_missing_key_files_yield_empty(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "")
+
+    def test_key_whitespace_stripped(self):
+        self.key_file.write_text("\tfile-key\n")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "file-key")
+
+    def test_empty_key_file_falls_through(self):
+        # An empty/whitespace-only dedicated file must not shadow the notify token.
+        self.key_file.write_text("   \n")
+        self.notify_token_file.write_text("notify-token")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TOKENFOLD_API_KEY", None)
+            os.environ.pop("CLAUDE_STATS_API_KEY", None)
+            self.assertEqual(MOD._resolve_api_key(), "notify-token")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,8 +25,51 @@ except ImportError:  # pragma: no cover - Windows only
     fcntl = None
 
 # ── Config ──
-SERVER_URL = os.environ.get("TOKENFOLD_URL", os.environ.get("CLAUDE_STATS_URL", ""))
-API_KEY = os.environ.get("TOKENFOLD_API_KEY", os.environ.get("CLAUDE_STATS_API_KEY", ""))
+# Config-file fallbacks, mirroring the hook wrapper (tokenfold-usage-push.sh).
+# The launchd watch daemon is launched by launchd with NO environment, so an
+# env-only resolve exits 1 and KeepAlive crash-loops it. These files are the
+# same ones the hook wrapper reads, so the daemon and hook paths agree.
+URL_FILE = Path.home() / ".config" / "notify-relay-url"
+API_KEY_FILE = Path.home() / ".config" / "tokenfold-api-key"      # dedicated ingest token (preferred)
+NOTIFY_TOKEN_FILE = Path.home() / ".config" / "notify-relay-token"  # back-compat fallback
+
+
+def _read_config_file(path: Path) -> str:
+    """Return the whitespace-stripped contents of `path`, or "" if it is
+    missing, unreadable, or empty. Never raises — callers fall through to the
+    next source on any failure. NEVER logs the value (may be a secret)."""
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _resolve_url() -> str:
+    """URL: env TOKENFOLD_URL -> env CLAUDE_STATS_URL -> ~/.config/notify-relay-url -> ""."""
+    return (
+        os.environ.get("TOKENFOLD_URL")
+        or os.environ.get("CLAUDE_STATS_URL")
+        or _read_config_file(URL_FILE)
+    )
+
+
+def _resolve_api_key() -> str:
+    """API key: env TOKENFOLD_API_KEY -> env CLAUDE_STATS_API_KEY
+    -> ~/.config/tokenfold-api-key -> ~/.config/notify-relay-token -> "".
+    NEVER log/print the returned value."""
+    return (
+        os.environ.get("TOKENFOLD_API_KEY")
+        or os.environ.get("CLAUDE_STATS_API_KEY")
+        or _read_config_file(API_KEY_FILE)
+        or _read_config_file(NOTIFY_TOKEN_FILE)
+    )
+
+
+# Resolved at module import (unchanged lifecycle): main()'s sys.exit(1) guards
+# and the push functions all read these globals, so keeping resolution here
+# preserves existing behavior. The file fallbacks only fire when env is absent.
+SERVER_URL = _resolve_url()
+API_KEY = _resolve_api_key()
 MACHINE_NAME = os.environ.get("TOKENFOLD_MACHINE", os.environ.get("CLAUDE_STATS_MACHINE", socket.gethostname()))
 CURSOR_FILE = Path(os.environ.get(
     "TOKENFOLD_CURSOR",
