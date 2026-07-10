@@ -208,30 +208,66 @@ def trigger_eager_rebuild():
     Invalidation (version bump + cache clear) happens UNCONDITIONALLY — even
     when a rebuild is already in flight. The original early-return made a
     write that raced an ingest rebuild invisible until the next unrelated
-    invalidation. The generation counter makes a completing rebuild discard
-    its result if another invalidation landed while it was building, so it
-    can never write pre-invalidation data back into the cache.
+    invalidation.
+
+    The worker runs a DRAIN LOOP rather than a single build: after each build
+    it checks, under the lock, whether the generation still matches the one it
+    started with. If so, it stores the result and exits; if a newer invalidation
+    landed while it was building, it adopts that generation and builds again.
+    This coalesces any number of mid-build invalidations into exactly one
+    follow-up build (not N), never drops the last one, and — because only the
+    first invalidation to find no worker running spawns a thread — keeps at most
+    one worker alive regardless of ingest cadence. Under ~1s realtime ingest a
+    single early-return would have left the cache cold almost permanently; the
+    loop guarantees the cache converges on data built from the final generation.
     """
     global _rebuilding, _cache_gen
     with _cache_lock:
         _cache_gen += 1
-        gen = _cache_gen
         _cache_version_bump()
         _cached_data.clear()  # invalidate all scopes immediately
         if _rebuilding:
-            return  # in-flight rebuild's result will fail the gen check
+            return  # the running worker's drain loop will pick up this gen
         _rebuilding = True
+        gen = _cache_gen
 
     def _rebuild():
-        global _rebuilding
+        global _rebuilding, _cache_gen
+        current_gen = gen
+        cleared = False
         try:
-            data = _build_dashboard_data_inner(DEFAULT_SCOPE)
-            with _cache_lock:
-                if _cache_gen == gen:  # stale if invalidated again meanwhile
-                    _cached_data[DEFAULT_SCOPE] = data
+            while True:
+                # Build outside the lock so readers aren't blocked. A transient
+                # build error (e.g. DB hiccup) is swallowed below rather than
+                # crashing the worker; the finally still clears _rebuilding so a
+                # later invalidation can retry — matching the sweep timers'
+                # "don't die on transient errors" stance.
+                try:
+                    data = _build_dashboard_data_inner(DEFAULT_SCOPE)
+                except Exception:
+                    return  # finally clears the flag
+                # Storing the result and clearing _rebuilding must be atomic
+                # under ONE lock hold: an invalidation slipping in between the
+                # two would see _rebuilding=True, early-return, then be stranded
+                # when we clear the flag — its generation never serviced.
+                with _cache_lock:
+                    if _cache_gen == current_gen:
+                        # No invalidation landed while building — store the
+                        # result, release the worker slot, and stop.
+                        _cached_data[DEFAULT_SCOPE] = data
+                        _rebuilding = False
+                        cleared = True
+                        return
+                    # A newer invalidation arrived mid-build; drain it with one
+                    # more build rather than writing this now-stale result. Stay
+                    # _rebuilding so no second worker spawns.
+                    current_gen = _cache_gen
         finally:
-            with _cache_lock:
-                _rebuilding = False
+            # Guarantees the flag is cleared on ANY abnormal exit (build raised,
+            # including non-Exception BaseExceptions) — never leave it stuck True.
+            if not cleared:
+                with _cache_lock:
+                    _rebuilding = False
 
     threading.Thread(target=_rebuild, daemon=True).start()
 
