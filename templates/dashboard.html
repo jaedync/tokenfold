@@ -6143,12 +6143,22 @@ renderBillingMeter();
   }
 })();
 
-/* ---- Auto-Refresh Polling ---- */
+/* ---- Auto-Refresh: SSE live stream, version poll as fallback ---- */
+// The server-sent event stream (/api/stats/stream) is the PRIMARY update
+// signal — it pushes a {version} the instant an ingest bumps the cache, so
+// the dashboard repaints within ~300ms instead of waiting up to 30s. The
+// version poll below is demoted to a FALLBACK: it runs only when SSE is
+// unavailable (no EventSource support, proxy strips streaming, endpoint 500).
+// Either path funnels through fetchAndApply(), the single render entry point,
+// so there is exactly one repaint code path regardless of trigger.
 (function(){
   let knownVersion = D.version || 0;
   let isFetching = false;
   let pollTimer = null;
   const POLL_INTERVAL = 30000;
+  let stream = null;
+  let streamRetryTimer = null;
+  const STREAM_RETRY_MS = 60000;
 
   function showRefreshIndicator(text){
     const el=document.getElementById('refreshIndicator');
@@ -6213,12 +6223,48 @@ renderBillingMeter();
     if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
   }
 
+  function startStream(){
+    // Any pending reconnect is now superseded — this call re-establishes.
+    if(streamRetryTimer){clearTimeout(streamRetryTimer);streamRetryTimer=null;}
+    // No EventSource (old browser / disabled) → run purely on the poll.
+    if(typeof EventSource === 'undefined'){startPolling();return;}
+    stopStream();
+    stream=new EventSource('/api/stats/stream');
+    stream.onopen=function(){
+      // Stream is live and will drive updates; the poll would double-drive.
+      stopPolling();
+    };
+    stream.onmessage=function(e){
+      // Keepalive comments never reach onmessage, but guard the parse anyway:
+      // a malformed payload must be ignored, never throw and kill the handler.
+      try{
+        var v=JSON.parse(e.data).version;
+        if(v!==knownVersion)fetchAndApply();
+      }catch(err){/* ignore malformed frame */}
+    };
+    stream.onerror=function(){
+      // Stream dropped (network blip, proxy timeout, endpoint down). Fall back
+      // to polling immediately so updates keep flowing, and schedule a SINGLE
+      // reconnect. stopStream() clears any prior timer, so repeated onerror
+      // can't stack timers or leak EventSource instances.
+      stopStream();
+      startPolling();
+      streamRetryTimer=setTimeout(startStream, STREAM_RETRY_MS);
+    };
+  }
+  function stopStream(){
+    if(stream){stream.close();stream=null;}
+    if(streamRetryTimer){clearTimeout(streamRetryTimer);streamRetryTimer=null;}
+  }
+
   document.addEventListener('visibilitychange',function(){
-    if(document.hidden){stopPolling();}
-    else{checkForUpdate();startPolling();}
+    if(document.hidden){stopStream();stopPolling();}
+    else{checkForUpdate();startStream();}
   });
 
-  startPolling();
+  // Prefer the live stream; startStream() falls back to startPolling() itself
+  // when EventSource is unavailable, and onerror falls back at runtime.
+  startStream();
 })();
 
 /* ---- Responsive: re-render charts on breakpoint cross + reflow all on resize ---- */

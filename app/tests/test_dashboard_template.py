@@ -837,6 +837,39 @@ class MarkerLabelOverlapTest(unittest.TestCase):
                      ".rate-gauge-dayline-label", ".rate-gauge-chart-btn"):
             self.assertIn(cls_, sel)
 
+    # ── EventSource live refresh, poll as fallback (Task 3) ───────────────
+    def test_eventsource_stream_is_primary(self):
+        """SSE drives live updates; endpoint is the same-origin stream."""
+        self.assertIn("new EventSource('/api/stats/stream')", self.tpl)
+        self.assertIn("function startStream()", self.tpl)
+
+    def test_eventsource_capability_guard(self):
+        """No EventSource support falls back to polling, never throws."""
+        self.assertIn("typeof EventSource === 'undefined'", self.tpl)
+
+    def test_stop_stream_closes_and_clears_retry_timer(self):
+        """stopStream must release both the instance and the reconnect timer
+        so repeated onerror can't stack timers or leak connections."""
+        self.assertIn("function stopStream()", self.tpl)
+        self.assertIn("const STREAM_RETRY_MS = 60000", self.tpl)
+        idx = self.tpl.index("function stopStream()")
+        block = self.tpl[idx:idx + 400]
+        self.assertIn(".close()", block)
+        self.assertIn("clearTimeout", block)
+
+    def test_visibilitychange_wires_stream(self):
+        """Tab hide/show must manage the stream, not just the poll."""
+        self.assertIn("stopStream()", self.tpl)
+        idx = self.tpl.index("visibilitychange")
+        block = self.tpl[idx:idx + 400]
+        self.assertIn("stopStream", block)
+        self.assertIn("startStream", block)
+
+    def test_polling_retained_as_fallback(self):
+        """The 30s version poll must remain as the SSE fallback."""
+        self.assertIn("function startPolling()", self.tpl)
+        self.assertIn("const POLL_INTERVAL = 30000", self.tpl)
+
 
 if __name__ == "__main__":
     unittest.main()
