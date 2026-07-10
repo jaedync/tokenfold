@@ -6172,7 +6172,10 @@ renderBillingMeter();
   }
 
   function fetchAndApply(){
-    if(isFetching)return;
+    // Don't refetch/repaint a hidden tab — an SSE frame can still arrive in the
+    // gap before the hide handler's stopStream() lands (onmessage has no guard
+    // of its own, unlike checkForUpdate). On show, checkForUpdate() repaints.
+    if(isFetching||document.hidden)return;
     isFetching=true;
     // Pin the refetch to THIS page's scope. A bare /api/stats falls back to the
     // server's default scope and would repaint an enterprise view with personal

@@ -870,6 +870,16 @@ class MarkerLabelOverlapTest(unittest.TestCase):
         self.assertIn("function startPolling()", self.tpl)
         self.assertIn("const POLL_INTERVAL = 30000", self.tpl)
 
+    def test_fetch_and_apply_guards_hidden_tab(self):
+        """fetchAndApply must bail on a hidden tab like checkForUpdate does —
+        the SSE onmessage handler calls it without a document.hidden guard
+        (latent today: hidden → stopStream, but a race could still fire it)."""
+        start = self.tpl.index("function fetchAndApply(")
+        end = self.tpl.index("function checkForUpdate(")
+        block = self.tpl[start:end]
+        self.assertIn("document.hidden", block,
+                      "fetchAndApply must guard against a hidden tab")
+
 
 if __name__ == "__main__":
     unittest.main()
