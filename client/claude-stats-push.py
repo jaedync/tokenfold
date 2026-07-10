@@ -16,6 +16,14 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+# fcntl is POSIX-only. Windows is not a target, but the module must still
+# IMPORT there (e.g. for the desktop-metadata unit tests on any OS). Guard the
+# import; acquire_singleton_lock() degrades to a no-op lock if it is absent.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None
+
 # ── Config ──
 SERVER_URL = os.environ.get("TOKENFOLD_URL", os.environ.get("CLAUDE_STATS_URL", ""))
 API_KEY = os.environ.get("TOKENFOLD_API_KEY", os.environ.get("CLAUDE_STATS_API_KEY", ""))
@@ -34,6 +42,15 @@ CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 BATCH_SIZE = 2000
 VERBOSE = os.environ.get("TOKENFOLD_VERBOSE", os.environ.get("CLAUDE_STATS_VERBOSE", "0")) == "1"
+
+# ── Watch-mode config ──
+# Single-instance advisory lock. Held for the whole read→push→save-cursors cycle
+# in one-shot mode, and for the entire process lifetime in --watch mode, so a
+# hook-fired one-shot push cannot race the resident daemon on the cursor file.
+LOCK_FILE = Path.home() / ".tokenfold-push.lock"
+HOT_POLL_S = 1.0          # stat the hot set this often (O(hot set), no opens)
+HOT_WINDOW_S = 2 * 3600   # a session file is "hot" if touched within this window
+RESCAN_S = 60             # full find_session_files() glob this often
 
 
 def log(msg):
@@ -531,15 +548,96 @@ def _fetch_and_push_usage():
         err(f"Usage push: {e}")
 
 
-def main():
-    if not SERVER_URL:
-        print("TOKENFOLD_URL not set (e.g. https://your-server.example.com)", file=sys.stderr)
-        sys.exit(1)
-    if not API_KEY:
-        print("TOKENFOLD_API_KEY not set", file=sys.stderr)
-        sys.exit(1)
+# ── Single-instance lock (Part A) ──
 
-    cursors = load_cursors()
+def acquire_singleton_lock():
+    """Try to take the exclusive advisory lock. Returns an open file handle on
+    success (KEEP it alive — closing it releases the lock), or None if another
+    process holds it. On a platform without fcntl (Windows, not a target) the
+    lock degrades to a no-op: we still return a handle so callers proceed.
+
+    Concurrent hook-fired pushes race on the cursor tmp file (observed
+    FileNotFoundError on os.replace); this LOCK_EX|LOCK_NB serializes them."""
+    try:
+        fh = open(LOCK_FILE, "w")
+    except OSError as e:
+        err(f"cannot open lock file {LOCK_FILE}: {e}")
+        return None
+    if fcntl is None:  # pragma: no cover - Windows only
+        return fh
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def release_singleton_lock(fh) -> None:
+    """Release + close the lock handle. Safe to call with None."""
+    if fh is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        fh.close()
+    except OSError:
+        pass
+
+
+# ── Hot-set helpers (Part B) ──
+
+def select_hot_set(files, now=None):
+    """From (project_dir, path) tuples, return the paths whose mtime is within
+    HOT_WINDOW_S of now — the files worth stat-polling every tick. O(n) stats,
+    but only run on a full rescan (every RESCAN_S), never per HOT_POLL_S tick."""
+    if now is None:
+        now = time.time()
+    hot = []
+    for _project_dir, path in files:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime <= HOT_WINDOW_S:
+            hot.append(path)
+    return hot
+
+
+def snapshot_sigs(paths):
+    """Map {str(path): _file_sig(path)} for the hot set — the change baseline."""
+    sigs = {}
+    for p in paths:
+        sig = _file_sig(p)
+        if sig is not None:
+            sigs[str(p)] = sig
+    return sigs
+
+
+def hot_set_changed(paths, prev_sigs) -> bool:
+    """True if any hot file's (mtime_ns, size) signature differs from prev_sigs
+    (or is brand-new). Pure stat() — no file opens, no globbing."""
+    for p in paths:
+        sig = _file_sig(p)
+        if sig is None:
+            continue
+        if prev_sigs.get(str(p)) != sig:
+            return True
+    return False
+
+
+# ── Push cycle (shared by one-shot and watch) ──
+
+def run_push_cycle(cursors: dict) -> dict:
+    """Scan session files, push new events, advance cursors. Returns the
+    (mutated) cursors dict; caller is responsible for save_cursors().
+
+    Pure refactor of the classic one-shot body: identical behavior and log
+    lines. The account read stays inside the cycle so a long-lived --watch
+    process picks up plan/org changes across cycles."""
     account = read_account(Path.home() / ".claude")
     total_accepted = 0
     total_dupes = 0
@@ -626,12 +724,114 @@ def main():
                 write_desktop_cursor(cursors, new_cursor)
                 log(f"desktop: cursor advanced to {new_cursor}")
 
-    save_cursors(cursors)
     if total_accepted or total_dupes:
         log(f"Done: {total_accepted} accepted, {total_dupes} duplicates")
 
-    # Push OAuth usage data (best-effort, failures don't affect event sync)
-    _fetch_and_push_usage()
+    return cursors
+
+
+# ── Watch loop (Part B) ──
+
+def _watch_sleep(seconds: float) -> None:
+    """Indirection so tests can stub the tick sleep (and inject side effects)."""
+    time.sleep(seconds)
+
+
+def watch_loop(max_iterations=None) -> None:
+    """Resident poll loop. Every HOT_POLL_S seconds, stat only the hot set
+    (O(hot set), no opens, no globbing); on a signature change run a push cycle.
+    Every RESCAN_S seconds, do a full glob rescan to discover brand-new session
+    files and refresh the hot set, and always tick the usage fetch (its own 300s
+    stamp keeps the external cadence unchanged).
+
+    Cursor safety: cursors are held IN MEMORY across cycles and saved after each
+    push cycle. A crashed cycle leaves the last-saved cursor on disk (which the
+    server has already ingested, since we only advance a cursor after a
+    successful batch), so cursors never wind forward past un-pushed data. The
+    server dedups by UUID, so a replay of the in-memory tail is harmless.
+
+    max_iterations bounds the loop for tests; None runs forever.
+    """
+    cursors = load_cursors()
+    files = find_session_files()
+    hot = select_hot_set(files)
+    sigs = snapshot_sigs(hot)
+    last_rescan = time.time()
+    iteration = 0
+
+    while max_iterations is None or iteration < max_iterations:
+        iteration += 1
+        try:
+            now = time.time()
+            do_rescan = (now - last_rescan) >= RESCAN_S
+            did_cycle = False
+
+            if do_rescan:
+                last_rescan = now
+                files = find_session_files()
+                hot = select_hot_set(files, now=now)
+                # A fresh glob may reveal new/changed files: compare against the
+                # signatures we last recorded, then push if anything moved.
+                if hot_set_changed(hot, sigs):
+                    cursors = run_push_cycle(cursors)
+                    save_cursors(cursors)
+                    did_cycle = True
+                sigs = snapshot_sigs(hot)
+                # Usage meter freshness during idle: fire at least once per
+                # rescan even when no events moved. Its 300s stamp gate throttles
+                # the actual Anthropic call.
+                _fetch_and_push_usage()
+            elif hot_set_changed(hot, sigs):
+                cursors = run_push_cycle(cursors)
+                save_cursors(cursors)
+                sigs = snapshot_sigs(hot)
+                did_cycle = True
+                _fetch_and_push_usage()
+
+            if did_cycle:
+                log("watch: push cycle complete")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:  # noqa: BLE001 - a transient error must not kill the daemon
+            err(f"watch loop error (continuing): {e}")
+
+        _watch_sleep(HOT_POLL_S)
+
+
+def main():
+    if not SERVER_URL:
+        print("TOKENFOLD_URL not set (e.g. https://your-server.example.com)", file=sys.stderr)
+        sys.exit(1)
+    if not API_KEY:
+        print("TOKENFOLD_API_KEY not set", file=sys.stderr)
+        sys.exit(1)
+
+    watch = "--watch" in sys.argv[1:]
+
+    # Single-instance lock, held for the whole cycle (one-shot) or the whole
+    # process lifetime (watch). A hook-fired push while the daemon runs, or a
+    # second --watch instance, finds the lock held → logs one line and exits 0.
+    lock = acquire_singleton_lock()
+    if lock is None:
+        err("another tokenfold push holds the lock — exiting (holder will pick up new events)")
+        return
+
+    try:
+        if watch:
+            err("watch: resident daemon started")
+            try:
+                watch_loop()
+            except KeyboardInterrupt:
+                err("watch: interrupted, exiting")
+            return
+
+        # One-shot: load cursors from disk, one cycle, save, then usage fetch.
+        cursors = load_cursors()
+        cursors = run_push_cycle(cursors)
+        save_cursors(cursors)
+        _fetch_and_push_usage()
+    finally:
+        release_singleton_lock(lock)
 
 
 if __name__ == "__main__":
