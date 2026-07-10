@@ -36,12 +36,26 @@ class TempDBTestCase(unittest.TestCase):
         self.addCleanup(self._restore)
 
     def _restore(self):
+        # A background rebuild worker (spawned by an ingest in this test) may
+        # still be mid-drain, running _build_dashboard_data_inner on the shared
+        # sqlite connection. close_conn() below would close it out from under
+        # that thread → segfault. Wait the worker out, and clear _warm_scopes so
+        # a following test's worker can't rebuild THIS test's leaked scopes.
+        import app.aggregator as _agg
+        import time as _t
+        _deadline = _t.time() + 5.0
+        while _t.time() < _deadline:
+            with _agg._cache_lock:
+                if not _agg._rebuilding:
+                    break
+            _t.sleep(0.01)
+        with _agg._cache_lock:
+            _agg._warm_scopes.clear()
         self._db.close_conn()
         self._db.DB_PATH = self._saved_db_path
         self._db._conn = self._saved_conn
         self._config.STATS_API_KEY = self._saved_config_key
         # Clear scope cache so this test's data can't leak into subsequent tests
-        import app.aggregator as _agg
         _agg._cached_data.clear()
         try:
             os.unlink(self.db_path)

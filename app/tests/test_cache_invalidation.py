@@ -7,12 +7,19 @@ dashboard served stale data until the NEXT unrelated invalidation. It also
 let a completing rebuild write back data built before a later invalidation.
 """
 
+import io
+import sys
 import threading
 import time
 import unittest
 
 import app.aggregator as agg
+from app.config import DEFAULT_SCOPE
 from app.tests._support import TempDBTestCase
+
+# The scope that is NOT the pre-warmed default — used to exercise scope-aware
+# pre-warming. DEFAULT_SCOPE is 'enterprise' by default, so this is 'personal'.
+_OTHER_SCOPE = "personal" if DEFAULT_SCOPE != "personal" else "enterprise"
 
 
 def _wait_not_rebuilding(timeout=5.0):
@@ -29,6 +36,11 @@ class TriggerEagerRebuildTest(TempDBTestCase):
     def setUp(self):
         super().setUp()
         self.freeze_pricing()
+        # These tests assert per-scope build COUNTS, so pin the worker to a
+        # single scope by clearing any warm scopes leaked from earlier tests
+        # (build_dashboard_data marks the scope it serves).
+        with agg._cache_lock:
+            agg._warm_scopes.clear()
         self._orig_inner = agg._build_dashboard_data_inner
         self.addCleanup(self._restore)
 
@@ -36,6 +48,7 @@ class TriggerEagerRebuildTest(TempDBTestCase):
         agg._build_dashboard_data_inner = self._orig_inner
         with agg._cache_lock:
             agg._rebuilding = False
+            agg._warm_scopes.clear()
         agg._cached_data.clear()
 
     def test_invalidates_even_while_rebuild_in_flight(self):
@@ -89,6 +102,8 @@ class DrainLoopTest(TempDBTestCase):
         _wait_not_rebuilding()
         with agg._cache_lock:
             agg._rebuilding = False
+            # Per-scope build-count assertions require a single warm scope.
+            agg._warm_scopes.clear()
         self._orig_inner = agg._build_dashboard_data_inner
         self.addCleanup(self._restore)
 
@@ -96,6 +111,7 @@ class DrainLoopTest(TempDBTestCase):
         agg._build_dashboard_data_inner = self._orig_inner
         with agg._cache_lock:
             agg._rebuilding = False
+            agg._warm_scopes.clear()
         agg._cached_data.clear()
 
     def test_no_lost_rebuild_and_final_gen_wins(self):
@@ -250,6 +266,150 @@ class DrainLoopTest(TempDBTestCase):
         # 1 initial + 3 mid-build = 4 invalidation calls, each bumps once
         self.assertEqual(agg.get_cache_version(), v0 + 4,
                          "version must bump exactly once per invalidation call")
+
+
+class ScopeAwarePrewarmTest(TempDBTestCase):
+    """The worker must pre-warm every scope requested recently, not only
+    DEFAULT_SCOPE — otherwise a tab on the non-default scope hits a cold cache
+    (synchronous request-thread build) on every ~1s SSE-driven refetch."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        _wait_not_rebuilding()
+        with agg._cache_lock:
+            agg._rebuilding = False
+            agg._warm_scopes.clear()
+        self._orig_inner = agg._build_dashboard_data_inner
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        agg._build_dashboard_data_inner = self._orig_inner
+        with agg._cache_lock:
+            agg._rebuilding = False
+            agg._warm_scopes.clear()
+        agg._cached_data.clear()
+
+    def test_recently_requested_scope_is_prewarmed(self):
+        """A scope requested within the TTL is built by the worker, so after a
+        drain completes its cache slot is warm (no cold request-thread build)."""
+        built = []
+
+        def fake_inner(scope):
+            built.append(scope)
+            return {"scope": scope}
+
+        agg._build_dashboard_data_inner = fake_inner
+        # Mark the other scope as recently requested.
+        agg._mark_scope_requested(_OTHER_SCOPE)
+        agg.trigger_eager_rebuild()
+        self.assertTrue(_wait_not_rebuilding(), "rebuild never finished")
+        self.assertIn(_OTHER_SCOPE, built,
+                      "recently-requested scope must be pre-warmed by the worker")
+        self.assertEqual(agg._cached_data.get(_OTHER_SCOPE), {"scope": _OTHER_SCOPE},
+                         "recently-requested scope's cache slot must be warm")
+        self.assertEqual(agg._cached_data.get(DEFAULT_SCOPE),
+                         {"scope": DEFAULT_SCOPE},
+                         "DEFAULT_SCOPE must always be pre-warmed too")
+
+    def test_stale_scope_is_not_prewarmed(self):
+        """A scope NOT requested within the TTL must not be built by the worker."""
+        built = []
+
+        def fake_inner(scope):
+            built.append(scope)
+            return {"scope": scope}
+
+        agg._build_dashboard_data_inner = fake_inner
+        # Mark, then age the request past the TTL.
+        agg._mark_scope_requested(_OTHER_SCOPE)
+        with agg._cache_lock:
+            agg._warm_scopes[_OTHER_SCOPE] -= (agg.WARM_SCOPE_TTL_S + 1)
+        agg.trigger_eager_rebuild()
+        self.assertTrue(_wait_not_rebuilding(), "rebuild never finished")
+        self.assertNotIn(_OTHER_SCOPE, built,
+                         "a scope past the warm TTL must not be pre-warmed")
+        self.assertIn(DEFAULT_SCOPE, built,
+                      "DEFAULT_SCOPE is always warmed regardless of TTL")
+
+
+class RequestThreadGenCheckTest(TempDBTestCase):
+    """build_dashboard_data's synchronous request-thread build must not clobber
+    the cache with pre-invalidation data when an invalidation lands mid-build."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        _wait_not_rebuilding()
+        with agg._cache_lock:
+            agg._rebuilding = False
+        self._orig_inner = agg._build_dashboard_data_inner
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        agg._build_dashboard_data_inner = self._orig_inner
+        with agg._cache_lock:
+            agg._rebuilding = False
+        agg._cached_data.clear()
+
+    def test_straddling_build_does_not_write_stale_cache(self):
+        """A request-thread build that straddles an invalidation returns its data
+        to the caller but must NOT store it in _cached_data (gen moved)."""
+        def fake_inner(scope):
+            # An invalidation lands WHILE this synchronous build is running.
+            with agg._cache_lock:
+                agg._cache_gen += 1  # simulate a mid-build invalidation
+                agg._cached_data.clear()
+            return {"scope": scope, "stale": True}
+
+        agg._build_dashboard_data_inner = fake_inner
+        result = agg.build_dashboard_data(_OTHER_SCOPE)
+        # Caller still receives the freshly built data.
+        self.assertEqual(result, {"scope": _OTHER_SCOPE, "stale": True})
+        # But it must NOT have been written to the cache (generation moved).
+        self.assertNotIn(_OTHER_SCOPE, agg._cached_data,
+                         "pre-invalidation build must not clobber the cache")
+
+
+class WorkerExceptionSilenceTest(TempDBTestCase):
+    """The worker swallows build exceptions so no traceback reaches stderr."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        _wait_not_rebuilding()
+        with agg._cache_lock:
+            agg._rebuilding = False
+        self._orig_inner = agg._build_dashboard_data_inner
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        agg._build_dashboard_data_inner = self._orig_inner
+        with agg._cache_lock:
+            agg._rebuilding = False
+        agg._cached_data.clear()
+
+    def test_worker_build_exception_prints_no_traceback(self):
+        """A raising _build_dashboard_data_inner must produce no traceback on
+        stderr from the worker thread — build errors are swallowed by design."""
+        entered = threading.Event()
+
+        def boom(scope):
+            entered.set()
+            raise RuntimeError("build blew up")
+
+        agg._build_dashboard_data_inner = boom
+        captured = io.StringIO()
+        orig_stderr = sys.stderr
+        sys.stderr = captured
+        try:
+            agg.trigger_eager_rebuild()
+            self.assertTrue(entered.wait(timeout=5.0), "worker never ran")
+            self.assertTrue(_wait_not_rebuilding(), "worker never finished")
+        finally:
+            sys.stderr = orig_stderr
+        self.assertEqual(captured.getvalue(), "",
+                         "worker thread must not spew a traceback to stderr")
 
 
 if __name__ == "__main__":

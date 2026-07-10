@@ -41,6 +41,37 @@ _cache_lock = threading.Lock()
 _cached_data: dict[str, dict] = {}
 _cache_version: int = 0
 
+# Scope-aware pre-warm bookkeeping. Invalidation clears _cached_data for ALL
+# scopes, but the drain-loop worker used to rebuild ONLY DEFAULT_SCOPE — so a
+# dashboard tab viewing the non-default scope hit a cold cache (a synchronous
+# request-thread build) on every SSE-driven refetch, once per ~1s under active
+# realtime ingest. We track which scopes have been requested recently and have
+# the worker rebuild the union of {DEFAULT_SCOPE} ∪ {scopes seen within the TTL}
+# so every actively-viewed scope stays warm. Maps scope → last-request monotonic
+# timestamp; protected by _cache_lock.
+WARM_SCOPE_TTL_S = 900  # 15 minutes: a scope idle longer than this stops warming
+_warm_scopes: dict[str, float] = {}
+
+
+def _mark_scope_requested(scope: str) -> None:
+    """Record that `scope` was just requested (caller must NOT hold _cache_lock).
+
+    Feeds the worker's warm-scope set so an actively-viewed non-default scope is
+    pre-warmed on each drain iteration instead of rebuilt synchronously per SSE
+    refetch. Uses a monotonic clock (immune to wall-clock jumps)."""
+    with _cache_lock:
+        _warm_scopes[scope] = _time.monotonic()
+
+
+def _warm_scope_set() -> set[str]:
+    """Scopes the worker should rebuild: DEFAULT_SCOPE plus every scope requested
+    within WARM_SCOPE_TTL_S. Caller must hold _cache_lock. Prunes stale entries."""
+    now = _time.monotonic()
+    stale = [s for s, ts in _warm_scopes.items() if now - ts > WARM_SCOPE_TTL_S]
+    for s in stale:
+        del _warm_scopes[s]
+    return {DEFAULT_SCOPE} | set(_warm_scopes)
+
 
 # Patterns that identify a "home directory" prefix to strip.
 # Linux: -home-user-   macOS: -Users-user-   Windows: C--Users-user-
@@ -210,16 +241,23 @@ def trigger_eager_rebuild():
     write that raced an ingest rebuild invisible until the next unrelated
     invalidation.
 
-    The worker runs a DRAIN LOOP rather than a single build: after each build
-    it checks, under the lock, whether the generation still matches the one it
-    started with. If so, it stores the result and exits; if a newer invalidation
-    landed while it was building, it adopts that generation and builds again.
-    This coalesces any number of mid-build invalidations into exactly one
-    follow-up build (not N), never drops the last one, and — because only the
-    first invalidation to find no worker running spawns a thread — keeps at most
-    one worker alive regardless of ingest cadence. Under ~1s realtime ingest a
-    single early-return would have left the cache cold almost permanently; the
-    loop guarantees the cache converges on data built from the final generation.
+    The worker runs a DRAIN LOOP rather than a single build: after building
+    every warm scope it checks, under the lock, whether the generation still
+    matches the one it started with. If so, it stores all results and exits; if
+    a newer invalidation landed while it was building, it adopts that generation
+    and builds again. This coalesces any number of mid-build invalidations into
+    exactly one follow-up build (not N), never drops the last one, and — because
+    only the first invalidation to find no worker running spawns a thread —
+    keeps at most one worker alive regardless of ingest cadence. Under ~1s
+    realtime ingest a single early-return would have left the cache cold almost
+    permanently; the loop guarantees the cache converges on data built from the
+    final generation.
+
+    Scope-aware: each iteration rebuilds the union {DEFAULT_SCOPE} ∪ {scopes
+    requested within WARM_SCOPE_TTL_S}, so an actively-viewed non-default scope
+    stays warm instead of forcing a synchronous request-thread build on every
+    SSE refetch. All warm scopes are gen-checked together under ONE lock hold,
+    so a stale iteration never writes any scope's pre-invalidation data.
     """
     global _rebuilding, _cache_gen
     with _cache_lock:
@@ -237,24 +275,31 @@ def trigger_eager_rebuild():
         cleared = False
         try:
             while True:
-                # Build outside the lock so readers aren't blocked. A transient
-                # build error (e.g. DB hiccup) is swallowed below rather than
-                # crashing the worker; the finally still clears _rebuilding so a
-                # later invalidation can retry — matching the sweep timers'
-                # "don't die on transient errors" stance.
+                # Snapshot the warm-scope set for THIS iteration under the lock,
+                # then build every scope outside the lock so readers aren't
+                # blocked. A transient build error (e.g. DB hiccup) in ANY scope
+                # is swallowed below rather than crashing the worker; the finally
+                # still clears _rebuilding so a later invalidation can retry —
+                # matching the sweep timers' "don't die on transient errors"
+                # stance. Failing one scope fails the whole iteration and drops
+                # this generation; the next invalidation retries (same semantics
+                # as the pre-scope-aware single-scope worker).
+                with _cache_lock:
+                    scopes = _warm_scope_set()
                 try:
-                    data = _build_dashboard_data_inner(DEFAULT_SCOPE)
+                    built = {s: _build_dashboard_data_inner(s) for s in scopes}
                 except Exception:
                     return  # finally clears the flag
-                # Storing the result and clearing _rebuilding must be atomic
+                # Storing the results and clearing _rebuilding must be atomic
                 # under ONE lock hold: an invalidation slipping in between the
                 # two would see _rebuilding=True, early-return, then be stranded
-                # when we clear the flag — its generation never serviced.
+                # when we clear the flag — its generation never serviced. All
+                # warm scopes are written together so none can carry stale data.
                 with _cache_lock:
                     if _cache_gen == current_gen:
-                        # No invalidation landed while building — store the
-                        # result, release the worker slot, and stop.
-                        _cached_data[DEFAULT_SCOPE] = data
+                        # No invalidation landed while building — store every
+                        # warm scope, release the worker slot, and stop.
+                        _cached_data.update(built)
                         _rebuilding = False
                         cleared = True
                         return
@@ -428,14 +473,23 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
 
 def build_dashboard_data(scope: str = DEFAULT_SCOPE) -> dict:
     """Return cached dashboard data for the given scope, rebuilding if missing."""
+    # Record the request so the drain-loop worker keeps this scope pre-warmed
+    # (see _warm_scopes) — otherwise a non-default scope refetches cold every ~1s.
+    _mark_scope_requested(scope)
     with _cache_lock:
         cached = _cached_data.get(scope)
         if cached is not None:
             return cached
-    # Build outside the lock to avoid blocking concurrent readers
+        gen_at_start = _cache_gen
+    # Build outside the lock to avoid blocking concurrent readers.
     data = _build_dashboard_data_inner(scope)
     with _cache_lock:
-        _cached_data[scope] = data
+        # Only store if no invalidation landed while we were building: a slow
+        # request-thread build that straddled an invalidation would otherwise
+        # clobber the cache with pre-invalidation data. Return the built data to
+        # the caller either way — it is correct as of when the build started.
+        if _cache_gen == gen_at_start:
+            _cached_data[scope] = data
     return data
 
 
