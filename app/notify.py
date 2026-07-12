@@ -14,7 +14,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
 from .config import HA_DEVICES, HA_TOKEN, HA_URL, NOTIFY_TOKEN, STATS_API_KEY
-from .db import get_conn
+from .db import get_conn, write_txn
 from .pricing import compute_cost, display_model
 
 router = APIRouter()
@@ -43,11 +43,11 @@ def init_notify_token():
         return
 
     _notify_token = secrets.token_urlsafe(24)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-        ("notify_token", _notify_token),
-    )
-    conn.commit()
+    with write_txn(conn) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            ("notify_token", _notify_token),
+        )
     print(f"[notify] Generated token: {_notify_token}", flush=True)
 
 

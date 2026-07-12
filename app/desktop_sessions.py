@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, Depends
 
 from .auth import require_api_key
-from .db import get_conn
+from .db import get_conn, write_txn
 from .models import (
     DesktopMetadataRequest,
     DesktopMetadataResponse,
@@ -73,36 +73,38 @@ def upsert_desktop_sessions(
     now_ms = int(time.time() * 1000)
     inserted = updated = stale = 0
 
-    for s in sessions:
-        data = s if isinstance(s, dict) else s.model_dump()
-        cli_id = data.get("cli_session_id")
-        if not cli_id:
-            continue
+    # The stale check reads then writes per session — keep the whole batch
+    # inside one serialized transaction so a concurrent batch can't interleave.
+    with write_txn(conn) as conn:
+        for s in sessions:
+            data = s if isinstance(s, dict) else s.model_dump()
+            cli_id = data.get("cli_session_id")
+            if not cli_id:
+                continue
 
-        prior = conn.execute(
-            "SELECT last_activity_at_ms FROM desktop_sessions "
-            "WHERE cli_session_id = ?",
-            (cli_id,),
-        ).fetchone()
+            prior = conn.execute(
+                "SELECT last_activity_at_ms FROM desktop_sessions "
+                "WHERE cli_session_id = ?",
+                (cli_id,),
+            ).fetchone()
 
-        new_last = data.get("last_activity_at_ms") or 0
-        prior_last = (prior[0] if prior else None) or 0
+            new_last = data.get("last_activity_at_ms") or 0
+            prior_last = (prior[0] if prior else None) or 0
 
-        # Invariant: this Python check (`<`, skip) and the SQL WHERE guard
-        # (`>=`, proceed) must stay logical complements. If you change one,
-        # change both.
-        if prior and new_last < prior_last:
-            stale += 1
-            continue
+            # Invariant: this Python check (`<`, skip) and the SQL WHERE guard
+            # (`>=`, proceed) must stay logical complements. If you change one,
+            # change both.
+            if prior and new_last < prior_last:
+                stale += 1
+                continue
 
-        conn.execute(_UPSERT_SQL, _to_row(data, machine, now_ms))
+            conn.execute(_UPSERT_SQL, _to_row(data, machine, now_ms))
 
-        if prior is None:
-            inserted += 1
-        else:
-            updated += 1
+            if prior is None:
+                inserted += 1
+            else:
+                updated += 1
 
-    conn.commit()
     return {"inserted": inserted, "updated": updated, "ignored_stale": stale}
 
 

@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 # to api._iso_to_epoch — consolidated onto the one copy).
 from .api import _scrub_to_minute_or_none, _iso_to_epoch
 from .auth import require_dashboard_auth
-from .db import get_conn
+from .db import get_conn, write_txn
 from .usage_buckets import normalize_usage_buckets
 
 router = APIRouter()
@@ -97,20 +97,14 @@ def record_limit_readings(conn, usage_dict, fetched_epoch, source):
         buckets = normalize_usage_buckets(usage_dict)
         if not buckets:
             return
-        for b in buckets:
-            conn.execute(
-                "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
-                "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
-                (fetched_epoch, source, b["key"], b["utilization"],
-                 b["resets_at"], _iso_to_epoch(b["resets_at"])))
-        conn.commit()
+        with write_txn(conn) as conn:
+            for b in buckets:
+                conn.execute(
+                    "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+                    "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
+                    (fetched_epoch, source, b["key"], b["utilization"],
+                     b["resets_at"], _iso_to_epoch(b["resets_at"])))
     except Exception as e:  # writer must never break the poll/ingest path
-        # A failed batch must not leave pending writes on the shared
-        # module-global connection for the next unrelated caller to commit.
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         log("record_limit_readings failed (source=%s): %s", source, e)
 
 
@@ -283,10 +277,10 @@ def corroborated_resets(conn, bucket, since_epoch):
 def prune_limit_readings(conn, now_epoch=None):
     """Delete readings older than RETENTION_DAYS. Returns rows deleted."""
     now = time.time() if now_epoch is None else now_epoch
-    cur = conn.execute(
-        "DELETE FROM limit_readings WHERE fetched_epoch < ?",
-        (now - RETENTION_DAYS * 86400,))
-    conn.commit()
+    with write_txn(conn) as conn:
+        cur = conn.execute(
+            "DELETE FROM limit_readings WHERE fetched_epoch < ?",
+            (now - RETENTION_DAYS * 86400,))
     if cur.rowcount:
         log("pruned %d readings older than %dd", cur.rowcount, RETENTION_DAYS)
     return cur.rowcount

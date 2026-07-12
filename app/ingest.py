@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .auth import require_api_key
 from .config import TZ_NAME
-from .db import get_conn
+from .db import get_conn, write_txn
 from .models import BackfillRequest, CursorState, IngestRequest, IngestResponse
 
 router = APIRouter()
@@ -348,8 +348,8 @@ async def ingest(req: IngestRequest):
             for t in tools:
                 tool_rows.append(tuple(t[c] for c in TOOL_COLS))
 
-    # Batch insert
-    try:
+    # Batch insert — one serialized write transaction (see db.write_txn).
+    with write_txn() as conn:
         cur = conn.cursor()
         for erow in event_rows:
             try:
@@ -384,10 +384,6 @@ async def ingest(req: IngestRequest):
             "VALUES(?, ?, ?, ?, ?, ?)",
             (req.machine, req.project_dir, req.session_file, new_line_num, last_ts, now),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
 
     # Recompute the summary for EVERY day this batch touched — a newly
     # connected machine pushes months of historical transcripts, and only
@@ -415,12 +411,11 @@ async def backfill(req: BackfillRequest):
     predate ai-title capture (an existing title wins — live ingest is fresher
     than a backfill). Re-rolls every day whose events changed so stored costs
     correct themselves."""
-    conn = get_conn()
-    cur = conn.cursor()
     updated_events = 0
     updated_server_tools = 0
     touched_days: set[str] = set()
-    try:
+    with write_txn() as conn:
+        cur = conn.cursor()
         for uuid, pair in req.cache_tiers.items():
             if not (isinstance(pair, list) and len(pair) == 2):
                 continue
@@ -473,10 +468,6 @@ async def backfill(req: BackfillRequest):
                 "VALUES(?, ?, ?) ON CONFLICT(session_id) DO NOTHING",
                 (sid, title[:256], now))
             updated_titles += cur.rowcount if cur.rowcount > 0 else 0
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
 
     # Explicit final-pass days (validated: strict YYYY-MM-DD only)
     valid_day = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -532,29 +523,27 @@ async def store_usage(request: Request):
         extra = usage.get("extra_usage")
         captured = isinstance(extra, dict) and bool(extra)
         if captured:
-            conn = get_conn()
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                ("oauth_usage_enterprise", json.dumps({
-                    "machine": machine,
-                    "extra_usage": extra,
-                    "updated_at":
-                        datetime.now(ZoneInfo(TZ_NAME)).isoformat(),
-                })),
-            )
-            conn.commit()
+            with write_txn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("oauth_usage_enterprise", json.dumps({
+                        "machine": machine,
+                        "extra_usage": extra,
+                        "updated_at":
+                            datetime.now(ZoneInfo(TZ_NAME)).isoformat(),
+                    })),
+                )
             from .extra_usage import record_meter_reading
             record_meter_reading(conn, machine, extra, time.time())
         return {"status": "ignored_no_limits", "updated_at": None,
                 "captured_extra_usage": captured}
 
-    conn = get_conn()
     now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
-    )
-    conn.commit()
+    with write_txn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
+        )
 
     # Historize per-bucket readings — but ONLY on instances not locked to
     # enterprise scope: the compliance invariant says locked instances must

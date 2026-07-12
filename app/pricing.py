@@ -6,7 +6,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from .config import LITELLM_URL, PRICING_CACHE_TTL
-from .db import get_conn
+from .db import get_conn, write_txn
 
 MODEL_DISPLAY = {
     "claude-fable-5": "Fable 5",
@@ -176,11 +176,11 @@ def load_pricing(force=False):
         if pricing:
             _dynamic_pricing = pricing
             try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-                    ("pricing_cache", json.dumps({"ts": time.time(), "pricing": pricing})),
-                )
-                conn.commit()
+                with write_txn(conn) as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                        ("pricing_cache", json.dumps({"ts": time.time(), "pricing": pricing})),
+                    )
             except Exception:
                 pass
             return

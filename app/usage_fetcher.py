@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .config import CLAUDE_CREDENTIALS_PATH, TZ_NAME
-from .db import get_conn
+from .db import get_conn, write_txn
 from .version import get_claude_code_version
 
 _log = logging.getLogger("tokenfold.usage_fetcher")
@@ -185,12 +185,11 @@ async def _refresh_token_if_needed(force: bool = False):
             full_creds["claudeAiOauth"] = refreshed
             _write_credentials_file(full_creds)
 
-        conn = get_conn()
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            ("oauth_credentials", json.dumps(refreshed)),
-        )
-        conn.commit()
+        with write_txn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                ("oauth_credentials", json.dumps(refreshed)),
+            )
 
         log("Token refreshed, valid for %.0f more minutes",
                  (refreshed["expiresAt"] - time.time() * 1000) / 1000 / 60)
@@ -259,11 +258,11 @@ async def _fetch_usage():
     # account, this write would need the same guard.
     now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
     conn = get_conn()
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
-    )
-    conn.commit()
+    with write_txn(conn) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
+        )
 
     # Historize per-bucket readings on EVERY poll (never raises into us) —
     # the meta row above is snapshot-only; limit_readings is the history.

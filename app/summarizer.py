@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
-from .db import get_conn
+from .db import get_conn, write_txn
 from .pricing import compute_cost, display_model, effective_geo, load_pricing
 
 TZ = ZoneInfo(TZ_NAME)
@@ -427,8 +427,11 @@ def summarize_days(days: list[str] | None = None):
     if not accounts:
         return
 
-    # Delete existing rows for target days, then rebuild per account
-    conn.execute(f"DELETE FROM daily_summary WHERE day IN ({placeholders})", days)
+    # Phase 1 — READ ONLY: accumulate every account's rows before touching
+    # the table. The 2026-07-12 incident: DELETE ran first, minutes of
+    # accumulate followed, and a concurrent summarize's INSERT landed inside
+    # that window — the final INSERT died on UNIQUE(day, account_email) with
+    # the DELETE already persisted by other threads' commits.
     now = datetime.now(TZ).isoformat()
     rows = []
 
@@ -461,14 +464,21 @@ def summarize_days(days: list[str] | None = None):
                 now,
             ))
 
-    conn.executemany(
-        "INSERT INTO daily_summary "
-        "(day, account_email, plan, org_name, org_type, org_uuid, sessions, "
-        "human_prompts, tool_calls, input_tokens, output_tokens, "
-        "cache_creation_tokens, cache_read_tokens, "
-        "active_s, thinking_s, tool_exec_s, subagent_s, agent_runs, cost, "
-        "model_json, project_json, machine_json, tool_json, prompt_model_json, "
-        "gen_json, updated_at) VALUES (" + ",".join("?" * 26) + ")",
-        rows,
-    )
-    conn.commit()
+    # Phase 2 — atomic destructive write, serialized by the write lock:
+    # DELETE and re-INSERT commit together, so a concurrent summarize can
+    # neither abort this rebuild nor observe (and persist) a half-rebuilt
+    # table. OR REPLACE is belt-and-braces for any writer not yet routed
+    # through write_txn.
+    with write_txn() as wconn:
+        wconn.execute(
+            f"DELETE FROM daily_summary WHERE day IN ({placeholders})", days)
+        wconn.executemany(
+            "INSERT OR REPLACE INTO daily_summary "
+            "(day, account_email, plan, org_name, org_type, org_uuid, sessions, "
+            "human_prompts, tool_calls, input_tokens, output_tokens, "
+            "cache_creation_tokens, cache_read_tokens, "
+            "active_s, thinking_s, tool_exec_s, subagent_s, agent_runs, cost, "
+            "model_json, project_json, machine_json, tool_json, prompt_model_json, "
+            "gen_json, updated_at) VALUES (" + ",".join("?" * 26) + ")",
+            rows,
+        )

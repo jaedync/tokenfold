@@ -1,9 +1,20 @@
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import DB_PATH
 
 _conn: sqlite3.Connection | None = None
+_init_lock = threading.Lock()
+
+# Serializes every write transaction on the shared connection. The connection
+# is shared across the event loop, uvicorn threadpool, timer sweeps, and the
+# drain-loop worker; sqlite transactions are per-CONNECTION, so without this
+# lock any thread's commit() would persist (and any rollback() destroy) every
+# other thread's half-done write — the 2026-07-12 daily_summary wipe. RLock so
+# a writer may call helpers that open their own write_txn.
+WRITE_LOCK = threading.RLock()
 
 _DAILY_SUMMARY_DDL = """
 CREATE TABLE IF NOT EXISTS daily_summary (
@@ -276,15 +287,63 @@ def _migrate(conn) -> None:
 def get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA busy_timeout=60000")
-        _conn.row_factory = sqlite3.Row
-        _conn.executescript(SCHEMA)
-        _migrate(_conn)
+        with _init_lock:
+            if _conn is None:
+                Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+                # cached_statements=0 is LOAD-BEARING: the per-connection
+                # statement cache hands two threads executing the same SQL
+                # string the same C statement object; concurrent bind/step
+                # then raises SQLITE_MISUSE ("bad parameter or other API
+                # misuse") or silently returns rows bound with the OTHER
+                # thread's parameters (how prod attributed one account's days
+                # to another on 2026-07-12). threadsafety==3 protects the
+                # connection, not shared statement objects.
+                conn = sqlite3.connect(DB_PATH, check_same_thread=False,
+                                       cached_statements=0)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=60000")
+                # Bound the WAL: without a limit the file never shrinks after a
+                # checkpoint (the 2026-06-23 9GB-WAL incident). 64 MiB.
+                conn.execute("PRAGMA journal_size_limit=67108864")
+                conn.row_factory = sqlite3.Row
+                conn.executescript(SCHEMA)
+                _migrate(conn)
+                _conn = conn
     return _conn
+
+
+@contextmanager
+def write_txn(conn: sqlite3.Connection | None = None):
+    """One write transaction at a time on the shared connection.
+
+    Owns commit/rollback under WRITE_LOCK, so a concurrent thread can never
+    commit half of this transaction or roll it back. Every code path that
+    writes to the DB must go through this — a raw conn.commit() outside the
+    lock re-opens the cross-thread bleed this exists to prevent.
+
+    `conn` lets helpers that take a connection parameter keep their contract;
+    it defaults to the shared singleton (in production they are the same).
+    """
+    conn = conn if conn is not None else get_conn()
+    with WRITE_LOCK:
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def checkpoint_wal() -> None:
+    """Best-effort truncating WAL checkpoint (called from the hourly sweep).
+
+    TRUNCATE blocks briefly for readers/writers via busy_timeout; combined
+    with journal_size_limit this keeps the WAL from growing unbounded when
+    the passive autocheckpoint can't keep up or a reader pins the read mark.
+    """
+    with WRITE_LOCK:
+        get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def close_conn():

@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import app.config as config
 from .auth import require_dashboard_auth
 from .cost_windows import compute_window_cost
-from .db import get_conn
+from .db import get_conn, write_txn
 from .models import EnterpriseBudgetRequest
 
 router = APIRouter()
@@ -64,8 +64,8 @@ def set_budget(conn: sqlite3.Connection, value: Optional[float]) -> None:
     Raises ValueError with a clear message on invalid input.
     """
     if value is None:
-        conn.execute("DELETE FROM meta WHERE key=?", (META_KEY,))
-        conn.commit()
+        with write_txn(conn) as conn:
+            conn.execute("DELETE FROM meta WHERE key=?", (META_KEY,))
         return
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValueError("budget_usd must be a number")
@@ -76,11 +76,11 @@ def set_budget(conn: sqlite3.Connection, value: Optional[float]) -> None:
     if value > BUDGET_MAX:
         raise ValueError(f"budget_usd must be <= {BUDGET_MAX}")
 
-    conn.execute(
-        "INSERT INTO meta(key, value) VALUES(?,?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (META_KEY, str(float(value))))
-    conn.commit()
+    with write_txn(conn) as conn:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (META_KEY, str(float(value))))
 
 
 def _month_bounds_utc(now_epoch: float):

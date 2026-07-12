@@ -6,6 +6,7 @@ activity is still computed live from events/tool_uses (48h window).
 """
 
 import json
+import logging
 import os
 import random
 import re
@@ -19,7 +20,7 @@ from zoneinfo import ZoneInfo
 from .extra_usage import build_meter_payload
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
-from .db import get_conn
+from .db import checkpoint_wal, get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
     display_model, effective_geo, get_pricing, is_priced, load_pricing,
@@ -29,6 +30,8 @@ from .water import compute_energy_wh, compute_water_ml
 
 # Per-request web-search fee for the cost-component breakdowns.
 _WS_FEE = WEB_SEARCH_PER_1K / 1000.0
+
+logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo(TZ_NAME)
 
@@ -289,6 +292,12 @@ def trigger_eager_rebuild():
                 try:
                     built = {s: _build_dashboard_data_inner(s) for s in scopes}
                 except Exception:
+                    # Dropping the generation is deliberate (next invalidation
+                    # retries) — hiding the failure is not.
+                    logger.exception(
+                        "dashboard rebuild failed (scopes=%s, gen=%s) — "
+                        "generation dropped, next invalidation retries",
+                        sorted(scopes), current_gen)
                     return  # finally clears the flag
                 # Storing the results and clearing _rebuilding must be atomic
                 # under ONE lock hold: an invalidation slipping in between the
@@ -1386,7 +1395,13 @@ def _run_periodic_sweep():
         summarize_days(days)
         trigger_eager_rebuild()
     except Exception:
-        pass  # Don't crash the timer on transient errors
+        # Swallowing keeps the timer alive; logging keeps the failure visible
+        # (the 2026-07-12 wipe died silently behind a bare `pass`).
+        logger.exception("hourly sweep failed — last-7-days re-roll aborted")
+    try:
+        checkpoint_wal()
+    except Exception:
+        logger.warning("hourly WAL checkpoint failed", exc_info=True)
     _schedule_periodic_sweep()
 
 
@@ -1399,5 +1414,6 @@ def _run_full_sweep():
         _last_full_sweep = _time.time()
         trigger_eager_rebuild()
     except Exception:
-        pass
+        logger.exception("full sweep failed — all-days daily_summary rebuild "
+                         "aborted (table preserved; rebuild retries in 24h)")
     _schedule_full_sweep()

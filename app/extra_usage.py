@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .cost_windows import compute_window_cost
+from .db import write_txn
 
 # A meter older than this stops driving the gauge (no enterprise machine has
 # pushed) — consumers fall back to the event-cost estimate.
@@ -68,20 +69,22 @@ def record_meter_reading(conn: sqlite3.Connection, machine: str,
             else 0.0):
         utilization = None
 
-    prev = conn.execute(
-        "SELECT used_cents, limit_cents FROM extra_usage_readings "
-        "ORDER BY fetched_epoch DESC LIMIT 1").fetchone()
-    if prev is not None and prev["used_cents"] == used \
-            and prev["limit_cents"] == limit:
-        return False
+    # Dedupe check and insert share the write lock: two concurrent pushes of
+    # the same reading must not both pass the check-then-insert.
+    with write_txn(conn) as conn:
+        prev = conn.execute(
+            "SELECT used_cents, limit_cents FROM extra_usage_readings "
+            "ORDER BY fetched_epoch DESC LIMIT 1").fetchone()
+        if prev is not None and prev["used_cents"] == used \
+                and prev["limit_cents"] == limit:
+            return False
 
-    conn.execute(
-        "INSERT INTO extra_usage_readings"
-        "(fetched_epoch, machine, used_cents, limit_cents, utilization) "
-        "VALUES(?,?,?,?,?)",
-        (fetched_epoch, machine, used, limit,
-         float(utilization) if utilization is not None else None))
-    conn.commit()
+        conn.execute(
+            "INSERT INTO extra_usage_readings"
+            "(fetched_epoch, machine, used_cents, limit_cents, utilization) "
+            "VALUES(?,?,?,?,?)",
+            (fetched_epoch, machine, used, limit,
+             float(utilization) if utilization is not None else None))
     return True
 
 
