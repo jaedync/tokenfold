@@ -181,8 +181,12 @@ def load_pricing(force=False):
                         "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
                         ("pricing_cache", json.dumps({"ts": time.time(), "pricing": pricing})),
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                # In-memory pricing is already set — losing only the persisted
+                # cache is survivable, but say so (a silent pass here means
+                # every restart refetches and stale-cache fallback never works).
+                print(f"[pricing] pricing_cache persist failed: {e}",
+                      flush=True)
             return
 
     # Fallback: use stale cache

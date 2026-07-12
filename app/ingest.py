@@ -3,6 +3,7 @@ POST /api/usage - store OAuth usage data from client.
 """
 
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -18,6 +19,22 @@ from .models import BackfillRequest, CursorState, IngestRequest, IngestResponse
 
 router = APIRouter()
 TZ = ZoneInfo(TZ_NAME)
+logger = logging.getLogger(__name__)
+
+
+def _safe_count(value, cap=10**12) -> int:
+    """Coerce an untrusted transcript token count to a safe int.
+
+    sqlite3 raises InterfaceError on a dict/list bind (failing the whole
+    batch) and silently STORES a str in the INTEGER column (poisoning every
+    SUM over it) — same contract as the service_tier/speed coercion below.
+    bool is an int subclass; True is not 1 token.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    if not 0 <= value < cap:
+        return 0
+    return value
 
 
 def _parse_ts(ts_str: str) -> tuple[datetime, float, str] | None:
@@ -134,20 +151,26 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
         row["stop_reason"] = msg.get("stop_reason")
         usage = msg.get("usage", {})
         if isinstance(usage, dict):
-            row["input_tokens"] = usage.get("input_tokens", 0)
-            row["output_tokens"] = usage.get("output_tokens", 0)
-            row["cache_creation_tokens"] = usage.get("cache_creation_input_tokens", 0)
-            row["cache_read_tokens"] = usage.get("cache_read_input_tokens", 0)
+            row["input_tokens"] = _safe_count(usage.get("input_tokens", 0))
+            row["output_tokens"] = _safe_count(usage.get("output_tokens", 0))
+            row["cache_creation_tokens"] = _safe_count(
+                usage.get("cache_creation_input_tokens", 0))
+            row["cache_read_tokens"] = _safe_count(
+                usage.get("cache_read_input_tokens", 0))
             # Real transcript shape (verified against live Claude Code output):
             # usage.cache_creation = {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}.
             # The flat *_5m/*_1h keys are kept as a fallback for older payloads.
             _cc_obj = usage.get("cache_creation")
             if isinstance(_cc_obj, dict):
-                row["cache_ephemeral_5m"] = _cc_obj.get("ephemeral_5m_input_tokens", 0)
-                row["cache_ephemeral_1h"] = _cc_obj.get("ephemeral_1h_input_tokens", 0)
+                row["cache_ephemeral_5m"] = _safe_count(
+                    _cc_obj.get("ephemeral_5m_input_tokens", 0))
+                row["cache_ephemeral_1h"] = _safe_count(
+                    _cc_obj.get("ephemeral_1h_input_tokens", 0))
             else:
-                row["cache_ephemeral_5m"] = usage.get("cache_creation_input_tokens_5m", 0)
-                row["cache_ephemeral_1h"] = usage.get("cache_creation_input_tokens_1h", 0)
+                row["cache_ephemeral_5m"] = _safe_count(
+                    usage.get("cache_creation_input_tokens_5m", 0))
+                row["cache_ephemeral_1h"] = _safe_count(
+                    usage.get("cache_creation_input_tokens_1h", 0))
             # Server-tool usage: usage.server_tool_use = {web_search_requests,
             # web_fetch_requests}. Web search bills $10/1k requests on top of
             # token cost; fetch is free but tracked. Counts are untrusted —
@@ -393,8 +416,18 @@ async def ingest(req: IngestRequest):
         from .summarizer import summarize_days
         from .aggregator import trigger_eager_rebuild
         today = datetime.now(TZ).strftime("%Y-%m-%d")
-        summarize_days(sorted(touched_days | {today}))
-        trigger_eager_rebuild()
+        try:
+            summarize_days(sorted(touched_days | {today}))
+            trigger_eager_rebuild()
+        except Exception:
+            # The events above are already durable — a rebuild failure must
+            # not 500 this request (the client would retry, dedupe to
+            # accepted=0, and never re-roll these days). The rollup
+            # self-heals on the next batch or hourly sweep.
+            logger.exception(
+                "post-ingest summary rebuild failed (days=%s) — events "
+                "stored, rollup will self-heal on next batch/sweep",
+                sorted(touched_days))
 
     return IngestResponse(
         accepted=accepted,
