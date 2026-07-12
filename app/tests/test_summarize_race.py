@@ -130,6 +130,33 @@ class WriteTxnTest(TempDBTestCase):
         self.assertIsNone(self.conn.execute(
             "SELECT value FROM meta WHERE key='k2'").fetchone())
 
+    def test_nested_write_txn_commits_and_rolls_back_as_one(self):
+        """An inner write_txn must NOT commit the outer transaction early —
+        if the outer block fails, everything rolls back together."""
+        from app.db import write_txn
+        with self.assertRaises(RuntimeError):
+            with write_txn() as conn:
+                conn.execute("INSERT INTO meta(key, value) VALUES('outer', '1')")
+                with write_txn() as inner:
+                    inner.execute(
+                        "INSERT INTO meta(key, value) VALUES('inner', '1')")
+                raise RuntimeError("outer boom")
+        self.assertFalse(self.conn.in_transaction)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM meta WHERE key IN ('outer', 'inner')").fetchone())
+
+    def test_rolls_back_on_base_exception(self):
+        """KeyboardInterrupt/SystemExit must not leave an open transaction
+        for the next writer to commit."""
+        from app.db import write_txn
+        with self.assertRaises(KeyboardInterrupt):
+            with write_txn() as conn:
+                conn.execute("INSERT INTO meta(key, value) VALUES('ki', '1')")
+                raise KeyboardInterrupt()
+        self.assertFalse(self.conn.in_transaction)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM meta WHERE key='ki'").fetchone())
+
     def test_serializes_concurrent_writers(self):
         from app.db import write_txn
         order = []
@@ -222,6 +249,20 @@ class DrainWorkerLoggingTest(TempDBTestCase):
                         break
                 time.sleep(0.01)
         self.assertTrue(any("rebuild" in m.lower() for m in cm.output))
+
+
+class EventLoopProtectionTest(TempDBTestCase):
+    """DB-writing routes that never await must be plain `def` handlers so
+    FastAPI runs them in the threadpool. As `async def` they synchronously
+    wait on WRITE_LOCK from the event-loop thread — if a sweep's write phase
+    is queued behind an external writer (e.g. the docker-exec rebuild),
+    busy_timeout allows a ~60s freeze of EVERY request."""
+
+    def test_ingest_and_backfill_are_threadpool_handlers(self):
+        import asyncio
+        from app.ingest import backfill, ingest
+        self.assertFalse(asyncio.iscoroutinefunction(ingest))
+        self.assertFalse(asyncio.iscoroutinefunction(backfill))
 
 
 class WalMaintenanceTest(TempDBTestCase):

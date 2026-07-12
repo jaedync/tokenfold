@@ -12,9 +12,13 @@ _init_lock = threading.Lock()
 # is shared across the event loop, uvicorn threadpool, timer sweeps, and the
 # drain-loop worker; sqlite transactions are per-CONNECTION, so without this
 # lock any thread's commit() would persist (and any rollback() destroy) every
-# other thread's half-done write — the 2026-07-12 daily_summary wipe. RLock so
-# a writer may call helpers that open their own write_txn.
+# other thread's half-done write — the 2026-07-12 daily_summary wipe. RLock +
+# the depth counter below let a writer call helpers that open their own
+# write_txn: the whole nested stack commits or rolls back as ONE transaction
+# at the outermost exit (an inner commit would otherwise make the outer
+# block's rollback a no-op for everything before it).
 WRITE_LOCK = threading.RLock()
+_txn_depth = threading.local()
 
 _DAILY_SUMMARY_DDL = """
 CREATE TABLE IF NOT EXISTS daily_summary (
@@ -281,6 +285,10 @@ def _migrate(conn) -> None:
         conn.execute("DROP TABLE daily_summary")   # derived rollup — rebuilt from events
         conn.executescript(_DAILY_SUMMARY_DDL)
 
+    # Startup-only exception to the write_txn rule: this runs inside
+    # _init_lock before the connection is published to any other thread, so
+    # nothing can race it in-process. (Two OS processes migrating at once are
+    # serialized by SQLite's own file locks + busy_timeout.)
     conn.commit()
 
 
@@ -327,12 +335,21 @@ def write_txn(conn: sqlite3.Connection | None = None):
     """
     conn = conn if conn is not None else get_conn()
     with WRITE_LOCK:
+        depth = getattr(_txn_depth, "value", 0)
+        _txn_depth.value = depth + 1
         try:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
+            if depth == 0:
+                conn.commit()
+        except BaseException:
+            # BaseException, not Exception: a KeyboardInterrupt/SystemExit
+            # mid-write must not leave an open transaction for the next
+            # writer to commit.
+            if depth == 0:
+                conn.rollback()
             raise
+        finally:
+            _txn_depth.value = depth
 
 
 def checkpoint_wal() -> None:

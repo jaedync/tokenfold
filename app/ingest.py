@@ -328,7 +328,10 @@ _TOOL_SQL = (
 
 @router.post("/api/ingest", response_model=IngestResponse,
              dependencies=[Depends(require_api_key)])
-async def ingest(req: IngestRequest):
+def ingest(req: IngestRequest):
+    # Plain `def` (threadpool), NOT async: this handler blocks on WRITE_LOCK
+    # and can run summarize_days for minutes on a historical re-push — as a
+    # coroutine that would freeze the event loop for every client.
 
     conn = get_conn()
     accepted = 0
@@ -437,7 +440,7 @@ async def ingest(req: IngestRequest):
 
 
 @router.post("/api/backfill", dependencies=[Depends(require_api_key)])
-async def backfill(req: BackfillRequest):
+def backfill(req: BackfillRequest):
     """Repair historical rows from a machine's local transcripts: set the
     cache-tier split and server-tool request counts on events where they are
     still unset (never clobbers real data) and upsert AI session titles that
