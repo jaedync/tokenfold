@@ -5631,6 +5631,63 @@ function initRateLimits(){
         }
       }
 
+      // ── "$ per 1%" background bars ──
+      // One faint bar per calendar day (CT): dollars spent that day divided by
+      // the percentage points of the weekly limit consumed that day — a local
+      // "exchange rate" between the two lines already plotted. RESET-AWARE:
+      // Δ% is the SUM of positive util deltas across the day (each climb
+      // clipped to the day's time span), so a day whose limit reset counts the
+      // pre-reset climb PLUS the post-reset climb rather than a bogus negative
+      // end-minus-start. Only built when the utilization series exists (same
+      // gate as the % line) — otherwise zero bars and the chart is unchanged.
+      var dayCostBars = [];
+      var dayCostBarsMax = 0;
+      if(weeklySeries && weeklySeries.length) {
+        var MIN_PCT_FOR_BAR = 0.5; // skip flat days & divide-by-tiny blow-ups
+
+        // Day boundaries as integer hour indices: window start, each CT
+        // midnight (same detection the labels loop uses), and now (maxH).
+        var dayBounds = [0];
+        for(var bh = 1; bh < maxH; bh++) {
+          var bEp = (weekStartEpoch + bh * 3600) * 1000;
+          if(new Date(bEp + cstOff * 60000).getUTCHours() === 0) dayBounds.push(bh);
+        }
+        if(dayBounds[dayBounds.length - 1] !== maxH && maxH > dayBounds[dayBounds.length - 1]) {
+          dayBounds.push(maxH);
+        }
+
+        for(var dbi = 0; dbi < dayBounds.length - 1; dbi++) {
+          var segStart = dayBounds[dbi], segEnd = dayBounds[dbi + 1];
+          if(segEnd <= segStart) continue;
+
+          // Δ$: whole-hour costs in [segStart, segEnd)
+          var segCost = 0;
+          for(var ch2 = segStart; ch2 < segEnd; ch2++) segCost += (costByHour[ch2] || 0);
+          if(segCost <= 0) continue;
+
+          // Δ%: sum of positive util deltas clipped to the day's epoch span.
+          // Negative deltas (resets) contribute 0 — a reset inside the day
+          // neither cancels nor double-counts the consumption on either side.
+          var segStartEp = weekStartEpoch + segStart * 3600;
+          var segEndEp = weekStartEpoch + segEnd * 3600;
+          var segPct = 0;
+          for(var wsi = 0; wsi < weeklySeries.length - 1; wsi++) {
+            var e0 = weeklySeries[wsi][0], e1 = weeklySeries[wsi + 1][0];
+            if(e1 <= e0) continue;
+            var dPct = weeklySeries[wsi + 1][1] - weeklySeries[wsi][1];
+            if(dPct <= 0) continue; // reset or flat
+            var ovS = Math.max(e0, segStartEp), ovE = Math.min(e1, segEndEp);
+            if(ovE <= ovS) continue;
+            segPct += dPct * ((ovE - ovS) / (e1 - e0));
+          }
+          if(segPct < MIN_PCT_FOR_BAR) continue;
+
+          var perPct = segCost / segPct;
+          dayCostBars.push({ s: segStart, e: segEnd, v: perPct });
+          if(perPct > dayCostBarsMax) dayCostBarsMax = perPct;
+        }
+      }
+
       // Working hours background shading + "Now" line plugin
       var chartPlugins = {
         id: 'workHoursAndNow',
@@ -5649,6 +5706,35 @@ function initRateLimits(){
             ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
           }
           ctx.restore();
+
+          // "$ per 1%" background bars — drawn here (before datasets) so the
+          // cost/util lines paint over them. Heights self-normalized to the
+          // tallest kept bar (~60% of plot height); each carries its own value
+          // label, so no third axis is needed. No-op when dayCostBars is empty.
+          if(dayCostBars.length && dayCostBarsMax > 0) {
+            ctx.save();
+            var plotH = yAxis.bottom - yAxis.top;
+            ctx.font = '600 9px "DM Sans", sans-serif';
+            ctx.textAlign = 'center';
+            for(var dcb = 0; dcb < dayCostBars.length; dcb++) {
+              var bar = dayCostBars[dcb];
+              var bx1 = xAxis.getPixelForValue(bar.s);
+              var bx2 = xAxis.getPixelForValue(bar.e);
+              var barH = (bar.v / dayCostBarsMax) * plotH * 0.6;
+              var byTop = yAxis.bottom - barH;
+              ctx.fillStyle = 'rgba(107, 104, 96, 0.13)';
+              ctx.fillRect(bx1, byTop, bx2 - bx1, barH);
+              ctx.strokeStyle = 'rgba(107, 104, 96, 0.4)';
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(bx1, byTop);
+              ctx.lineTo(bx2, byTop);
+              ctx.stroke();
+              ctx.fillStyle = '#6b6860';
+              ctx.fillText('$' + bar.v.toFixed(2) + '/%', (bx1 + bx2) / 2, byTop - 3);
+            }
+            ctx.restore();
+          }
         },
         afterDraw: function(chart) {
           var xAxis = chart.scales.x;
