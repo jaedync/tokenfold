@@ -936,6 +936,16 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   height: 3px;
 }
 
+.usage-chart-zoom-hint {
+  margin-top: 0.5rem;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  color: var(--gray-dim);
+  opacity: 0.7;
+}
+
 /* Chart trigger button on gauge */
 .rate-gauge-chart-btn {
   display: inline-flex;
@@ -2643,6 +2653,7 @@ th[data-info]:focus::after { opacity: 1; }
           Actual usage
         </div>
       </div>
+      <div class="usage-chart-zoom-hint">Pinch or scroll to zoom &middot; drag to pan &middot; double-click to reset</div>
     </div>
   </div>
 </div>
@@ -5723,6 +5734,12 @@ function initRateLimits(){
           if(!xAxis || !yAxis) return;
           var ctx = chart.ctx;
           ctx.save();
+          // Clip to the plot rectangle so zoomed-out shading/pixels (drawn via
+          // getPixelForValue for hours outside the visible x-range) never smear
+          // over the axes or gutters.
+          ctx.beginPath();
+          ctx.rect(xAxis.left, yAxis.top, xAxis.right - xAxis.left, yAxis.bottom - yAxis.top);
+          ctx.clip();
           ctx.fillStyle = 'rgba(26, 26, 26, 0.03)';
           for(var i = 0; i < workBands.length; i++) {
             var x1 = xAxis.getPixelForValue(workBands[i][0]);
@@ -5737,6 +5754,11 @@ function initRateLimits(){
           // label, so no third axis is needed. No-op when dayCostBars is empty.
           if(dayCostBars.length && dayCostBarsMax > 0) {
             ctx.save();
+            // Same plot-area clip as above — keeps bars/labels inside the chart
+            // when the x-axis is zoomed so off-range bars don't paint on the axes.
+            ctx.beginPath();
+            ctx.rect(xAxis.left, yAxis.top, xAxis.right - xAxis.left, yAxis.bottom - yAxis.top);
+            ctx.clip();
             var plotH = yAxis.bottom - yAxis.top;
             ctx.font = '600 9px "DM Sans", sans-serif';
             ctx.textAlign = 'center';
@@ -5802,6 +5824,9 @@ function initRateLimits(){
           // bottom. No-op when resetMarkers is empty (guarded above).
           for(var rmk = 0; rmk < resetMarkers.length; rmk++) {
             var rx = xAxis.getPixelForValue(resetMarkers[rmk]);
+            // Skip markers scrolled outside the visible range when zoomed (the
+            // 'reset' label lives above the plot, so we range-check rather than clip).
+            if(rx < xAxis.left - 0.5 || rx > xAxis.right + 0.5) continue;
             ctx.save();
             ctx.beginPath();
             ctx.setLineDash([2, 3]);              // dotted — distinct from NOW's [4,3] dash
@@ -5821,6 +5846,7 @@ function initRateLimits(){
 
           if(nowExact < 0 || nowExact > totalHours) return;
           var x = xAxis.getPixelForValue(nowExact);
+          if(x < xAxis.left - 0.5 || x > xAxis.right + 0.5) return; // scrolled off when zoomed
           ctx.save();
           ctx.beginPath();
           ctx.setLineDash([4, 3]);
@@ -5991,6 +6017,102 @@ function initRateLimits(){
         if(e.target === overlay) overlay.classList.remove('visible');
       });
       // Escape-to-close handled by the single global keydown handler.
+
+      // ── Pinch / ctrl-wheel zoom on the time axis ──
+      // A Mac trackpad pinch reaches the browser as a ctrl+wheel event, which
+      // would otherwise trigger a full-PAGE zoom — reflowing this centered fixed
+      // modal out from under the cursor. We swallow that gesture over the canvas
+      // and zoom the chart's x (hour) range instead. Wired ONCE against the live
+      // `usageChart` (which is rebuilt on every 60s poll onto this same canvas),
+      // so no listener stacking. Drag pans when zoomed; double-click resets.
+      var canvas = document.getElementById('usageChartCanvas');
+      if(canvas) {
+        var MIN_SPAN = 6; // don't zoom tighter than a 6-hour window
+        function paceTotal(c){
+          return (c && c.data && c.data.labels) ? (c.data.labels.length - 1) : 168;
+        }
+        function paceClamp(min, max, total){
+          if(max - min < MIN_SPAN){ var mid = (min + max) / 2; min = mid - MIN_SPAN / 2; max = mid + MIN_SPAN / 2; }
+          if(min < 0){ max -= min; min = 0; }
+          if(max > total){ min -= (max - total); max = total; }
+          if(min < 0) min = 0;
+          return [Math.round(min), Math.round(max)];
+        }
+        function paceApply(c, min, max, total){
+          // Full range → unset bounds so the axis auto-fits exactly as before.
+          if(min <= 0 && max >= total){
+            c.options.scales.x.min = undefined;
+            c.options.scales.x.max = undefined;
+          } else {
+            c.options.scales.x.min = min;
+            c.options.scales.x.max = max;
+          }
+          c.update('none');
+        }
+        function paceRange(c){
+          var xs = c.scales.x;
+          var total = paceTotal(c);
+          var min = (xs.min == null) ? 0 : xs.min;
+          var max = (xs.max == null) ? total : xs.max;
+          return { total: total, min: min, max: max, xs: xs };
+        }
+        canvas.addEventListener('wheel', function(ev){
+          if(!ev.ctrlKey) return;                // only the pinch gesture; plain scroll passes through
+          var c = usageChart;
+          if(!c || !c.scales || !c.scales.x) return;
+          ev.preventDefault();                   // stop the browser page zoom + reflow
+          var r = paceRange(c);
+          var rect = canvas.getBoundingClientRect();
+          var pivot = r.xs.getValueForPixel(ev.clientX - rect.left);
+          if(pivot == null || isNaN(pivot)) pivot = (r.min + r.max) / 2;
+          if(pivot < r.min) pivot = r.min;
+          if(pivot > r.max) pivot = r.max;
+          var factor = Math.pow(1.0018, ev.deltaY); // deltaY<0 (pinch out) → factor<1 → zoom in
+          var newMin = pivot - (pivot - r.min) * factor;
+          var newMax = pivot + (r.max - pivot) * factor;
+          var cl = paceClamp(newMin, newMax, r.total);
+          paceApply(c, cl[0], cl[1], r.total);
+        }, { passive: false });
+
+        // Drag-to-pan — only engages once zoomed so unzoomed hover/tooltip is untouched.
+        var paceDrag = false, paceLastX = 0;
+        canvas.addEventListener('pointerdown', function(ev){
+          var c = usageChart;
+          if(!c || !c.scales || !c.scales.x) return;
+          var r = paceRange(c);
+          if(r.min <= 0 && r.max >= r.total) return; // not zoomed in
+          paceDrag = true; paceLastX = ev.clientX; canvas.style.cursor = 'grabbing';
+          try { canvas.setPointerCapture(ev.pointerId); } catch(e){}
+        });
+        canvas.addEventListener('pointermove', function(ev){
+          if(!paceDrag) return;
+          var c = usageChart;
+          if(!c || !c.scales || !c.scales.x){ paceDrag = false; return; }
+          var r = paceRange(c);
+          var pxPerIdx = (r.xs.right - r.xs.left) / (r.max - r.min);
+          if(!pxPerIdx) return;
+          var dIdx = (ev.clientX - paceLastX) / pxPerIdx;
+          paceLastX = ev.clientX;
+          var cl = paceClamp(r.min - dIdx, r.max - dIdx, r.total);
+          paceApply(c, cl[0], cl[1], r.total);
+        });
+        function paceEndDrag(ev){
+          if(!paceDrag) return;
+          paceDrag = false; canvas.style.cursor = '';
+          try { canvas.releasePointerCapture(ev.pointerId); } catch(e){}
+        }
+        canvas.addEventListener('pointerup', paceEndDrag);
+        canvas.addEventListener('pointercancel', paceEndDrag);
+
+        // Double-click → reset to the full 7-day window.
+        canvas.addEventListener('dblclick', function(){
+          var c = usageChart;
+          if(!c || !c.options || !c.options.scales || !c.options.scales.x) return;
+          c.options.scales.x.min = undefined;
+          c.options.scales.x.max = undefined;
+          c.update('none');
+        });
+      }
     })();
 
     function showLimitsError(){
