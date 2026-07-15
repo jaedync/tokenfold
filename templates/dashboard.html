@@ -866,9 +866,11 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   background: var(--bg);
   border: var(--border);
   width: 100%;
-  max-width: 960px;
-  max-height: 90vh;
-  max-height: 90svh;
+  /* Fill most of the screen so the chart is big and legible without needing
+     to browser-zoom (which would reflow this centered fixed modal). */
+  max-width: min(1500px, 94vw);
+  max-height: 94vh;
+  max-height: 94svh;
   overflow-y: auto;
   position: relative;
 }
@@ -911,7 +913,10 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
 
 .usage-chart-canvas-wrap {
   position: relative;
-  height: 420px;
+  /* Scale the plot to the viewport so it's large on big screens (was a fixed
+     420px, which looked tiny). Chart.js re-fits on the resulting resize. */
+  height: min(72vh, 720px);
+  height: min(72svh, 720px);
 }
 
 .usage-chart-legend {
@@ -6017,6 +6022,19 @@ function initRateLimits(){
         if(e.target === overlay) overlay.classList.remove('visible');
       });
       // Escape-to-close handled by the single global keydown handler.
+
+      // ── Keep the modal put while it's open ──
+      // A trackpad pinch would otherwise page-zoom, reflowing/panning this
+      // centered fixed modal out from under the cursor. Swallow the zoom
+      // gesture anywhere over the overlay: Chrome delivers it as ctrl+wheel,
+      // Safari as non-standard gesture events. (Over the canvas it still zooms
+      // the chart itself — that handler runs first and also preventDefaults.)
+      overlay.addEventListener('wheel', function(ev){
+        if(ev.ctrlKey) ev.preventDefault();
+      }, { passive: false });
+      ['gesturestart','gesturechange','gestureend'].forEach(function(g){
+        overlay.addEventListener(g, function(ev){ ev.preventDefault(); }, { passive: false });
+      });
 
       // ── Pinch / ctrl-wheel zoom on the time axis ──
       // A Mac trackpad pinch reaches the browser as a ctrl+wheel event, which
