@@ -5642,8 +5642,18 @@ function initRateLimits(){
       // gate as the % line) — otherwise zero bars and the chart is unchanged.
       var dayCostBars = [];
       var dayCostBarsMax = 0;
+      var dayCostTrend = null;
       if(weeklySeries && weeklySeries.length) {
         var MIN_PCT_FOR_BAR = 0.5; // skip flat days & divide-by-tiny blow-ups
+
+        // Δ% uncertainty is dominated by the integer-% quantization of the
+        // reported utilization: each day's Δ% is the difference of two integer
+        // boundary readings, so its 1σ is sqrt(2) · (1/sqrt(12)) ≈ 0.408 pts,
+        // constant across days. Dollars are precise, so the relative error on
+        // a bar's $/% is SIGMA_DPCT/Δ% — tiny on high-Δ% days, huge on the
+        // 1–2% partial stubs. That drives both the ± labels and the trend
+        // weights below.
+        var SIGMA_DPCT = Math.sqrt(2) / Math.sqrt(12); // ≈ 0.4082 pct-points
 
         // Day boundaries as integer hour indices: window start, each CT
         // midnight (same detection the labels loop uses), and now (maxH).
@@ -5655,6 +5665,9 @@ function initRateLimits(){
         if(dayBounds[dayBounds.length - 1] !== maxH && maxH > dayBounds[dayBounds.length - 1]) {
           dayBounds.push(maxH);
         }
+
+        // Inverse-variance weighted-regression accumulators (see fit below).
+        var wSum = 0, wX = 0, wY = 0, wXX = 0, wXY = 0;
 
         for(var dbi = 0; dbi < dayBounds.length - 1; dbi++) {
           var segStart = dayBounds[dbi], segEnd = dayBounds[dbi + 1];
@@ -5683,8 +5696,31 @@ function initRateLimits(){
           if(segPct < MIN_PCT_FOR_BAR) continue;
 
           var perPct = segCost / segPct;
-          dayCostBars.push({ s: segStart, e: segEnd, v: perPct });
+          var relErr = SIGMA_DPCT / segPct;   // fractional uncertainty
+          var absErr = perPct * relErr;       // ± in $/% units
+          var xMid = (segStart + segEnd) / 2; // day-center hour index
+          dayCostBars.push({ s: segStart, e: segEnd, v: perPct, sig: absErr, rel: relErr, x: xMid });
           if(perPct > dayCostBarsMax) dayCostBarsMax = perPct;
+
+          // Inverse-variance weight — confident (high-Δ%) days dominate.
+          var w = 1 / (absErr * absErr);
+          wSum += w; wX += w * xMid; wY += w * perPct;
+          wXX += w * xMid * xMid; wXY += w * xMid * perPct;
+        }
+
+        // Confidence-weighted least-squares trend line y = a + b·x. Needs ≥2
+        // bars and a non-degenerate x-spread; otherwise no line is drawn.
+        if(dayCostBars.length >= 2) {
+          var denom = wSum * wXX - wX * wX;
+          if(denom !== 0) {
+            var slope = (wSum * wXY - wX * wY) / denom;
+            var intercept = (wY - slope * wX) / wSum;
+            var xa = dayCostBars[0].x, xb = dayCostBars[dayCostBars.length - 1].x;
+            dayCostTrend = {
+              x0: xa, y0: intercept + slope * xa,
+              x1: xb, y1: intercept + slope * xb
+            };
+          }
         }
       }
 
@@ -5730,8 +5766,46 @@ function initRateLimits(){
               ctx.moveTo(bx1, byTop);
               ctx.lineTo(bx2, byTop);
               ctx.stroke();
+              var cx = (bx1 + bx2) / 2;
+              // Main $/% value.
+              ctx.font = '600 9px "DM Sans", sans-serif';
               ctx.fillStyle = '#6b6860';
-              ctx.fillText('$' + bar.v.toFixed(2) + '/%', (bx1 + bx2) / 2, byTop - 3);
+              ctx.fillText('$' + bar.v.toFixed(2) + '/%', cx, byTop - 13);
+              // ± uncertainty from integer-% quantization: absolute band and
+              // relative percent, so a wide band flags a low-confidence bar.
+              var relPct = bar.rel * 100;
+              var relStr = relPct < 10 ? relPct.toFixed(1) : String(Math.round(relPct));
+              ctx.font = '500 8px "DM Sans", sans-serif';
+              ctx.fillStyle = 'rgba(107, 104, 96, 0.75)';
+              ctx.fillText('±$' + bar.sig.toFixed(2) + ' / ' + relStr + '%', cx, byTop - 3);
+            }
+
+            // Confidence-weighted trend line across the day centers (drawn over
+            // the bars, still behind the cost/util data lines). Inverse-variance
+            // weighted, so the tight high-Δ% days set its slope and the noisy
+            // 1–2% stubs barely move it.
+            if(dayCostTrend) {
+              function _trendY(v) { return yAxis.bottom - (v / dayCostBarsMax) * plotH * 0.6; }
+              var tx0 = xAxis.getPixelForValue(dayCostTrend.x0);
+              var tx1 = xAxis.getPixelForValue(dayCostTrend.x1);
+              var ty0 = _trendY(dayCostTrend.y0);
+              var ty1 = _trendY(dayCostTrend.y1);
+              ctx.save();
+              ctx.strokeStyle = 'rgba(74, 69, 63, 0.9)';
+              ctx.lineWidth = 2;
+              ctx.setLineDash([6, 4]);
+              ctx.beginPath();
+              ctx.moveTo(tx0, ty0);
+              ctx.lineTo(tx1, ty1);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.fillStyle = 'rgba(74, 69, 63, 0.9)';
+              ctx.beginPath(); ctx.arc(tx0, ty0, 2.5, 0, 2 * Math.PI); ctx.fill();
+              ctx.beginPath(); ctx.arc(tx1, ty1, 2.5, 0, 2 * Math.PI); ctx.fill();
+              ctx.font = '600 8px "DM Sans", sans-serif';
+              ctx.textAlign = 'right';
+              ctx.fillText('wtd trend', tx1 - 4, ty1 - 5);
+              ctx.restore();
             }
             ctx.restore();
           }
