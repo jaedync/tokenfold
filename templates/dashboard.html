@@ -5642,7 +5642,7 @@ function initRateLimits(){
       // gate as the % line) — otherwise zero bars and the chart is unchanged.
       var dayCostBars = [];
       var dayCostBarsMax = 0;
-      var dayCostTrend = null;
+      var dayCostAvg = null;
       if(weeklySeries && weeklySeries.length) {
         var MIN_PCT_FOR_BAR = 0.5; // skip flat days & divide-by-tiny blow-ups
 
@@ -5667,7 +5667,7 @@ function initRateLimits(){
         }
 
         // Inverse-variance weighted-regression accumulators (see fit below).
-        var wSum = 0, wX = 0, wY = 0, wXX = 0, wXY = 0;
+        var wSum = 0, wY = 0;
 
         for(var dbi = 0; dbi < dayBounds.length - 1; dbi++) {
           var segStart = dayBounds[dbi], segEnd = dayBounds[dbi + 1];
@@ -5698,30 +5698,18 @@ function initRateLimits(){
           var perPct = segCost / segPct;
           var relErr = SIGMA_DPCT / segPct;   // fractional uncertainty
           var absErr = perPct * relErr;       // ± in $/% units
-          var xMid = (segStart + segEnd) / 2; // day-center hour index
-          dayCostBars.push({ s: segStart, e: segEnd, v: perPct, sig: absErr, rel: relErr, x: xMid });
+          dayCostBars.push({ s: segStart, e: segEnd, v: perPct, sig: absErr, rel: relErr });
           if(perPct > dayCostBarsMax) dayCostBarsMax = perPct;
 
           // Inverse-variance weight — confident (high-Δ%) days dominate.
           var w = 1 / (absErr * absErr);
-          wSum += w; wX += w * xMid; wY += w * perPct;
-          wXX += w * xMid * xMid; wXY += w * xMid * perPct;
+          wSum += w; wY += w * perPct;
         }
 
-        // Confidence-weighted least-squares trend line y = a + b·x. Needs ≥2
-        // bars and a non-degenerate x-spread; otherwise no line is drawn.
-        if(dayCostBars.length >= 2) {
-          var denom = wSum * wXX - wX * wX;
-          if(denom !== 0) {
-            var slope = (wSum * wXY - wX * wY) / denom;
-            var intercept = (wY - slope * wX) / wSum;
-            var xa = dayCostBars[0].x, xb = dayCostBars[dayCostBars.length - 1].x;
-            dayCostTrend = {
-              x0: xa, y0: intercept + slope * xa,
-              x1: xb, y1: intercept + slope * xb
-            };
-          }
-        }
+        // Highest-confidence total average: the inverse-variance weighted mean
+        // of the daily $/%, so the tight high-Δ% days set the level and the
+        // noisy 1–2% stubs barely move it. Drawn as one flat reference line.
+        if(wSum > 0) dayCostAvg = wY / wSum;
       }
 
       // Working hours background shading + "Now" line plugin
@@ -5780,31 +5768,22 @@ function initRateLimits(){
               ctx.fillText('±$' + bar.sig.toFixed(2) + ' / ' + relStr + '%', cx, byTop - 3);
             }
 
-            // Confidence-weighted trend line across the day centers (drawn over
-            // the bars, still behind the cost/util data lines). Inverse-variance
-            // weighted, so the tight high-Δ% days set its slope and the noisy
-            // 1–2% stubs barely move it.
-            if(dayCostTrend) {
-              function _trendY(v) { return yAxis.bottom - (v / dayCostBarsMax) * plotH * 0.6; }
-              var tx0 = xAxis.getPixelForValue(dayCostTrend.x0);
-              var tx1 = xAxis.getPixelForValue(dayCostTrend.x1);
-              var ty0 = _trendY(dayCostTrend.y0);
-              var ty1 = _trendY(dayCostTrend.y1);
+            // Highest-confidence total average: one solid horizontal line at
+            // the inverse-variance weighted mean $/%, spanning the full plot
+            // width (drawn over the bars, behind the cost/util data lines).
+            if(dayCostAvg !== null) {
+              var avgY = yAxis.bottom - (dayCostAvg / dayCostBarsMax) * plotH * 0.6;
               ctx.save();
               ctx.strokeStyle = 'rgba(74, 69, 63, 0.9)';
               ctx.lineWidth = 2;
-              ctx.setLineDash([6, 4]);
               ctx.beginPath();
-              ctx.moveTo(tx0, ty0);
-              ctx.lineTo(tx1, ty1);
+              ctx.moveTo(xAxis.left, avgY);
+              ctx.lineTo(xAxis.right, avgY);
               ctx.stroke();
-              ctx.setLineDash([]);
               ctx.fillStyle = 'rgba(74, 69, 63, 0.9)';
-              ctx.beginPath(); ctx.arc(tx0, ty0, 2.5, 0, 2 * Math.PI); ctx.fill();
-              ctx.beginPath(); ctx.arc(tx1, ty1, 2.5, 0, 2 * Math.PI); ctx.fill();
               ctx.font = '600 8px "DM Sans", sans-serif';
               ctx.textAlign = 'right';
-              ctx.fillText('wtd trend', tx1 - 4, ty1 - 5);
+              ctx.fillText('avg $' + dayCostAvg.toFixed(2) + '/%', xAxis.right - 4, avgY - 4);
               ctx.restore();
             }
             ctx.restore();
@@ -5816,24 +5795,27 @@ function initRateLimits(){
           if(!xAxis || !yAxis) return;  // teardown draw pass — see above
           var ctx = chart.ctx;
 
-          // (d) Vertical dashed reset markers — same afterDraw + getPixelForValue
-          // + setLineDash pattern as the NOW line just below, a neutral (already-
-          // used-in-this-plugin) dark color so it's never mistaken for NOW, and
-          // labeled 'reset'. No-op when resetMarkers is empty (guarded above).
+          // (d) Vertical red DOTTED reset markers — same afterDraw +
+          // getPixelForValue pattern as the NOW line below; a [2,3] dot pattern
+          // (vs NOW's [4,3] dash) and the 'reset' label keep the two red lines
+          // distinct. Labeled at the TOP to avoid the crowded axis ticks at the
+          // bottom. No-op when resetMarkers is empty (guarded above).
           for(var rmk = 0; rmk < resetMarkers.length; rmk++) {
             var rx = xAxis.getPixelForValue(resetMarkers[rmk]);
             ctx.save();
             ctx.beginPath();
-            ctx.setLineDash([2, 3]);
-            ctx.strokeStyle = 'rgba(26, 26, 26, 0.45)';
+            ctx.setLineDash([2, 3]);              // dotted — distinct from NOW's [4,3] dash
+            ctx.strokeStyle = 'rgba(230, 51, 41, 0.7)';
             ctx.lineWidth = 1.5;
             ctx.moveTo(rx, yAxis.top);
             ctx.lineTo(rx, yAxis.bottom);
             ctx.stroke();
-            ctx.fillStyle = 'rgba(26, 26, 26, 0.6)';
+            // Label at the TOP (like NOW) — the bottom is crowded by the
+            // day/hour axis ticks.
+            ctx.fillStyle = 'rgba(230, 51, 41, 0.7)';
             ctx.font = '600 9px "DM Sans", sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('reset', rx, yAxis.bottom + 12);
+            ctx.fillText('reset', rx, yAxis.top - 4);
             ctx.restore();
           }
 
