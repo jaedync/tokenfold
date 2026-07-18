@@ -13,7 +13,15 @@ import httpx
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
-from .config import HA_DEVICES, HA_TOKEN, HA_URL, NOTIFY_TOKEN, STATS_API_KEY
+from . import agent_state
+from .config import (
+    AGENT_PRESENCE_DAMPING_S,
+    HA_DEVICES,
+    HA_TOKEN,
+    HA_URL,
+    NOTIFY_TOKEN,
+    STATS_API_KEY,
+)
 from .db import get_conn, write_txn
 from .pricing import compute_cost, display_model
 
@@ -177,6 +185,43 @@ async def _relay_to_ha(payload: dict, devices: list | None = None):
     return errors
 
 
+# Events that mean "Claude is blocked on the human".
+WAITING_EVENTS = {"permission", "question", "attention"}
+
+
+def _waiting_push_decision(session_id: str) -> str | None:
+    """Policy gate for a waiting push. Returns a suppression reason, or
+    None when the push should go out.
+
+    - Dedup by construction: one push per waiting spell; the flag clears
+      on the session's next working event.
+    - Presence damping: a user prompt anywhere in the fleet within
+      AGENT_PRESENCE_DAMPING_S means someone is at a keyboard; the
+      ambient display carries the beacon instead. Known trade-off: a
+      damped push is not retried later, so a prompt the user genuinely
+      missed stays silent until the cube/beacon surfaces it.
+    """
+    sess = agent_state.get_session(session_id)
+    if sess and sess.get("waiting_notified"):
+        return "duplicate"
+    since = agent_state.seconds_since_working()
+    if AGENT_PRESENCE_DAMPING_S > 0 and since is not None and since < AGENT_PRESENCE_DAMPING_S:
+        return "presence"
+    return None
+
+
+def _aggregate_waiting_payload(ha_payload: dict) -> dict:
+    """N sessions waiting at once -> one combined push, not N pushes."""
+    waiting = agent_state.waiting_sessions()
+    if len(waiting) <= 1:
+        return ha_payload
+    where = ", ".join(
+        f"{s['project']}@{s['machine']}" if s["machine"] else s["project"]
+        for s in waiting.values()
+    )
+    return {"title": f"{len(waiting)} sessions waiting", "message": where}
+
+
 @router.post("/api/notify")
 async def notify(request: Request, authorization: str | None = Header(default=None)):
     if not _check_auth(authorization):
@@ -184,14 +229,47 @@ async def notify(request: Request, authorization: str | None = Header(default=No
 
     data = await request.json()
 
+    event = data.get("event")
+    session_id = None
+    if event is not None:
+        machine = data.get("machine", "")
+        project = data.get("project", "unknown")
+        # Codex and legacy clients send no session_id; key them stably by
+        # machine+project so their stop events still resolve a state.
+        session_id = data.get("session_id") or f"{machine}:{project}"
+
+        if event == "working":
+            # Pure state transition: never a push. This is what clears a
+            # waiting spell and feeds the presence signal.
+            agent_state.update(session_id, machine, project, "working")
+            return {"ok": True, "state": "working"}
+
+        if event in WAITING_EVENTS:
+            agent_state.update(session_id, machine, project, "waiting")
+            reason = _waiting_push_decision(session_id)
+            if reason:
+                return {"ok": True, "suppressed": reason}
+
+        if event == "stop":
+            agent_state.update(session_id, machine, project, "idle")
+
     if "event" in data:
         ha_payload = _build_ha_payload(data)
         devices = data.get("devices")
+        if event in WAITING_EVENTS:
+            ha_payload = _aggregate_waiting_payload(ha_payload)
     else:
         ha_payload = dict(data)
         devices = ha_payload.pop("devices", None)
 
     errors = await _relay_to_ha(ha_payload, devices)
+
+    if event in WAITING_EVENTS and not errors:
+        # The push went out; close this waiting spell for every session it
+        # covered (an aggregate push covers all currently-waiting ones).
+        agent_state.mark_waiting_notified(session_id)
+        for sid in agent_state.waiting_sessions():
+            agent_state.mark_waiting_notified(sid)
 
     # Best-effort: clean up stale ORBB sessions and go idle if none remain
     if data.get("event") == "stop":

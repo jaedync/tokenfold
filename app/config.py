@@ -9,6 +9,15 @@ STATS_OWNER = os.environ.get("STATS_OWNER", "")
 IDLE_THRESHOLD_S = 300
 RECENCY_DAYS = 14
 
+# Agent-state / notification policy (see agent_state.py, notify.py).
+# A session that stops reporting decays out of the store after this TTL,
+# so a killed terminal can never strand a waiting state.
+AGENT_STATE_TTL_S = int(os.environ.get("AGENT_STATE_TTL_S", "600"))
+# Presence damping: suppress waiting pushes when any session got a user
+# prompt this recently (someone is at a keyboard; the ambient display
+# still shows the beacon). 0 disables damping.
+AGENT_PRESENCE_DAMPING_S = int(os.environ.get("AGENT_PRESENCE_DAMPING_S", "120"))
+
 
 def _csv_env(name, default=""):
     return tuple(x.strip() for x in os.environ.get(name, default).split(",") if x.strip())

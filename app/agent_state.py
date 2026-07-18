@@ -1,0 +1,123 @@
+"""Fleet agent-state: per-session working | waiting | idle, in memory.
+
+Fed by /api/notify events from the dotfleet relay hooks on every fleet
+machine (UserPromptSubmit -> working, permission/question/attention ->
+waiting, stop -> idle). Consumed two ways:
+
+  1. notify.py's notification policy (dedup per waiting spell, presence
+     damping, aggregation) reads and mutates this store.
+  2. Ambient displays (the LED cube's cubestatusd) poll
+     GET /api/agent-state for the fleet-wide snapshot.
+
+In-memory by design: the state is ephemeral and self-healing. A session
+that stops reporting decays to gone after AGENT_STATE_TTL_S, so a killed
+terminal can never strand a "waiting" beacon. A server restart simply
+forgets sessions until their next event. Single uvicorn worker, so no
+cross-process concerns; FastAPI runs handlers on one event loop, and all
+mutation happens synchronously within a request.
+"""
+import time
+
+from fastapi import APIRouter, Header
+from fastapi.responses import JSONResponse
+
+from .config import AGENT_STATE_TTL_S
+
+router = APIRouter()
+
+# sid -> {machine, project, state, ts, waiting_notified}
+_sessions: dict[str, dict] = {}
+_last_working_ts: float = 0.0
+
+
+def _prune(now: float) -> None:
+    stale = [sid for sid, s in _sessions.items() if now - s["ts"] > AGENT_STATE_TTL_S]
+    for sid in stale:
+        del _sessions[sid]
+
+
+def update(session_id: str, machine: str, project: str, state: str,
+           now: float | None = None) -> str | None:
+    """Record a state transition. Returns the session's previous state.
+
+    A working event clears the waiting_notified flag: the next waiting
+    spell is a fresh one and may notify again.
+    """
+    global _last_working_ts
+    now = time.time() if now is None else now
+    _prune(now)
+    s = _sessions.get(session_id) or {"waiting_notified": False}
+    prev = s.get("state")
+    s["machine"] = machine or s.get("machine", "")
+    s["project"] = project or s.get("project", "")
+    s["state"] = state
+    s["ts"] = now
+    if state == "working":
+        s["waiting_notified"] = False
+        _last_working_ts = now
+    _sessions[session_id] = s
+    return prev
+
+
+def get_session(session_id: str) -> dict | None:
+    return _sessions.get(session_id)
+
+
+def seconds_since_working(now: float | None = None) -> float | None:
+    """Age of the most recent working event across the whole fleet, or
+    None if no working event has been seen since startup. This is the
+    presence signal: a recent prompt means someone is at a keyboard."""
+    if not _last_working_ts:
+        return None
+    now = time.time() if now is None else now
+    return now - _last_working_ts
+
+
+def waiting_sessions(now: float | None = None) -> dict[str, dict]:
+    now = time.time() if now is None else now
+    _prune(now)
+    return {sid: s for sid, s in _sessions.items() if s["state"] == "waiting"}
+
+
+def mark_waiting_notified(session_id: str) -> None:
+    if session_id in _sessions:
+        _sessions[session_id]["waiting_notified"] = True
+
+
+def snapshot(now: float | None = None) -> dict:
+    now = time.time() if now is None else now
+    _prune(now)
+    sessions = {}
+    counts = {"working": 0, "waiting": 0, "idle": 0}
+    for sid, s in _sessions.items():
+        counts[s["state"]] = counts.get(s["state"], 0) + 1
+        sessions[sid] = {
+            "machine": s["machine"],
+            "project": s["project"],
+            "state": s["state"],
+            "age_s": round(now - s["ts"], 1),
+        }
+    return {
+        "sessions": sessions,
+        "summary": counts,
+        "any_waiting": counts.get("waiting", 0) > 0,
+        "any_working": counts.get("working", 0) > 0,
+    }
+
+
+def reset() -> None:
+    """Test support: forget everything."""
+    global _last_working_ts
+    _sessions.clear()
+    _last_working_ts = 0.0
+
+
+@router.get("/api/agent-state")
+async def get_agent_state(authorization: str | None = Header(default=None)):
+    # Same bearer token the event writers use: the fleet's ingest-only
+    # token, which cubestatusd also holds. Never unauthenticated.
+    from .notify import _check_auth
+
+    if not _check_auth(authorization):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return snapshot()
