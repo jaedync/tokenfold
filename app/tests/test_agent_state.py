@@ -114,9 +114,9 @@ class NotifyPolicyTests(unittest.TestCase):
     def post(self, body):
         return self.client.post("/api/notify", json=body, headers=AUTH)
 
-    def test_state_only_stop_updates_state_without_ha_push(self):
+    def test_state_only_stop_goes_straight_to_idle_without_ha_push(self):
         # Automated sessions emit their transitions too (complete picture);
-        # the server records idle but pushes nothing to HA.
+        # the server records idle (never ready) and pushes nothing to HA.
         self.post({"event": "working", "machine": "mac", "project": "bot",
                    "session_id": "bot-1", "client_ts": 1.0})
         r = self.post({"event": "stop", "machine": "mac", "project": "bot",
@@ -125,11 +125,34 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertEqual(agent_state.get_session("bot-1")["state"], "idle")
         self.assertEqual(self.pushes, [])
 
-    def test_normal_stop_still_pushes_to_ha(self):
+    def test_interactive_stop_is_ready_and_still_pushes_to_ha(self):
+        # Turn end: response awaiting the user = ready, usage push unchanged.
         r = self.post({"event": "stop", "machine": "mac", "project": "proj",
                        "session_id": "s1", "client_ts": 2.0})
         self.assertTrue(r.json()["ok"])
+        self.assertEqual(agent_state.get_session("s1")["state"], "ready")
         self.assertEqual(len(self.pushes), 1)
+        snap = agent_state.snapshot()
+        self.assertTrue(snap["any_ready"])
+        self.assertEqual(snap["summary"]["ready"], 1)
+
+    def test_idle_event_demotes_ready_without_push(self):
+        self.post({"event": "stop", "machine": "mac", "project": "proj",
+                   "session_id": "s1", "client_ts": 2.0})
+        self.pushes.clear()
+        r = self.post({"event": "idle", "machine": "mac", "project": "proj",
+                       "session_id": "s1", "client_ts": 3.0, "state_only": True})
+        self.assertEqual(r.json(), {"ok": True, "state": "idle"})
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+        self.assertEqual(self.pushes, [])
+
+    def test_heartbeat_working_is_state_only(self):
+        r = self.post({"event": "working", "machine": "mac", "project": "proj",
+                       "session_id": "s1", "client_ts": 5.0,
+                       "state_only": True, "heartbeat": True})
+        self.assertEqual(r.json(), {"ok": True, "state": "working"})
+        self.assertEqual(agent_state.get_session("s1")["state"], "working")
+        self.assertEqual(self.pushes, [])
 
     def test_working_is_state_only_never_a_push(self):
         r = self.post({"event": "working", "project": "p", "machine": "mac",
@@ -184,18 +207,20 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertTrue(agent_state.get_session("s1")["waiting_notified"])
         self.assertTrue(agent_state.get_session("s2")["waiting_notified"])
 
-    def test_stop_still_pushes_and_goes_idle(self):
+    def test_stop_still_pushes_and_goes_ready(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac",
                        "session_id": "s1", "duration_s": 42, "tool_count": 3})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(self.pushes), 1)
         self.assertIn("Response complete", self.pushes[0]["title"])
-        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+        self.assertEqual(agent_state.get_session("s1")["state"], "ready")
 
     def test_codex_style_payload_without_session_id(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(agent_state.get_session("mac:p")["state"], "idle")
+        # a legacy client without state_only lands ready (demoted by TTL);
+        # current codex-relay sends state_only and goes straight to idle
+        self.assertEqual(agent_state.get_session("mac:p")["state"], "ready")
 
     def test_raw_payload_passthrough_unchanged(self):
         r = self.post({"title": "custom", "message": "hi"})

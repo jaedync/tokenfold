@@ -112,7 +112,7 @@ def snapshot(now: float | None = None) -> dict:
     now = time.time() if now is None else now
     _prune(now)
     sessions = {}
-    counts = {"working": 0, "waiting": 0, "idle": 0}
+    counts = {"working": 0, "waiting": 0, "ready": 0, "idle": 0}
     for sid, s in _sessions.items():
         counts[s["state"]] = counts.get(s["state"], 0) + 1
         sessions[sid] = {
@@ -126,6 +126,7 @@ def snapshot(now: float | None = None) -> dict:
         "summary": counts,
         "any_waiting": counts.get("waiting", 0) > 0,
         "any_working": counts.get("working", 0) > 0,
+        "any_ready": counts.get("ready", 0) > 0,
     }
 
 

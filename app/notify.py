@@ -261,13 +261,20 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             agent_state.remove(session_id)
             return {"ok": True, "state": "gone"}
 
-        if event == "stop":
+        if event == "idle":
+            # idle_prompt: the session has sat unattended past the CLI's
+            # idle threshold. True idle. Always state-only.
             agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
+            return {"ok": True, "state": "idle"}
+
+        if event == "stop":
+            # Turn ended. An interactive session is READY (response awaiting
+            # the user) until idle_prompt demotes it; automated/codex turns
+            # (state_only) go straight to idle and never surface.
             if data.get("state_only"):
-                # Client reported a transition with no push-worthy payload
-                # (e.g. an automated session's turn ended). State is now
-                # recorded; policy says nothing goes to HA.
+                agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
                 return {"ok": True, "state": "idle"}
+            agent_state.update(session_id, machine, project, "ready", event_ts=client_ts)
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)
