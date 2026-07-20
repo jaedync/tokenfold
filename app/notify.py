@@ -237,21 +237,25 @@ async def notify(request: Request, authorization: str | None = Header(default=No
         # Codex and legacy clients send no session_id; key them stably by
         # machine+project so their stop events still resolve a state.
         session_id = data.get("session_id") or f"{machine}:{project}"
+        try:
+            client_ts = float(data.get("client_ts"))
+        except (TypeError, ValueError):
+            client_ts = None
 
         if event == "working":
             # Pure state transition: never a push. This is what clears a
             # waiting spell and feeds the presence signal.
-            agent_state.update(session_id, machine, project, "working")
+            agent_state.update(session_id, machine, project, "working", event_ts=client_ts)
             return {"ok": True, "state": "working"}
 
         if event in WAITING_EVENTS:
-            agent_state.update(session_id, machine, project, "waiting")
+            agent_state.update(session_id, machine, project, "waiting", event_ts=client_ts)
             reason = _waiting_push_decision(session_id)
             if reason:
                 return {"ok": True, "suppressed": reason}
 
         if event == "stop":
-            agent_state.update(session_id, machine, project, "idle")
+            agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)

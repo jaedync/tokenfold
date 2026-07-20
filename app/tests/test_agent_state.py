@@ -44,6 +44,24 @@ class AgentStateStoreTests(unittest.TestCase):
         agent_state.update("s1", "mac", "proj", "working", now=1001.0)
         self.assertFalse(agent_state.get_session("s1")["waiting_notified"])
 
+    def test_out_of_order_working_is_discarded(self):
+        # The sub-2s-turn race: stop (sent later) arrives BEFORE the
+        # delayed working retry. The stale working must not resurrect an
+        # "active" cube for the whole TTL.
+        agent_state.update("s1", "mac", "proj", "idle", now=1002.0, event_ts=12.0)
+        agent_state.update("s1", "mac", "proj", "working", now=1003.0, event_ts=10.0)
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+
+    def test_in_order_events_apply_normally(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0, event_ts=10.0)
+        agent_state.update("s1", "mac", "proj", "idle", now=1001.0, event_ts=12.0)
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+
+    def test_events_without_client_ts_keep_arrival_order(self):
+        agent_state.update("s1", "mac", "proj", "idle", now=1002.0)
+        agent_state.update("s1", "mac", "proj", "working", now=1003.0)
+        self.assertEqual(agent_state.get_session("s1")["state"], "working")
+
     def test_seconds_since_working_none_until_first_prompt(self):
         self.assertIsNone(agent_state.seconds_since_working())
         agent_state.update("s1", "mac", "proj", "working", now=1000.0)

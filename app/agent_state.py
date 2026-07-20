@@ -37,17 +37,30 @@ def _prune(now: float) -> None:
 
 
 def update(session_id: str, machine: str, project: str, state: str,
-           now: float | None = None) -> str | None:
+           now: float | None = None, event_ts: float | None = None) -> str | None:
     """Record a state transition. Returns the session's previous state.
 
     A working event clears the waiting_notified flag: the next waiting
     spell is a fresh one and may notify again.
+
+    event_ts is the CLIENT's clock at hook time. Hooks post from
+    independent processes with retry/backoff, so arrival order is not
+    send order: a sub-2s turn's stop can arrive before its delayed
+    working retry, which used to strand the session at "working" for the
+    whole TTL. Events of one session share one machine clock, so a
+    transition older than the last applied one is stale and is
+    discarded. Events without event_ts (legacy/codex) keep arrival order.
     """
     global _last_working_ts
     now = time.time() if now is None else now
     _prune(now)
     s = _sessions.get(session_id) or {"waiting_notified": False}
     prev = s.get("state")
+    if (event_ts is not None and s.get("event_ts") is not None
+            and event_ts < s["event_ts"]):
+        return prev                    # out-of-order delivery: stale, discard
+    if event_ts is not None:
+        s["event_ts"] = event_ts
     s["machine"] = machine or s.get("machine", "")
     s["project"] = project or s.get("project", "")
     s["state"] = state
