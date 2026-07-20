@@ -30,12 +30,14 @@ class AgentStateStoreTests(unittest.TestCase):
         self.assertFalse(snap["any_waiting"])
 
     def test_ttl_decay_forgets_dead_sessions(self):
-        agent_state.update("s1", "mac", "proj", "waiting", now=1000.0)
+        # Non-waiting states use the default TTL (waiting has its own,
+        # longer one; see test_waiting_outlives_the_default_ttl).
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
         snap = agent_state.snapshot(now=1000.0 + 599)
         self.assertIn("s1", snap["sessions"])
         snap = agent_state.snapshot(now=1000.0 + 601)
         self.assertEqual(snap["sessions"], {})
-        self.assertFalse(snap["any_waiting"])
+        self.assertFalse(snap["any_working"])
 
     def test_working_clears_waiting_notified(self):
         agent_state.update("s1", "mac", "proj", "waiting", now=1000.0)
@@ -61,6 +63,23 @@ class AgentStateStoreTests(unittest.TestCase):
         agent_state.update("s1", "mac", "proj", "idle", now=1002.0)
         agent_state.update("s1", "mac", "proj", "working", now=1003.0)
         self.assertEqual(agent_state.get_session("s1")["state"], "working")
+
+    def test_waiting_outlives_the_default_ttl(self):
+        # A blocked permission prompt after 10 minutes is still waiting;
+        # it must NOT decay to an idle-looking cube.
+        agent_state.update("s1", "mac", "proj", "waiting", now=1000.0)
+        snap = agent_state.snapshot(now=1000.0 + 601)
+        self.assertEqual(snap["sessions"]["s1"]["state"], "waiting")
+        self.assertTrue(snap["any_waiting"])
+        # ...but a hard-crashed terminal still can't strand it forever
+        snap = agent_state.snapshot(now=1000.0 + 7201)
+        self.assertEqual(snap["sessions"], {})
+
+    def test_remove_forgets_session_immediately(self):
+        agent_state.update("s1", "mac", "proj", "waiting", now=1000.0)
+        self.assertTrue(agent_state.remove("s1"))
+        self.assertEqual(agent_state.snapshot(now=1001.0)["sessions"], {})
+        self.assertFalse(agent_state.remove("s1"))   # idempotent
 
     def test_seconds_since_working_none_until_first_prompt(self):
         self.assertIsNone(agent_state.seconds_since_working())

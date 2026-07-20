@@ -13,6 +13,13 @@ RECENCY_DAYS = 14
 # A session that stops reporting decays out of the store after this TTL,
 # so a killed terminal can never strand a waiting state.
 AGENT_STATE_TTL_S = int(os.environ.get("AGENT_STATE_TTL_S", "600"))
+# Waiting sessions keep a much longer leash: a blocked permission prompt is
+# still genuinely waiting after 10 minutes, and pruning it made the cube
+# read idle while Claude sat on a tool-use approval. Cleanly-closed
+# terminals delete themselves via the SessionEnd "gone" event, so this
+# long TTL only decides how long a hard-crashed terminal can strand a red
+# beacon.
+AGENT_STATE_WAITING_TTL_S = int(os.environ.get("AGENT_STATE_WAITING_TTL_S", "7200"))
 # Presence damping: suppress waiting pushes when any session got a user
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.

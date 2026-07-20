@@ -21,7 +21,7 @@ import time
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from .config import AGENT_STATE_TTL_S
+from .config import AGENT_STATE_TTL_S, AGENT_STATE_WAITING_TTL_S
 
 router = APIRouter()
 
@@ -30,10 +30,21 @@ _sessions: dict[str, dict] = {}
 _last_working_ts: float = 0.0
 
 
+def _ttl_for(state: str) -> float:
+    return AGENT_STATE_WAITING_TTL_S if state == "waiting" else AGENT_STATE_TTL_S
+
+
 def _prune(now: float) -> None:
-    stale = [sid for sid, s in _sessions.items() if now - s["ts"] > AGENT_STATE_TTL_S]
+    stale = [sid for sid, s in _sessions.items()
+             if now - s["ts"] > _ttl_for(s.get("state", ""))]
     for sid in stale:
         del _sessions[sid]
+
+
+def remove(session_id: str) -> bool:
+    """Explicit goodbye (SessionEnd hook): forget the session immediately.
+    Returns whether it existed."""
+    return _sessions.pop(session_id, None) is not None
 
 
 def update(session_id: str, machine: str, project: str, state: str,

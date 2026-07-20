@@ -254,6 +254,13 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             if reason:
                 return {"ok": True, "suppressed": reason}
 
+        if event == "gone":
+            # SessionEnd: state-only, never a push. Deletion ignores
+            # client_ts ordering on purpose: gone is terminal, and a session
+            # id is never reused after SessionEnd.
+            agent_state.remove(session_id)
+            return {"ok": True, "state": "gone"}
+
         if event == "stop":
             agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
 
