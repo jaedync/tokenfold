@@ -114,6 +114,23 @@ class NotifyPolicyTests(unittest.TestCase):
     def post(self, body):
         return self.client.post("/api/notify", json=body, headers=AUTH)
 
+    def test_state_only_stop_updates_state_without_ha_push(self):
+        # Automated sessions emit their transitions too (complete picture);
+        # the server records idle but pushes nothing to HA.
+        self.post({"event": "working", "machine": "mac", "project": "bot",
+                   "session_id": "bot-1", "client_ts": 1.0})
+        r = self.post({"event": "stop", "machine": "mac", "project": "bot",
+                       "session_id": "bot-1", "client_ts": 2.0, "state_only": True})
+        self.assertEqual(r.json(), {"ok": True, "state": "idle"})
+        self.assertEqual(agent_state.get_session("bot-1")["state"], "idle")
+        self.assertEqual(self.pushes, [])
+
+    def test_normal_stop_still_pushes_to_ha(self):
+        r = self.post({"event": "stop", "machine": "mac", "project": "proj",
+                       "session_id": "s1", "client_ts": 2.0})
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(len(self.pushes), 1)
+
     def test_working_is_state_only_never_a_push(self):
         r = self.post({"event": "working", "project": "p", "machine": "mac",
                        "session_id": "s1"})

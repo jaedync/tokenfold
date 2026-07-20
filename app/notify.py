@@ -263,6 +263,11 @@ async def notify(request: Request, authorization: str | None = Header(default=No
 
         if event == "stop":
             agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
+            if data.get("state_only"):
+                # Client reported a transition with no push-worthy payload
+                # (e.g. an automated session's turn ended). State is now
+                # recorded; policy says nothing goes to HA.
+                return {"ok": True, "state": "idle"}
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)
