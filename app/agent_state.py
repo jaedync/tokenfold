@@ -48,7 +48,8 @@ def remove(session_id: str) -> bool:
 
 
 def update(session_id: str, machine: str, project: str, state: str,
-           now: float | None = None, event_ts: float | None = None) -> str | None:
+           now: float | None = None, event_ts: float | None = None,
+           fleet_rev: str | None = None) -> str | None:
     """Record a state transition. Returns the session's previous state.
 
     A working event clears the waiting_notified flag: the next waiting
@@ -67,11 +68,19 @@ def update(session_id: str, machine: str, project: str, state: str,
     _prune(now)
     s = _sessions.get(session_id) or {"waiting_notified": False}
     prev = s.get("state")
+    if state != prev:
+        # journald is the event history; "why was the cube X at HH:MM" must
+        # always be answerable after the fact.
+        print("[agent-state] {} {}: {} -> {} (machine={} project={})".format(
+            time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12],
+            prev or "new", state, machine, project), flush=True)
     if (event_ts is not None and s.get("event_ts") is not None
             and event_ts < s["event_ts"]):
         return prev                    # out-of-order delivery: stale, discard
     if event_ts is not None:
         s["event_ts"] = event_ts
+    if fleet_rev:
+        s["fleet_rev"] = fleet_rev
     s["machine"] = machine or s.get("machine", "")
     s["project"] = project or s.get("project", "")
     s["state"] = state
@@ -120,10 +129,17 @@ def snapshot(now: float | None = None) -> dict:
             "project": s["project"],
             "state": s["state"],
             "age_s": round(now - s["ts"], 1),
+            "fleet_rev": s.get("fleet_rev"),
         }
+    # machine -> latest observed fleet rev: the authoritative drift check.
+    fleet_revs = {}
+    for s in sorted(_sessions.values(), key=lambda s: s["ts"]):
+        if s.get("fleet_rev"):
+            fleet_revs[s.get("machine", "")] = s["fleet_rev"]
     return {
         "sessions": sessions,
         "summary": counts,
+        "fleet_revs": fleet_revs,
         "any_waiting": counts.get("waiting", 0) > 0,
         "any_working": counts.get("working", 0) > 0,
         "any_ready": counts.get("ready", 0) > 0,

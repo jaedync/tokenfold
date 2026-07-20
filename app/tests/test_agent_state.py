@@ -81,6 +81,22 @@ class AgentStateStoreTests(unittest.TestCase):
         self.assertEqual(agent_state.snapshot(now=1001.0)["sessions"], {})
         self.assertFalse(agent_state.remove("s1"))   # idempotent
 
+    def test_fleet_rev_recorded_and_rolled_up(self):
+        agent_state.update("s1", "mac", "p", "working", now=1000.0, fleet_rev="abc1234")
+        agent_state.update("s2", "htz", "p", "working", now=1001.0, fleet_rev="def5678")
+        snap = agent_state.snapshot(now=1002.0)
+        self.assertEqual(snap["sessions"]["s1"]["fleet_rev"], "abc1234")
+        self.assertEqual(snap["fleet_revs"], {"mac": "abc1234", "htz": "def5678"})
+        # newest event wins per machine (a just-synced machine stops looking stale)
+        agent_state.update("s3", "mac", "p", "working", now=1003.0, fleet_rev="fff9999")
+        self.assertEqual(agent_state.snapshot(now=1004.0)["fleet_revs"]["mac"], "fff9999")
+
+    def test_fleet_rev_absent_stays_none(self):
+        agent_state.update("s1", "mac", "p", "working", now=1000.0)
+        snap = agent_state.snapshot(now=1001.0)
+        self.assertIsNone(snap["sessions"]["s1"]["fleet_rev"])
+        self.assertEqual(snap["fleet_revs"], {})
+
     def test_seconds_since_working_none_until_first_prompt(self):
         self.assertIsNone(agent_state.seconds_since_working())
         agent_state.update("s1", "mac", "proj", "working", now=1000.0)

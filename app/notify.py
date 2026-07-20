@@ -241,15 +241,16 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             client_ts = float(data.get("client_ts"))
         except (TypeError, ValueError):
             client_ts = None
+        fleet_rev = data.get("fleet_rev") or None
 
         if event == "working":
             # Pure state transition: never a push. This is what clears a
             # waiting spell and feeds the presence signal.
-            agent_state.update(session_id, machine, project, "working", event_ts=client_ts)
+            agent_state.update(session_id, machine, project, "working", event_ts=client_ts, fleet_rev=fleet_rev)
             return {"ok": True, "state": "working"}
 
         if event in WAITING_EVENTS:
-            agent_state.update(session_id, machine, project, "waiting", event_ts=client_ts)
+            agent_state.update(session_id, machine, project, "waiting", event_ts=client_ts, fleet_rev=fleet_rev)
             reason = _waiting_push_decision(session_id)
             if reason:
                 return {"ok": True, "suppressed": reason}
@@ -264,7 +265,7 @@ async def notify(request: Request, authorization: str | None = Header(default=No
         if event == "idle":
             # idle_prompt: the session has sat unattended past the CLI's
             # idle threshold. True idle. Always state-only.
-            agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
+            agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
             return {"ok": True, "state": "idle"}
 
         if event == "stop":
@@ -272,9 +273,9 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             # the user) until idle_prompt demotes it; automated/codex turns
             # (state_only) go straight to idle and never surface.
             if data.get("state_only"):
-                agent_state.update(session_id, machine, project, "idle", event_ts=client_ts)
+                agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
                 return {"ok": True, "state": "idle"}
-            agent_state.update(session_id, machine, project, "ready", event_ts=client_ts)
+            agent_state.update(session_id, machine, project, "ready", event_ts=client_ts, fleet_rev=fleet_rev)
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)
