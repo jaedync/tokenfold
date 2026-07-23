@@ -23,7 +23,8 @@ from fastapi.responses import JSONResponse
 
 from .config import (AGENT_STATE_MOTE_MIN_VISIBLE_S, AGENT_STATE_MOTE_SUNSET_S,
                      AGENT_STATE_SUBAGENT_TTL_S, AGENT_STATE_TTL_S,
-                     AGENT_STATE_WAITING_TTL_S, AGENT_STATE_WORKING_FRESH_S)
+                     AGENT_STATE_WAITING_TTL_S, AGENT_STATE_WORKING_FRESH_S,
+                     COMPACT_TTL_S, TROUBLE_TTL_S)
 
 router = APIRouter()
 
@@ -116,6 +117,122 @@ def sunset_session(session_id: str, now: float | None = None) -> bool:
     return True
 
 
+def session_start(session_id: str, machine: str, project: str,
+                  now: float | None = None, event_ts: float | None = None,
+                  fleet_rev: str | None = None,
+                  model: str | None = None) -> None:
+    """SessionStart: register (or refresh) an IDLE session. Records the model
+    so the cube colors the dot by family from the first frame. A repeat
+    session_start only backfills a newly-resolved model (the parent transcript
+    may have no assistant message at startup); it never marks the session
+    working. Terminal once SessionEnd fired."""
+    now = time.time() if now is None else now
+    _prune(now)
+    s = _sessions.get(session_id)
+    if s is not None and s.get("ending_ts") is not None:
+        return                              # terminal: SessionEnd already fired
+    if s is None:
+        s = {"waiting_notified": False, "state": "idle",
+             "machine": machine or "", "project": project or "", "ts": now}
+        print("[agent-state] {} {}: new -> idle (session_start)".format(
+            time.strftime("%H:%M:%S", time.localtime(now)),
+            session_id[:12]), flush=True)
+    # Backfill identity without disturbing state / working_ts.
+    if machine:
+        s["machine"] = machine
+    if project:
+        s["project"] = project
+    if model:
+        s["model"] = model
+    if fleet_rev:
+        s["fleet_rev"] = fleet_rev
+    if event_ts is not None:
+        s["event_ts"] = event_ts
+    s["ts"] = now
+    _sessions[session_id] = s
+
+
+def tool_activity(session_id: str, machine: str, project: str,
+                  count: int = 1, last_tool: str | None = None,
+                  now: float | None = None, event_ts: float | None = None,
+                  fleet_rev: str | None = None,
+                  model: str | None = None) -> None:
+    """PostToolUse batch: the working heartbeat AND the cumulative tool ticker.
+    Routes the working transition through update() (so it clears trouble, arms
+    presence, and keeps subagents alive exactly like the old heartbeat), then
+    accumulates tool_count and records the last tool name for the cube's
+    activity spark."""
+    now = time.time() if now is None else now
+    update(session_id, machine, project, "working", now=now,
+           event_ts=event_ts, fleet_rev=fleet_rev, model=model)
+    s = _sessions.get(session_id)
+    if s is None or s.get("ending_ts") is not None:
+        return
+    s["tool_count"] = s.get("tool_count", 0) + int(count)
+    if last_tool:
+        s["last_tool"] = last_tool
+    _sessions[session_id] = s
+
+
+def tool_trouble(session_id: str, now: float | None = None) -> None:
+    """PostToolUseFailure / StopFailure: mark the session troubled for
+    TROUBLE_TTL_S. Pure overlay: it never changes working|waiting|idle. Unknown
+    sessions are ignored (no phantom session from a stray failure)."""
+    now = time.time() if now is None else now
+    s = _sessions.get(session_id)
+    if s is None or s.get("ending_ts") is not None:
+        return
+    s["trouble_ts"] = now
+    s["ts"] = now                           # keep the troubled session visible
+    _sessions[session_id] = s
+
+
+# StopFailure is a trouble signal like PostToolUseFailure: same overlay, same
+# state-preserving behavior. One alias keeps the two event names honest.
+stop_failure = tool_trouble
+
+
+def compact_start(session_id: str, now: float | None = None) -> None:
+    """PreCompact: flag the session compacting. Pure overlay (state untouched).
+    compact_ts anchors the COMPACT_TTL_S fallback so a dropped compact_end
+    cannot strand the overlay. Unknown sessions are ignored."""
+    now = time.time() if now is None else now
+    s = _sessions.get(session_id)
+    if s is None or s.get("ending_ts") is not None:
+        return
+    s["compacting"] = True
+    s["compact_ts"] = now
+    s["ts"] = now                           # compaction can be long; keep alive
+    _sessions[session_id] = s
+
+
+def compact_end(session_id: str, now: float | None = None) -> None:
+    """PostCompact: clear the compacting overlay. Unknown sessions ignored."""
+    now = time.time() if now is None else now
+    s = _sessions.get(session_id)
+    if s is None:
+        return
+    s["compacting"] = False
+    s["compact_ts"] = None
+    s["ts"] = now
+    _sessions[session_id] = s
+
+
+def _trouble(s: dict, now: float) -> bool:
+    """True while a trouble signal is fresher than TROUBLE_TTL_S."""
+    t = s.get("trouble_ts")
+    return t is not None and (now - t) <= TROUBLE_TTL_S
+
+
+def _compacting(s: dict, now: float) -> bool:
+    """True while compaction is in progress: compact_start set the flag and no
+    compact_end has cleared it, bounded by the COMPACT_TTL_S fallback."""
+    if not s.get("compacting"):
+        return False
+    ct = s.get("compact_ts")
+    return ct is not None and (now - ct) <= COMPACT_TTL_S
+
+
 def update(session_id: str, machine: str, project: str, state: str,
            now: float | None = None, event_ts: float | None = None,
            fleet_rev: str | None = None, model: str | None = None) -> str | None:
@@ -161,6 +278,9 @@ def update(session_id: str, machine: str, project: str, state: str,
     if state == "working":
         s["working_ts"] = now
         s["waiting_notified"] = False
+        # A fresh prompt (or tool progress, which routes through here) means
+        # Claude is moving again: clear any earlier trouble overlay.
+        s["trouble_ts"] = None
         _last_working_ts = now
         # Keep-alive: a working heartbeat refreshes this session's live
         # subagents so long background fan-outs keep their motes lit. A
@@ -352,7 +472,14 @@ def snapshot(now: float | None = None) -> dict:
         dot = {"id": sid, "kind": "session",
                "age_s": round(now - s["ts"], 1),
                "model": s.get("model", ""),
-               "family": _family(s.get("model", ""))}
+               "family": _family(s.get("model", "")),
+               # Additive full-resolution fields (v2.2). Sessions only; motes
+               # below never carry them. A session that never saw the new
+               # events reports the safe defaults.
+               "tool_count": s.get("tool_count", 0),
+               "last_tool": s.get("last_tool"),
+               "trouble": _trouble(s, now),
+               "compacting": _compacting(s, now)}
         if ending is not None:
             # Fade the dot: report it sunsetting with seconds since SessionEnd.
             dot["state"] = "sunsetting"

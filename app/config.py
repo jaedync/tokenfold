@@ -41,6 +41,14 @@ AGENT_STATE_MOTE_SUNSET_S = float(os.environ.get("AGENT_STATE_MOTE_SUNSET_S", "0
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.
 AGENT_PRESENCE_DAMPING_S = int(os.environ.get("AGENT_PRESENCE_DAMPING_S", "120"))
+# Trouble overlay leash: a tool failure (PostToolUseFailure / StopFailure)
+# marks the session troubled for this long, then the overlay self-clears even
+# without a clearing event. Fresh tool progress or a new prompt clears it early.
+TROUBLE_TTL_S = float(os.environ.get("AGENT_STATE_TROUBLE_TTL_S", "45"))
+# Compaction overlay fallback: if PostCompact (compact_end) is dropped, the
+# compacting overlay self-clears this long after compact_start so a missed end
+# cannot strand a session showing "compacting" forever.
+COMPACT_TTL_S = float(os.environ.get("AGENT_STATE_COMPACT_TTL_S", "300"))
 
 
 def _csv_env(name, default=""):

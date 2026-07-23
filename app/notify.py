@@ -252,6 +252,37 @@ async def notify(request: Request, authorization: str | None = Header(default=No
                                model=data.get("model"))
             return {"ok": True, "state": "working"}
 
+        if event == "session_start":
+            # SessionStart: register an idle session so its dot (and model
+            # color) appear before the first prompt. State-only, never a push.
+            agent_state.session_start(session_id, machine, project,
+                                      event_ts=client_ts, fleet_rev=fleet_rev,
+                                      model=data.get("model"))
+            return {"ok": True, "state": "session_start"}
+
+        if event == "tool_activity":
+            # PostToolUse batch (the new working heartbeat): accumulate the
+            # cumulative tool ticker and last-tool spark. State-only.
+            agent_state.tool_activity(
+                session_id, machine, project,
+                count=data.get("count", 1), last_tool=data.get("last_tool"),
+                event_ts=client_ts, fleet_rev=fleet_rev, model=data.get("model"))
+            return {"ok": True, "state": "tool_activity"}
+
+        if event in ("tool_trouble", "stop_failure"):
+            # A tool failure: overlay only, never a phone buzz and never a
+            # state change. Both names route to the same trouble overlay.
+            agent_state.tool_trouble(session_id)
+            return {"ok": True, "state": event}
+
+        if event == "compact_start":
+            agent_state.compact_start(session_id)
+            return {"ok": True, "state": "compact_start"}
+
+        if event == "compact_end":
+            agent_state.compact_end(session_id)
+            return {"ok": True, "state": "compact_end"}
+
         if event == "subagent_start":
             # Fan-out mote on. session_id is the PARENT (the relay recovered
             # it from the transcript path). State-only, never a push. model is

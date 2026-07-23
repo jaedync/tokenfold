@@ -325,6 +325,129 @@ def test_respawn_while_sunsetting_resets_the_mote():
     assert mote[0]["age_s"] == 0.1
 
 
+# --- Full-resolution session fields (v2.2): tool activity, trouble, compaction -
+# Additive session-dot fields the cube overlays. Standalone pytest functions in
+# the file's newer style, with fixed-clock injection.
+def _dot(snap, sid):
+    return [a for a in snap["agents"] if a["id"] == sid][0]
+
+
+def test_session_start_creates_idle_session_with_family():
+    agent_state.reset()
+    agent_state.session_start("s1", "mac", "proj", model="claude-opus-4-8", now=100.0)
+    dot = _dot(agent_state.snapshot(now=100.0), "s1")
+    assert dot["state"] == "idle"           # SessionStart is not work
+    assert dot["family"] == "opus"          # family resolved from the model
+    # A SessionStart never marks the session working.
+    assert "working_ts" not in agent_state.get_session("s1")
+
+
+def test_second_session_start_refreshes_model_only():
+    agent_state.reset()
+    agent_state.session_start("s1", "mac", "proj", now=100.0)   # model unknown at startup
+    agent_state.session_start("s1", "mac", "proj", model="claude-fable-5", now=105.0)
+    s = agent_state.get_session("s1")
+    assert s["model"] == "claude-fable-5"    # newly-resolved model backfilled
+    assert s["state"] == "idle"              # still idle, not bumped to working
+    assert "working_ts" not in s             # never bumps the working clock
+
+
+def test_tool_activity_accumulates_count_and_last_tool():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", count=1, last_tool="Bash",
+                              model="claude-opus-4-8", now=100.0)
+    s = agent_state.get_session("s1")
+    assert s["tool_count"] == 1
+    assert s["last_tool"] == "Bash"
+    assert s["working_ts"] == 100.0          # tool progress is the working heartbeat
+    assert s["state"] == "working"
+    agent_state.tool_activity("s1", "mac", "proj", count=2, last_tool="Read", now=110.0)
+    s = agent_state.get_session("s1")
+    assert s["tool_count"] == 3              # cumulative
+    assert s["last_tool"] == "Read"
+    assert s["working_ts"] == 110.0          # bumped again
+
+
+def test_tool_activity_clears_earlier_trouble():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", count=1, last_tool="Bash", now=100.0)
+    agent_state.tool_trouble("s1", now=101.0)
+    assert _dot(agent_state.snapshot(now=102.0), "s1")["trouble"] is True
+    agent_state.tool_activity("s1", "mac", "proj", count=1, last_tool="Read", now=103.0)
+    assert _dot(agent_state.snapshot(now=104.0), "s1")["trouble"] is False
+
+
+def test_tool_trouble_sets_then_self_clears_after_ttl():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", now=100.0)
+    agent_state.tool_trouble("s1", now=101.0)
+    assert _dot(agent_state.snapshot(now=101.0), "s1")["trouble"] is True
+    # still troubled just before TROUBLE_TTL_S (45)
+    assert _dot(agent_state.snapshot(now=101.0 + 44.0), "s1")["trouble"] is True
+    # overlay self-clears once the TTL elapses (no clearing event needed)
+    assert _dot(agent_state.snapshot(now=101.0 + 46.0), "s1")["trouble"] is False
+
+
+def test_trouble_cleared_by_prompt_event():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", now=100.0)
+    agent_state.tool_trouble("s1", now=101.0)
+    assert _dot(agent_state.snapshot(now=102.0), "s1")["trouble"] is True
+    agent_state.update("s1", "mac", "proj", "working", now=103.0)   # a fresh prompt
+    assert _dot(agent_state.snapshot(now=104.0), "s1")["trouble"] is False
+
+
+def test_stop_failure_marks_trouble_without_changing_state():
+    agent_state.reset()
+    agent_state.update("s1", "mac", "proj", "idle", now=100.0)
+    agent_state.stop_failure("s1", now=101.0)
+    assert agent_state.get_session("s1")["state"] == "idle"   # state unchanged
+    assert _dot(agent_state.snapshot(now=101.0), "s1")["trouble"] is True
+
+
+def test_compact_start_and_end_toggle_compacting():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", now=100.0)
+    agent_state.compact_start("s1", now=101.0)
+    assert _dot(agent_state.snapshot(now=102.0), "s1")["compacting"] is True
+    assert agent_state.get_session("s1")["state"] == "working"   # compaction is an overlay
+    agent_state.compact_end("s1", now=103.0)
+    assert _dot(agent_state.snapshot(now=104.0), "s1")["compacting"] is False
+
+
+def test_compacting_self_clears_without_compact_end():
+    agent_state.reset()
+    agent_state.tool_activity("s1", "mac", "proj", now=100.0)
+    agent_state.compact_start("s1", now=101.0)
+    # still compacting inside COMPACT_TTL_S (300)
+    assert _dot(agent_state.snapshot(now=101.0 + 299.0), "s1")["compacting"] is True
+    # fallback: overlay clears COMPACT_TTL_S after compact_start with no end
+    assert _dot(agent_state.snapshot(now=101.0 + 301.0), "s1")["compacting"] is False
+
+
+def test_plain_session_reports_new_field_defaults():
+    agent_state.reset()
+    agent_state.update("s1", "mac", "proj", "working", now=100.0)
+    dot = _dot(agent_state.snapshot(now=100.0), "s1")
+    assert dot["tool_count"] == 0
+    assert dot["last_tool"] is None
+    assert dot["trouble"] is False
+    assert dot["compacting"] is False
+
+
+def test_motes_never_carry_the_new_session_fields():
+    agent_state.reset()
+    agent_state.add_subagent("s1", "a1", model="claude-fable-5", now=100.0)
+    agent_state.tool_activity("s1", "mac", "proj", count=1, last_tool="Bash", now=100.0)
+    agent_state.compact_start("s1", now=100.0)
+    snap = agent_state.snapshot(now=100.0)
+    mote = [a for a in snap["agents"] if a["kind"] == "subagent"][0]
+    for k in ("tool_count", "last_tool", "trouble", "compacting"):
+        assert k not in mote                 # motes carry none of them
+    for k in ("tool_count", "last_tool", "trouble", "compacting"):
+        assert k in _dot(snap, "s1")         # sessions carry all four
+
+
 class NotifyPolicyTests(unittest.TestCase):
     """Drive the policy through the real endpoint with HA relay mocked."""
 
@@ -417,6 +540,44 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json().get("state"), "working")
         self.assertEqual(self.pushes, [])
+        self.assertEqual(agent_state.get_session("s1")["state"], "working")
+
+    def test_session_start_event_is_state_only_idle(self):
+        r = self.post({"event": "session_start", "project": "p", "machine": "mac",
+                       "session_id": "s1", "model": "claude-opus-4-8", "client_ts": 1.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "session_start"})
+        self.assertEqual(self.pushes, [])
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+
+    def test_tool_activity_event_accumulates_state_only(self):
+        r = self.post({"event": "tool_activity", "project": "p", "machine": "mac",
+                       "session_id": "s1", "count": 2, "last_tool": "Bash",
+                       "tools": {"Bash": 2}, "model": "claude-opus-4-8",
+                       "client_ts": 1.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "tool_activity"})
+        self.assertEqual(self.pushes, [])
+        s = agent_state.get_session("s1")
+        self.assertEqual(s["tool_count"], 2)
+        self.assertEqual(s["last_tool"], "Bash")
+        self.assertEqual(s["state"], "working")
+
+    def test_trouble_and_compaction_events_are_state_only(self):
+        self.post({"event": "tool_activity", "project": "p", "machine": "mac",
+                   "session_id": "s1", "count": 1, "last_tool": "Bash", "client_ts": 1.0})
+        r = self.post({"event": "tool_trouble", "project": "p", "machine": "mac",
+                       "session_id": "s1", "tool_name": "Bash", "client_ts": 2.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "tool_trouble"})
+        r = self.post({"event": "stop_failure", "project": "p", "machine": "mac",
+                       "session_id": "s1", "reason": "boom", "client_ts": 3.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "stop_failure"})
+        r = self.post({"event": "compact_start", "project": "p", "machine": "mac",
+                       "session_id": "s1", "client_ts": 4.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "compact_start"})
+        r = self.post({"event": "compact_end", "project": "p", "machine": "mac",
+                       "session_id": "s1", "client_ts": 5.0})
+        self.assertEqual(r.json(), {"ok": True, "state": "compact_end"})
+        self.assertEqual(self.pushes, [])   # overlays are ambient, never a push
+        # trouble/compaction never change the underlying state
         self.assertEqual(agent_state.get_session("s1")["state"], "working")
 
     def test_waiting_pushes_once_per_spell(self):
