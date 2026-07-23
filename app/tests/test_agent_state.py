@@ -4,6 +4,7 @@ Covers the 2026-07-18 consolidation: working events are state-only (the
 push-spam regression this feature fixes), waiting pushes dedup per spell,
 presence damping, aggregation, TTL decay, and the authed read endpoint.
 """
+import asyncio
 import unittest
 from unittest import mock
 
@@ -465,15 +466,29 @@ class NotifyPolicyTests(unittest.TestCase):
 
         self._patcher = mock.patch.object(notify_mod, "_relay_to_ha", fake_relay)
         self._patcher.start()
+        # Interactive stops now defer their receipt behind a quiet-window flush.
+        # Stub the real 25s asyncio task so these policy tests never orphan one;
+        # _flush drives the flush by hand where a push is asserted.
+        self._sched_patcher = mock.patch.object(
+            notify_mod, "_schedule_flush", lambda *a, **k: None)
+        self._sched_patcher.start()
+        notify_mod._reset_pending()
         self.client = TestClient(app)
 
     def tearDown(self):
+        self._sched_patcher.stop()
         self._patcher.stop()
+        self._notify_mod._reset_pending()
         self._notify_mod._notify_token = self._saved_token
         agent_state.reset()
 
     def post(self, body):
         return self.client.post("/api/notify", json=body, headers=AUTH)
+
+    def _flush(self, session_id):
+        pending = self._notify_mod._pending_receipts.get(session_id)
+        seq = pending["stop_seq"] if pending else -1
+        asyncio.run(self._notify_mod._flush_receipt(session_id, seq))
 
     def test_state_only_stop_goes_straight_to_idle_without_ha_push(self):
         # Automated sessions emit their transitions too (complete picture);
@@ -486,17 +501,21 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertEqual(agent_state.get_session("bot-1")["state"], "idle")
         self.assertEqual(self.pushes, [])
 
-    def test_interactive_stop_is_idle_and_still_pushes_to_ha(self):
-        # Turn end: the cube reads idle (no gold "ready" state), but the
-        # usage/cost receipt push to HA is unchanged.
+    def test_interactive_stop_is_idle_and_defers_ha_receipt(self):
+        # Turn end: the cube reads idle immediately, but the usage/cost receipt
+        # is held for the quiet window (no premature "Response complete").
         r = self.post({"event": "stop", "machine": "mac", "project": "proj",
                        "session_id": "s1", "client_ts": 2.0})
         self.assertTrue(r.json()["ok"])
         self.assertEqual(agent_state.get_session("s1")["state"], "idle")
-        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(self.pushes, [])                 # deferred, not immediate
+        self.assertIn("s1", self._notify_mod._pending_receipts)
         snap = agent_state.snapshot()
         self.assertEqual(snap["summary"]["idle"], 1)
         self.assertEqual(snap["mood"], "idle")
+        # The quiet-window flush is what finally delivers the receipt.
+        self._flush("s1")
+        self.assertEqual(len(self.pushes), 1)
 
     def test_idle_event_demotes_ready_without_push(self):
         self.post({"event": "stop", "machine": "mac", "project": "proj",
@@ -625,13 +644,15 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertTrue(agent_state.get_session("s1")["waiting_notified"])
         self.assertTrue(agent_state.get_session("s2")["waiting_notified"])
 
-    def test_stop_still_pushes_and_goes_idle(self):
+    def test_stop_defers_then_flushes_response_complete(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac",
                        "session_id": "s1", "duration_s": 42, "tool_count": 3})
         self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.pushes, [])                 # held for the quiet window
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
+        self._flush("s1")
         self.assertEqual(len(self.pushes), 1)
         self.assertIn("Response complete", self.pushes[0]["title"])
-        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
 
     def test_codex_style_payload_without_session_id(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac"})

@@ -37,6 +37,12 @@ AGENT_STATE_MOTE_MIN_VISIBLE_S = float(os.environ.get("AGENT_STATE_MOTE_MIN_VISI
 # How long a stopped mote lingers as "sunsetting" so the cube can play its
 # death flash before it is dropped.
 AGENT_STATE_MOTE_SUNSET_S = float(os.environ.get("AGENT_STATE_MOTE_SUNSET_S", "0.8"))
+# Delayed stop receipts: an interactive stop never pushes "Response complete"
+# immediately. The Stop hook fires at the end of every main-loop turn (including
+# turns that only hand off to a subagent or background task), so the receipt is
+# held for this quiet window and pushed only if the session stayed idle. A
+# receipt that arrives ~25s late is fine for a phone cost receipt.
+RECEIPT_QUIET_S = float(os.environ.get("RECEIPT_QUIET_S", "25.0"))
 # Presence damping: suppress waiting pushes when any session got a user
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.

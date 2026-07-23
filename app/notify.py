@@ -4,10 +4,12 @@ Codex support is basic: the hook only sends a bare stop event (no model/usage
 data), so notifications show "Response complete" without cost or model info.
 """
 
+import asyncio
 import hmac
 import logging
 import secrets
 import sys
+import time
 
 import httpx
 from fastapi import APIRouter, Header, Request
@@ -20,6 +22,7 @@ from .config import (
     HA_TOKEN,
     HA_URL,
     NOTIFY_TOKEN,
+    RECEIPT_QUIET_S,
     STATS_API_KEY,
 )
 from .db import get_conn, write_txn
@@ -222,6 +225,86 @@ def _aggregate_waiting_payload(ha_payload: dict) -> dict:
     return {"title": f"{len(waiting)} sessions waiting", "message": where}
 
 
+# --- Delayed stop receipts (quiet window) ---------------------------------
+# session_id -> {payload, devices, stop_seq, ts, task}. An interactive stop
+# stores its built HA receipt here and schedules a flush RECEIPT_QUIET_S later.
+# The flush pushes only if the receipt is still the session's latest, the
+# session stayed quiet (a working signal cancels it at ingest), and the session
+# has no live subagent motes. In-memory is fine: tokenfold is a single instance
+# and a receipt lost on restart is harmless.
+_pending_receipts: dict[str, dict] = {}
+_stop_seq: int = 0
+
+
+def _schedule_flush(session_id: str, stop_seq: int):
+    """Schedule the quiet-window flush on the running loop. Returns the task, or
+    None when there is no running loop (unit tests drive the flush directly)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return loop.create_task(_deferred_flush(session_id, stop_seq))
+
+
+async def _deferred_flush(session_id: str, stop_seq: int):
+    """Sleep the quiet window, then flush. A replaced or cancelled receipt
+    cancels this task, so a swallowed CancelledError just ends it quietly."""
+    try:
+        await asyncio.sleep(RECEIPT_QUIET_S)
+    except asyncio.CancelledError:
+        return
+    await _flush_receipt(session_id, stop_seq)
+
+
+async def _flush_receipt(session_id: str, stop_seq: int):
+    """Push the pending receipt iff it is still the session's latest and the
+    session has no live subagent motes. A working signal since the stop has
+    already cancelled the receipt at ingest, so its mere presence here means the
+    session stayed quiet. Consumes the receipt either way."""
+    pending = _pending_receipts.get(session_id)
+    if pending is None or pending["stop_seq"] != stop_seq:
+        return                              # superseded by a newer stop, or gone
+    if agent_state.has_live_subagents(session_id):
+        _pending_receipts.pop(session_id, None)   # handoff, not a turn end
+        return
+    _pending_receipts.pop(session_id, None)
+    await _relay_to_ha(pending["payload"], pending["devices"])
+
+
+def _store_pending_receipt(session_id: str, payload: dict,
+                           devices: list | None) -> None:
+    """Store (replacing any prior) the session's pending receipt and arm its
+    quiet-window flush. A replaced receipt's timer is cancelled: only the latest
+    stop can push."""
+    global _stop_seq
+    _cancel_pending_receipt(session_id)     # the prior timer loses
+    _stop_seq += 1
+    seq = _stop_seq
+    task = _schedule_flush(session_id, seq)
+    _pending_receipts[session_id] = {
+        "payload": payload, "devices": devices,
+        "stop_seq": seq, "ts": time.time(), "task": task,
+    }
+
+
+def _cancel_pending_receipt(session_id: str) -> None:
+    """Drop the session's pending receipt and cancel its flush timer. Called by
+    every working signal (user prompt, tool_activity, subagent_start): fresh
+    work means the turn did not really end, so the receipt is void."""
+    pending = _pending_receipts.pop(session_id, None)
+    if pending is not None and pending.get("task") is not None:
+        pending["task"].cancel()
+
+
+def _reset_pending() -> None:
+    """Test support: cancel all pending flush timers and forget every receipt."""
+    for pending in list(_pending_receipts.values()):
+        task = pending.get("task")
+        if task is not None:
+            task.cancel()
+    _pending_receipts.clear()
+
+
 @router.post("/api/notify")
 async def notify(request: Request, authorization: str | None = Header(default=None)):
     if not _check_auth(authorization):
@@ -250,6 +333,8 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             agent_state.update(session_id, machine, project, "working",
                                event_ts=client_ts, fleet_rev=fleet_rev,
                                model=data.get("model"))
+            # A user prompt means the turn resumed: void any pending receipt.
+            _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "working"}
 
         if event == "session_start":
@@ -267,6 +352,8 @@ async def notify(request: Request, authorization: str | None = Header(default=No
                 session_id, machine, project,
                 count=data.get("count", 1), last_tool=data.get("last_tool"),
                 event_ts=client_ts, fleet_rev=fleet_rev, model=data.get("model"))
+            # Fresh tool progress means the turn is still running: void the receipt.
+            _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "tool_activity"}
 
         if event in ("tool_trouble", "stop_failure"):
@@ -291,6 +378,8 @@ async def notify(request: Request, authorization: str | None = Header(default=No
                 session_id, data.get("agent_id", ""), machine=machine,
                 project=project, agent_type=data.get("agent_type", ""),
                 fleet_rev=fleet_rev, model=data.get("model"))
+            # A new fan-out means the turn handed off, not ended: void the receipt.
+            _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "subagent_start", "fanout": n}
 
         if event == "subagent_stop":
@@ -321,13 +410,23 @@ async def notify(request: Request, authorization: str | None = Header(default=No
         if event == "stop":
             # Turn ended. The cube reads this as idle (binary attention: a
             # finished turn is not "come look", the response is in the
-            # terminal). Automated/codex turns (state_only) also idle. The
-            # interactive branch falls through to the "Response complete"
-            # HA receipt push below, which is a cost receipt, not a beacon.
-            if data.get("state_only"):
-                agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
-                return {"ok": True, "state": "idle"}
+            # terminal). Automated/codex turns (state_only) also idle and never
+            # push. The idle transition is immediate for both.
             agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
+            if data.get("state_only"):
+                return {"ok": True, "state": "idle"}
+            # Interactive stop: never push "Response complete" now. The Stop hook
+            # fires at the end of EVERY main-loop turn, including handoff turns,
+            # so hold the built receipt and let the quiet-window flush decide.
+            _store_pending_receipt(session_id, _build_ha_payload(data),
+                                   data.get("devices"))
+            # Best-effort ORBB light: go idle if no active sessions remain.
+            try:
+                from .light import signal_idle
+                await signal_idle()
+            except Exception:
+                pass
+            return {"ok": True, "state": "idle"}
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)
@@ -346,14 +445,6 @@ async def notify(request: Request, authorization: str | None = Header(default=No
         agent_state.mark_waiting_notified(session_id)
         for sid in agent_state.waiting_sessions():
             agent_state.mark_waiting_notified(sid)
-
-    # Best-effort: clean up stale ORBB sessions and go idle if none remain
-    if data.get("event") == "stop":
-        try:
-            from .light import signal_idle
-            await signal_idle()
-        except Exception:
-            pass
 
     if errors:
         return JSONResponse({"ok": False, "errors": errors}, status_code=502)

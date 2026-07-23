@@ -396,6 +396,17 @@ def get_session(session_id: str) -> dict | None:
     return _sessions.get(session_id)
 
 
+def has_live_subagents(session_id: str, now: float | None = None) -> bool:
+    """True when the session has at least one LIVE (non-sunsetting) subagent
+    mote. Gates the quiet-window stop receipt: a stop while children are still
+    working is a handoff, not a real turn end, so its receipt must not push."""
+    now = time.time() if now is None else now
+    s = _sessions.get(session_id)
+    if not s:
+        return False
+    return bool(_active_subagents(s, now))
+
+
 def seconds_since_working(now: float | None = None) -> float | None:
     """Age of the most recent working event across the whole fleet, or
     None if no working event has been seen since startup. This is the
