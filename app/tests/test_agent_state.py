@@ -140,6 +140,90 @@ class AgentStateStoreTests(unittest.TestCase):
     def test_remove_subagent_unknown_parent_is_noop(self):
         self.assertEqual(agent_state.remove_subagent("ghost", "a1"), 0)
 
+    # --- Genuine-working timestamp (feeds the mood ladder) ----------------
+    def test_working_event_sets_working_ts(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        self.assertEqual(agent_state.get_session("s1")["working_ts"], 1000.0)
+
+    def test_fanout_activity_does_not_refresh_working_ts(self):
+        # A subagent stop is activity (bumps ts) but is NOT a working
+        # heartbeat, so working_ts must stay put: this is what lets the
+        # mood tell "actively grinding" from "handed off to children".
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        agent_state.remove_subagent("s1", "a1", now=1200.0)
+        s = agent_state.get_session("s1")
+        self.assertEqual(s["ts"], 1200.0)          # activity bumped ts
+        self.assertEqual(s["working_ts"], 1000.0)  # but not the working clock
+
+    def test_subagent_spawn_marks_parent_working_ts(self):
+        # Spawning a subagent means the parent is working right now.
+        agent_state.add_subagent("p1", "a1", machine="mac", now=1000.0)
+        self.assertEqual(agent_state.get_session("p1")["working_ts"], 1000.0)
+
+    def test_heartbeat_refresh_does_not_bump_working_ts(self):
+        # A subagent PostToolUse heartbeat re-adds the same mote; it must not
+        # refresh the parent's working clock (else a handed-off parent never
+        # goes stale and waiting_subagent could never fire).
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1200.0)   # heartbeat refresh
+        self.assertEqual(agent_state.get_session("s1")["working_ts"], 1000.0)
+        self.assertEqual(agent_state.snapshot(now=1201.0)["sessions"]["s1"]["fanout"], 1)
+
+    # --- Aggregate mood + drawable agents list ----------------------------
+    def test_mood_idle_when_empty(self):
+        self.assertEqual(agent_state.snapshot(now=1000.0)["mood"], "idle")
+
+    def test_mood_working_when_grinding(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        self.assertEqual(agent_state.snapshot(now=1001.0)["mood"], "working")
+
+    def test_mood_needs_you_beats_working(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.update("s2", "mac", "proj", "waiting", now=1000.0)
+        self.assertEqual(agent_state.snapshot(now=1001.0)["mood"], "needs_you")
+
+    def test_mood_waiting_subagent_when_handed_off(self):
+        # A working session that fanned out but whose working heartbeat has
+        # gone stale (blocked in a synchronous fan-out) reads as handed off.
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        # 100s later: past AGENT_STATE_WORKING_FRESH_S (90), still has a mote
+        # (mote refreshed to keep it live), so the mood is waiting_subagent.
+        s = agent_state.get_session("s1")
+        s["subagents"] = {"a1": 1099.0}     # mote kept alive by heartbeat
+        snap = agent_state.snapshot(now=1100.0)
+        self.assertEqual(snap["mood"], "waiting_subagent")
+
+    def test_mood_working_beats_waiting_subagent_when_fresh(self):
+        # Same fan-out but the parent is still heartbeating: active grind wins.
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        self.assertEqual(agent_state.snapshot(now=1001.0)["mood"], "working")
+
+    def test_agents_list_enumerates_sessions_and_subagents(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a2", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        agent_state.update("s0", "mac", "proj", "waiting", now=1000.0)
+        agents = agent_state.snapshot(now=1000.5)["agents"]
+        # Sessions sorted by id; each session's subagents sorted and adjacent.
+        self.assertEqual(
+            [(a["id"], a["kind"], a["state"]) for a in agents],
+            [("s0", "session", "waiting"),
+             ("s1", "session", "working"),
+             ("s1:a1", "subagent", "working"),
+             ("s1:a2", "subagent", "working")])
+        self.assertAlmostEqual(agents[0]["age_s"], 0.5, places=1)
+
+    def test_agents_list_omits_stale_subagents(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        # 200s later, past the 180s subagent TTL: the mote is gone.
+        agents = agent_state.snapshot(now=1200.0)["agents"]
+        self.assertEqual([a["id"] for a in agents], ["s1"])
+
 
 class NotifyPolicyTests(unittest.TestCase):
     """Drive the policy through the real endpoint with HA relay mocked."""
@@ -179,16 +263,17 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertEqual(agent_state.get_session("bot-1")["state"], "idle")
         self.assertEqual(self.pushes, [])
 
-    def test_interactive_stop_is_ready_and_still_pushes_to_ha(self):
-        # Turn end: response awaiting the user = ready, usage push unchanged.
+    def test_interactive_stop_is_idle_and_still_pushes_to_ha(self):
+        # Turn end: the cube reads idle (no gold "ready" state), but the
+        # usage/cost receipt push to HA is unchanged.
         r = self.post({"event": "stop", "machine": "mac", "project": "proj",
                        "session_id": "s1", "client_ts": 2.0})
         self.assertTrue(r.json()["ok"])
-        self.assertEqual(agent_state.get_session("s1")["state"], "ready")
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
         self.assertEqual(len(self.pushes), 1)
         snap = agent_state.snapshot()
-        self.assertTrue(snap["any_ready"])
-        self.assertEqual(snap["summary"]["ready"], 1)
+        self.assertEqual(snap["summary"]["idle"], 1)
+        self.assertEqual(snap["mood"], "idle")
 
     def test_idle_event_demotes_ready_without_push(self):
         self.post({"event": "stop", "machine": "mac", "project": "proj",
@@ -279,20 +364,20 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertTrue(agent_state.get_session("s1")["waiting_notified"])
         self.assertTrue(agent_state.get_session("s2")["waiting_notified"])
 
-    def test_stop_still_pushes_and_goes_ready(self):
+    def test_stop_still_pushes_and_goes_idle(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac",
                        "session_id": "s1", "duration_s": 42, "tool_count": 3})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(self.pushes), 1)
         self.assertIn("Response complete", self.pushes[0]["title"])
-        self.assertEqual(agent_state.get_session("s1")["state"], "ready")
+        self.assertEqual(agent_state.get_session("s1")["state"], "idle")
 
     def test_codex_style_payload_without_session_id(self):
         r = self.post({"event": "stop", "project": "p", "machine": "mac"})
         self.assertEqual(r.status_code, 200)
-        # a legacy client without state_only lands ready (demoted by TTL);
-        # current codex-relay sends state_only and goes straight to idle
-        self.assertEqual(agent_state.get_session("mac:p")["state"], "ready")
+        # A legacy client without state_only now lands idle at turn end
+        # (was ready); current codex-relay sends state_only and also idles.
+        self.assertEqual(agent_state.get_session("mac:p")["state"], "idle")
 
     def test_raw_payload_passthrough_unchanged(self):
         r = self.post({"title": "custom", "message": "hi"})

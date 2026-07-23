@@ -282,13 +282,15 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             return {"ok": True, "state": "idle"}
 
         if event == "stop":
-            # Turn ended. An interactive session is READY (response awaiting
-            # the user) until idle_prompt demotes it; automated/codex turns
-            # (state_only) go straight to idle and never surface.
+            # Turn ended. The cube reads this as idle (binary attention: a
+            # finished turn is not "come look", the response is in the
+            # terminal). Automated/codex turns (state_only) also idle. The
+            # interactive branch falls through to the "Response complete"
+            # HA receipt push below, which is a cost receipt, not a beacon.
             if data.get("state_only"):
                 agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
                 return {"ok": True, "state": "idle"}
-            agent_state.update(session_id, machine, project, "ready", event_ts=client_ts, fleet_rev=fleet_rev)
+            agent_state.update(session_id, machine, project, "idle", event_ts=client_ts, fleet_rev=fleet_rev)
 
     if "event" in data:
         ha_payload = _build_ha_payload(data)

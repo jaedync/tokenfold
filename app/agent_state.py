@@ -22,7 +22,7 @@ from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 from .config import (AGENT_STATE_SUBAGENT_TTL_S, AGENT_STATE_TTL_S,
-                     AGENT_STATE_WAITING_TTL_S)
+                     AGENT_STATE_WAITING_TTL_S, AGENT_STATE_WORKING_FRESH_S)
 
 router = APIRouter()
 
@@ -87,6 +87,7 @@ def update(session_id: str, machine: str, project: str, state: str,
     s["state"] = state
     s["ts"] = now
     if state == "working":
+        s["working_ts"] = now
         s["waiting_notified"] = False
         _last_working_ts = now
         # Keep-alive: a working heartbeat refreshes this session's live
@@ -126,9 +127,16 @@ def add_subagent(session_id: str, agent_id: str, machine: str = "",
             time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
             flush=True)
     subs = dict(s.get("subagents") or {})
+    is_new_mote = agent_id not in subs
     subs[agent_id] = now
     s["subagents"] = subs
     s["ts"] = now                     # fan-out activity keeps the parent alive
+    if is_new_mote:
+        # A genuinely new spawn is a work action and marks the parent working.
+        # A heartbeat refresh of an existing mote must NOT bump working_ts, or a
+        # handed-off parent (blocked in a synchronous fan-out) would never go
+        # stale and the waiting_subagent mood could never fire.
+        s["working_ts"] = now
     if machine:
         s["machine"] = machine
     if project:
@@ -180,13 +188,33 @@ def mark_waiting_notified(session_id: str) -> None:
         _sessions[session_id]["waiting_notified"] = True
 
 
+def _fleet_mood(now: float) -> str:
+    """The single fleet-wide mood for the cube's bottom volume, top wins:
+    needs_you (any session blocked on the human) > working (any session with a
+    fresh working heartbeat) > waiting_subagent (live fan-out but nobody
+    actively grinding) > idle. Active beats delegated on purpose; the roster's
+    top motes already show the children working."""
+    vals = _sessions.values()
+    if any(s.get("state") == "waiting" for s in vals):
+        return "needs_you"
+    if any(s.get("state") == "working"
+           and now - s.get("working_ts", 0.0) <= AGENT_STATE_WORKING_FRESH_S
+           for s in vals):
+        return "working"
+    if any(_active_subagents(s, now) for s in vals):
+        return "waiting_subagent"
+    return "idle"
+
+
 def snapshot(now: float | None = None) -> dict:
     now = time.time() if now is None else now
     _prune(now)
     sessions = {}
+    agents = []
     counts = {"working": 0, "waiting": 0, "ready": 0, "idle": 0}
     total_fanout = 0
-    for sid, s in _sessions.items():
+    for sid in sorted(_sessions):
+        s = _sessions[sid]
         counts[s["state"]] = counts.get(s["state"], 0) + 1
         active = _active_subagents(s, now)
         total_fanout += len(active)
@@ -201,6 +229,13 @@ def snapshot(now: float | None = None) -> dict:
             # subagent; sorted for deterministic rendering.
             "subagents": sorted(active),
         }
+        # Flat drawable roster: the session dot, then one mote per live child.
+        agents.append({"id": sid, "kind": "session", "state": s["state"],
+                       "age_s": round(now - s["ts"], 1)})
+        for aid in sorted(active):
+            agents.append({"id": sid + ":" + aid, "kind": "subagent",
+                           "state": "working",
+                           "age_s": round(now - active[aid], 1)})
     # machine -> latest observed fleet rev: the authoritative drift check.
     fleet_revs = {}
     for s in sorted(_sessions.values(), key=lambda s: s["ts"]):
@@ -208,6 +243,8 @@ def snapshot(now: float | None = None) -> dict:
             fleet_revs[s.get("machine", "")] = s["fleet_rev"]
     return {
         "sessions": sessions,
+        "agents": agents,
+        "mood": _fleet_mood(now),
         "summary": counts,
         "fleet_revs": fleet_revs,
         "total_fanout": total_fanout,

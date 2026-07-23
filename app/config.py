@@ -25,6 +25,11 @@ AGENT_STATE_WAITING_TTL_S = int(os.environ.get("AGENT_STATE_WAITING_TTL_S", "720
 # kept fresh by their parent's working heartbeats (background subagents let
 # the parent keep emitting PostToolUse), so this only bounds stranded ones.
 AGENT_STATE_SUBAGENT_TTL_S = int(os.environ.get("AGENT_STATE_SUBAGENT_TTL_S", "180"))
+# A session counts as "actively grinding" (vs "handed off to subagents") only
+# while its last GENUINE working heartbeat is fresher than this. Longer than
+# the relay's 60s PostToolUse heartbeat throttle so a steadily-working session
+# never flickers out of the working mood between heartbeats.
+AGENT_STATE_WORKING_FRESH_S = int(os.environ.get("AGENT_STATE_WORKING_FRESH_S", "90"))
 # Presence damping: suppress waiting pushes when any session got a user
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.
