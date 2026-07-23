@@ -3,8 +3,6 @@ services:
     build: .
     container_name: tokenfold
     restart: unless-stopped
-    ports:
-      - "5000:5000"
     volumes:
       - ./data:/app/data
       - ~/.claude/.credentials.json:/app/credentials.json:ro
