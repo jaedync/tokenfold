@@ -245,17 +245,21 @@ async def notify(request: Request, authorization: str | None = Header(default=No
 
         if event == "working":
             # Pure state transition: never a push. This is what clears a
-            # waiting spell and feeds the presence signal.
-            agent_state.update(session_id, machine, project, "working", event_ts=client_ts, fleet_rev=fleet_rev)
+            # waiting spell and feeds the presence signal. model (relay Task 1)
+            # colors the session dot by model on the cube.
+            agent_state.update(session_id, machine, project, "working",
+                               event_ts=client_ts, fleet_rev=fleet_rev,
+                               model=data.get("model"))
             return {"ok": True, "state": "working"}
 
         if event == "subagent_start":
             # Fan-out mote on. session_id is the PARENT (the relay recovered
-            # it from the transcript path). State-only, never a push.
+            # it from the transcript path). State-only, never a push. model is
+            # the subagent's own model, so its mote gets its own color.
             n = agent_state.add_subagent(
                 session_id, data.get("agent_id", ""), machine=machine,
                 project=project, agent_type=data.get("agent_type", ""),
-                fleet_rev=fleet_rev)
+                fleet_rev=fleet_rev, model=data.get("model"))
             return {"ok": True, "state": "subagent_start", "fanout": n}
 
         if event == "subagent_stop":
@@ -269,10 +273,12 @@ async def notify(request: Request, authorization: str | None = Header(default=No
                 return {"ok": True, "suppressed": reason}
 
         if event == "gone":
-            # SessionEnd: state-only, never a push. Deletion ignores
-            # client_ts ordering on purpose: gone is terminal, and a session
-            # id is never reused after SessionEnd.
-            agent_state.remove(session_id)
+            # SessionEnd: state-only, never a push. Sunset (fade) the dot over
+            # the sunset window instead of deleting it instantly, so the cube
+            # can play the session's death flash; _prune drops it after. This
+            # ignores client_ts ordering on purpose: gone is terminal, and a
+            # session id is never reused after SessionEnd.
+            agent_state.sunset_session(session_id)
             return {"ok": True, "state": "gone"}
 
         if event == "idle":

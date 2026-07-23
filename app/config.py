@@ -30,6 +30,13 @@ AGENT_STATE_SUBAGENT_TTL_S = int(os.environ.get("AGENT_STATE_SUBAGENT_TTL_S", "1
 # the relay's 60s PostToolUse heartbeat throttle so a steadily-working session
 # never flickers out of the working mood between heartbeats.
 AGENT_STATE_WORKING_FRESH_S = int(os.environ.get("AGENT_STATE_WORKING_FRESH_S", "90"))
+# Minimum time a fan-out mote stays on the roster after spawn, even if its
+# SubagentStop arrives almost immediately, so an ambient display polling every
+# ~2s actually sees (and can flash) a very short-lived subagent.
+AGENT_STATE_MOTE_MIN_VISIBLE_S = float(os.environ.get("AGENT_STATE_MOTE_MIN_VISIBLE_S", "3.0"))
+# How long a stopped mote lingers as "sunsetting" so the cube can play its
+# death flash before it is dropped.
+AGENT_STATE_MOTE_SUNSET_S = float(os.environ.get("AGENT_STATE_MOTE_SUNSET_S", "0.8"))
 # Presence damping: suppress waiting pushes when any session got a user
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.

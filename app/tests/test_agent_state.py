@@ -164,12 +164,15 @@ class AgentStateStoreTests(unittest.TestCase):
     def test_heartbeat_refresh_does_not_bump_working_ts(self):
         # A subagent PostToolUse heartbeat re-adds the same mote; it must not
         # refresh the parent's working clock (else a handed-off parent never
-        # goes stale and waiting_subagent could never fire).
+        # goes stale and waiting_subagent could never fire). The heartbeat gap
+        # is within the subagent TTL (relay heartbeats every ~60s): with
+        # sunsetting, a fully-gone mote (past TTL + sunset) is purged, so a
+        # refresh past that window would be a genuine new spawn, not a refresh.
         agent_state.update("s1", "mac", "proj", "working", now=1000.0)
         agent_state.add_subagent("s1", "a1", now=1000.0)
-        agent_state.add_subagent("s1", "a1", now=1200.0)   # heartbeat refresh
+        agent_state.add_subagent("s1", "a1", now=1120.0)   # heartbeat refresh
         self.assertEqual(agent_state.get_session("s1")["working_ts"], 1000.0)
-        self.assertEqual(agent_state.snapshot(now=1201.0)["sessions"]["s1"]["fanout"], 1)
+        self.assertEqual(agent_state.snapshot(now=1121.0)["sessions"]["s1"]["fanout"], 1)
 
     # --- Aggregate mood + drawable agents list ----------------------------
     def test_mood_idle_when_empty(self):
@@ -192,7 +195,10 @@ class AgentStateStoreTests(unittest.TestCase):
         # 100s later: past AGENT_STATE_WORKING_FRESH_S (90), still has a mote
         # (mote refreshed to keep it live), so the mood is waiting_subagent.
         s = agent_state.get_session("s1")
-        s["subagents"] = {"a1": 1099.0}     # mote kept alive by heartbeat
+        # Mote kept alive by heartbeat: new record shape ({spawn_ts, ts, model,
+        # stop_ts}); ts is what _active_subagents reads for freshness.
+        s["subagents"] = {"a1": {"spawn_ts": 1000.0, "ts": 1099.0,
+                                 "model": "", "stop_ts": None}}
         snap = agent_state.snapshot(now=1100.0)
         self.assertEqual(snap["mood"], "waiting_subagent")
 
@@ -223,6 +229,100 @@ class AgentStateStoreTests(unittest.TestCase):
         # 200s later, past the 180s subagent TTL: the mote is gone.
         agents = agent_state.snapshot(now=1200.0)["agents"]
         self.assertEqual([a["id"] for a in agents], ["s1"])
+
+
+# --- Model + color-family surfacing -------------------------------------------
+# Standalone pytest functions (the file's store tests are unittest methods, but
+# these mirror the Task 2 brief 1:1 and use the module-level agent_state import).
+def test_family_classification():
+    from app.agent_state import _family
+    assert _family("claude-opus-4-8") == "opus"
+    assert _family("claude-sonnet-5") == "sonnet"
+    assert _family("claude-fable-5") == "fable"
+    assert _family("claude-haiku-4-5-20251001") == "haiku"
+    assert _family("gpt-5.6-sol") == "codex"
+    assert _family("") == "unknown"
+    assert _family("something-else") == "unknown"
+
+
+def test_session_model_surfaces_in_agents():
+    agent_state.reset()
+    agent_state.update("s1", "mac", "proj", "working", now=100.0, model="claude-opus-4-8")
+    snap = agent_state.snapshot(now=100.0)
+    dot = [a for a in snap["agents"] if a["id"] == "s1"][0]
+    assert dot["model"] == "claude-opus-4-8"
+    assert dot["family"] == "opus"
+
+
+def test_mote_model_and_age_from_spawn():
+    agent_state.reset()
+    agent_state.add_subagent("s1", "a1", model="claude-fable-5", now=100.0)
+    # A later working heartbeat must NOT reset the mote's spawn age.
+    agent_state.update("s1", "mac", "proj", "working", now=104.0, model="claude-opus-4-8")
+    snap = agent_state.snapshot(now=105.0)
+    mote = [a for a in snap["agents"] if a["kind"] == "subagent"][0]
+    assert mote["family"] == "fable"          # mote keeps its own model
+    assert mote["age_s"] == 5.0               # since spawn, not since heartbeat
+
+
+# --- Sunsetting lifecycle (Task 3) --------------------------------------------
+def test_stopped_mote_stays_visible_min_window():
+    agent_state.reset()
+    agent_state.add_subagent("s1", "a1", model="claude-opus-4-8", now=100.0)
+    agent_state.remove_subagent("s1", "a1", now=101.0)   # stop 1s after spawn
+    snap = agent_state.snapshot(now=101.5)               # 1.5s after spawn
+    mote = [a for a in snap["agents"] if a["kind"] == "subagent"]
+    assert mote and mote[0]["state"] == "sunsetting"
+    assert mote[0]["stop_age_s"] == 0.5
+    # gone only after both min-visible (3.0) and sunset (0.8) windows
+    later = agent_state.snapshot(now=104.5)
+    assert not [a for a in later["agents"] if a["kind"] == "subagent"]
+
+
+def test_sunsetting_mote_excluded_from_fanout_and_mood():
+    agent_state.reset()
+    agent_state.add_subagent("s1", "a1", now=100.0)
+    agent_state.remove_subagent("s1", "a1", now=100.2)
+    # The parent's turn ended right after the sub returned: nobody is grinding
+    # now, only a sunsetting mote lingers. (add_subagent marks the parent
+    # working, so we must land it idle to observe the "nobody grinding" case;
+    # a sunsetting mote must drive neither fan-out nor mood.)
+    agent_state.update("s1", "mac", "proj", "idle", now=100.3)
+    snap = agent_state.snapshot(now=100.5)
+    assert snap["total_fanout"] == 0        # sunsetting is not live fan-out
+    # only a sunsetting mote: mood is idle, not waiting_subagent
+    assert snap["mood"] == "idle"
+
+
+def test_session_gone_sunsets_then_drops():
+    agent_state.reset()
+    agent_state.update("s1", "mac", "proj", "working", now=100.0, model="claude-opus-4-8")
+    agent_state.sunset_session("s1", now=101.0)
+    snap = agent_state.snapshot(now=101.4)
+    dot = [a for a in snap["agents"] if a["id"] == "s1"]
+    assert dot and dot[0]["state"] == "sunsetting" and dot[0]["stop_age_s"] == 0.4
+    assert snap["mood"] == "idle"           # a leaving session drives no mood
+    assert not agent_state.snapshot(now=102.5)["agents"]   # dropped after window
+
+
+def test_respawn_while_sunsetting_resets_the_mote():
+    # A genuine re-spawn of an agent_id that is still sunsetting must come back
+    # live, not be treated as a heartbeat that keeps the stale stop_ts and the
+    # original spawn_ts. Keep-alive heartbeats flow through update(), so an
+    # add_subagent on a stopped id can only be a real SubagentStart.
+    agent_state.reset()
+    agent_state.add_subagent("s1", "a1", model="claude-opus-4-8", now=100.0)
+    agent_state.remove_subagent("s1", "a1", now=100.2)     # now sunsetting
+    # Re-spawn inside the min-visible window (still drawable, so still in subs).
+    agent_state.add_subagent("s1", "a1", now=100.5)
+    snap = agent_state.snapshot(now=100.6)
+    mote = [a for a in snap["agents"] if a["kind"] == "subagent"]
+    assert mote, "the re-spawned mote should be drawn"
+    assert mote[0]["state"] == "working"           # live again, not fading
+    assert "stop_age_s" not in mote[0]             # no stale sunset stamp
+    assert snap["total_fanout"] == 1               # counted as live fan-out
+    # age is measured from the RESPAWN (spawn_ts reset to 100.5), not 100.0.
+    assert mote[0]["age_s"] == 0.1
 
 
 class NotifyPolicyTests(unittest.TestCase):
