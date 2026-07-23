@@ -102,6 +102,44 @@ class AgentStateStoreTests(unittest.TestCase):
         agent_state.update("s1", "mac", "proj", "working", now=1000.0)
         self.assertAlmostEqual(agent_state.seconds_since_working(now=1030.0), 30.0)
 
+    # --- Fan-out (subagent) tracking --------------------------------------
+    def test_add_and_remove_subagent_changes_fanout(self):
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        self.assertEqual(agent_state.add_subagent("s1", "a1", now=1000.0), 1)
+        self.assertEqual(agent_state.add_subagent("s1", "a2", now=1000.0), 2)
+        snap = agent_state.snapshot(now=1001.0)
+        self.assertEqual(snap["sessions"]["s1"]["fanout"], 2)
+        self.assertEqual(snap["sessions"]["s1"]["subagents"], ["a1", "a2"])
+        self.assertEqual(snap["total_fanout"], 2)
+        self.assertEqual(agent_state.remove_subagent("s1", "a1", now=1002.0), 1)
+        self.assertEqual(agent_state.snapshot(now=1003.0)["sessions"]["s1"]["fanout"], 1)
+
+    def test_subagent_start_before_parent_creates_working_session(self):
+        # A spawn that races ahead of any parent event still shows a working
+        # session (spawning a subagent means the parent is working).
+        agent_state.add_subagent("p1", "a1", machine="mac", project="proj", now=1000.0)
+        snap = agent_state.snapshot(now=1001.0)
+        self.assertEqual(snap["sessions"]["p1"]["state"], "working")
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 1)
+
+    def test_stale_subagent_decays_out_of_fanout(self):
+        # A missed SubagentStop cannot strand a mote: it ages out.
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        self.assertEqual(agent_state.snapshot(now=1000.0 + 179)["sessions"]["s1"]["fanout"], 1)
+        self.assertEqual(agent_state.snapshot(now=1000.0 + 181)["sessions"]["s1"]["fanout"], 0)
+
+    def test_working_heartbeat_keeps_subagents_alive(self):
+        # Long background fan-out: the parent's working heartbeats refresh
+        # its live motes so they outlive the subagent TTL.
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("s1", "a1", now=1000.0)
+        agent_state.update("s1", "mac", "proj", "working", now=1000.0 + 120)  # heartbeat
+        self.assertEqual(agent_state.snapshot(now=1000.0 + 250)["sessions"]["s1"]["fanout"], 1)
+
+    def test_remove_subagent_unknown_parent_is_noop(self):
+        self.assertEqual(agent_state.remove_subagent("ghost", "a1"), 0)
+
 
 class NotifyPolicyTests(unittest.TestCase):
     """Drive the policy through the real endpoint with HA relay mocked."""
@@ -169,6 +207,24 @@ class NotifyPolicyTests(unittest.TestCase):
         self.assertEqual(r.json(), {"ok": True, "state": "working"})
         self.assertEqual(agent_state.get_session("s1")["state"], "working")
         self.assertEqual(self.pushes, [])
+
+    def test_subagent_events_track_fanout_without_ha_push(self):
+        # session_id is the recovered PARENT id; two spawns then one stop.
+        self.post({"event": "working", "machine": "mac", "project": "proj",
+                   "session_id": "p1", "client_ts": 1.0})
+        r = self.post({"event": "subagent_start", "machine": "mac", "project": "proj",
+                       "session_id": "p1", "agent_id": "a1", "agent_type": "Explore",
+                       "client_ts": 2.0, "state_only": True})
+        self.assertEqual(r.json(), {"ok": True, "state": "subagent_start", "fanout": 1})
+        self.post({"event": "subagent_start", "machine": "mac", "project": "proj",
+                   "session_id": "p1", "agent_id": "a2", "client_ts": 3.0})
+        r = self.post({"event": "subagent_stop", "machine": "mac", "project": "proj",
+                       "session_id": "p1", "agent_id": "a1", "client_ts": 4.0})
+        self.assertEqual(r.json()["fanout"], 1)
+        snap = agent_state.snapshot()
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 1)
+        self.assertEqual(snap["total_fanout"], 1)
+        self.assertEqual(self.pushes, [])   # fan-out is ambient, never a phone buzz
 
     def test_working_is_state_only_never_a_push(self):
         r = self.post({"event": "working", "project": "p", "machine": "mac",

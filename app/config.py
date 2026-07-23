@@ -20,6 +20,11 @@ AGENT_STATE_TTL_S = int(os.environ.get("AGENT_STATE_TTL_S", "600"))
 # long TTL only decides how long a hard-crashed terminal can strand a red
 # beacon.
 AGENT_STATE_WAITING_TTL_S = int(os.environ.get("AGENT_STATE_WAITING_TTL_S", "7200"))
+# Fan-out mote leash: a subagent with no SubagentStop decays after this TTL,
+# so a missed stop cannot strand a mote on the cube. Active subagents are
+# kept fresh by their parent's working heartbeats (background subagents let
+# the parent keep emitting PostToolUse), so this only bounds stranded ones.
+AGENT_STATE_SUBAGENT_TTL_S = int(os.environ.get("AGENT_STATE_SUBAGENT_TTL_S", "180"))
 # Presence damping: suppress waiting pushes when any session got a user
 # prompt this recently (someone is at a keyboard; the ambient display
 # still shows the beacon). 0 disables damping.

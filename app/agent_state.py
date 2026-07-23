@@ -21,7 +21,8 @@ import time
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from .config import AGENT_STATE_TTL_S, AGENT_STATE_WAITING_TTL_S
+from .config import (AGENT_STATE_SUBAGENT_TTL_S, AGENT_STATE_TTL_S,
+                     AGENT_STATE_WAITING_TTL_S)
 
 router = APIRouter()
 
@@ -88,8 +89,70 @@ def update(session_id: str, machine: str, project: str, state: str,
     if state == "working":
         s["waiting_notified"] = False
         _last_working_ts = now
+        # Keep-alive: a working heartbeat refreshes this session's live
+        # subagents so long background fan-outs keep their motes lit. A
+        # subagent removed by SubagentStop is already gone from the dict,
+        # so this never resurrects a finished one.
+        if s.get("subagents"):
+            s["subagents"] = {aid: now for aid in s["subagents"]}
     _sessions[session_id] = s
     return prev
+
+
+# --- Fan-out (subagent) tracking ------------------------------------------
+# Each session record carries subagents: {agent_id: last_seen_ts}. A start
+# adds a mote, a stop removes it; snapshot counts only motes fresher than
+# the subagent TTL, so a missed stop self-heals once the parent goes quiet.
+def _active_subagents(s: dict, now: float) -> dict:
+    subs = s.get("subagents") or {}
+    return {aid: ts for aid, ts in subs.items()
+            if now - ts <= AGENT_STATE_SUBAGENT_TTL_S}
+
+
+def add_subagent(session_id: str, agent_id: str, machine: str = "",
+                 project: str = "", agent_type: str = "",
+                 now: float | None = None, fleet_rev: str | None = None) -> int:
+    """Record a subagent spawn under its PARENT session. Returns the new
+    fan-out width. If the parent has not reported yet (or aged out),
+    create a minimal working record: spawning a subagent means the parent
+    is working."""
+    now = time.time() if now is None else now
+    _prune(now)
+    s = _sessions.get(session_id)
+    if s is None:
+        s = {"waiting_notified": False, "state": "working",
+             "machine": machine or "", "project": project or ""}
+        print("[agent-state] {} {}: new -> working (subagent spawn)".format(
+            time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
+            flush=True)
+    subs = dict(s.get("subagents") or {})
+    subs[agent_id] = now
+    s["subagents"] = subs
+    s["ts"] = now                     # fan-out activity keeps the parent alive
+    if machine:
+        s["machine"] = machine
+    if project:
+        s["project"] = project
+    if fleet_rev:
+        s["fleet_rev"] = fleet_rev
+    _sessions[session_id] = s
+    return len(subs)
+
+
+def remove_subagent(session_id: str, agent_id: str,
+                    now: float | None = None) -> int:
+    """Record a subagent sunset. Returns the remaining fan-out width (0 if
+    the parent is unknown)."""
+    now = time.time() if now is None else now
+    s = _sessions.get(session_id)
+    if not s:
+        return 0
+    subs = dict(s.get("subagents") or {})
+    subs.pop(agent_id, None)
+    s["subagents"] = subs
+    s["ts"] = now
+    _sessions[session_id] = s
+    return len(subs)
 
 
 def get_session(session_id: str) -> dict | None:
@@ -122,14 +185,21 @@ def snapshot(now: float | None = None) -> dict:
     _prune(now)
     sessions = {}
     counts = {"working": 0, "waiting": 0, "ready": 0, "idle": 0}
+    total_fanout = 0
     for sid, s in _sessions.items():
         counts[s["state"]] = counts.get(s["state"], 0) + 1
+        active = _active_subagents(s, now)
+        total_fanout += len(active)
         sessions[sid] = {
             "machine": s["machine"],
             "project": s["project"],
             "state": s["state"],
             "age_s": round(now - s["ts"], 1),
             "fleet_rev": s.get("fleet_rev"),
+            "fanout": len(active),
+            # agent ids let an ambient display place one stable mote per
+            # subagent; sorted for deterministic rendering.
+            "subagents": sorted(active),
         }
     # machine -> latest observed fleet rev: the authoritative drift check.
     fleet_revs = {}
@@ -140,6 +210,7 @@ def snapshot(now: float | None = None) -> dict:
         "sessions": sessions,
         "summary": counts,
         "fleet_revs": fleet_revs,
+        "total_fanout": total_fanout,
         "any_waiting": counts.get("waiting", 0) > 0,
         "any_working": counts.get("working", 0) > 0,
         "any_ready": counts.get("ready", 0) > 0,

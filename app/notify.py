@@ -249,6 +249,19 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             agent_state.update(session_id, machine, project, "working", event_ts=client_ts, fleet_rev=fleet_rev)
             return {"ok": True, "state": "working"}
 
+        if event == "subagent_start":
+            # Fan-out mote on. session_id is the PARENT (the relay recovered
+            # it from the transcript path). State-only, never a push.
+            n = agent_state.add_subagent(
+                session_id, data.get("agent_id", ""), machine=machine,
+                project=project, agent_type=data.get("agent_type", ""),
+                fleet_rev=fleet_rev)
+            return {"ok": True, "state": "subagent_start", "fanout": n}
+
+        if event == "subagent_stop":
+            n = agent_state.remove_subagent(session_id, data.get("agent_id", ""))
+            return {"ok": True, "state": "subagent_stop", "fanout": n}
+
         if event in WAITING_EVENTS:
             agent_state.update(session_id, machine, project, "waiting", event_ts=client_ts, fleet_rev=fleet_rev)
             reason = _waiting_push_decision(session_id)
