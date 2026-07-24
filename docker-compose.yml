@@ -21,6 +21,11 @@ services:
     networks:
       - default
       - services_app_network
+    ports:
+      # Localhost-only: lets same-host consumers (cubestatusd's 250ms
+      # agent-state poll) skip the Cloudflare round trip. Host :5000 is
+      # owned by vercert, hence 5055. Never bind beyond 127.0.0.1.
+      - "127.0.0.1:5055:5000"
 
 networks:
   services_app_network:
