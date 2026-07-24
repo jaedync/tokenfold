@@ -18,6 +18,7 @@ from datetime import timezone as _timezone
 from zoneinfo import ZoneInfo
 
 from .extra_usage import build_meter_payload
+from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn
@@ -512,6 +513,10 @@ def _geo_assumed(scope: str) -> bool:
 def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
     """Return the dashboard structure with no data (used when no summaries exist)."""
     now = datetime.now(TZ)
+    # Built once and shared with month_hero_block: two build_meter_payload
+    # calls could straddle a fresh capture and hand the hero a different
+    # reading than the meter panel renders.
+    _meter = build_meter_payload(get_conn(), scope)
     return {
         "cards": {
             "sessions": 0, "human_prompts": 0, "total_tokens": 0,
@@ -543,7 +548,10 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
         "month_label": datetime.now(_timezone.utc).strftime("%B %Y") + " · UTC",
         # Meter readings are first-class data, independent of daily summaries —
         # they must survive the no-summaries-yet path (fresh enterprise view).
-        "meter": build_meter_payload(get_conn(), scope),
+        "meter": _meter,
+        # A fresh enterprise instance with no summaries can still have a
+        # billed figure: the meter is captured independently of ingest.
+        "month_hero": month_hero_block(0.0, _meter),
         "geo_assumed": _geo_assumed(scope),
     }
 
@@ -1230,6 +1238,10 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     month_cost = round(compute_window_cost(
         conn, _month_start_utc.timestamp(), _now_utc.timestamp() + 1, scope), 2)
     month_label = _now_utc.strftime("%B %Y") + " · UTC"
+    # Read once and reuse for both "meter" and "month_hero": a second call
+    # could straddle a fresh capture and leave the hero disagreeing with the
+    # meter panel rendered from the same payload.
+    _meter = build_meter_payload(conn, scope)
 
     # ── Last active timestamp (global + per machine) ──
     # daily_summary can't answer "active in last 15 minutes" — needs minute-grain
@@ -1330,7 +1342,10 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "today": _build_today_data(conn, datetime.now(TZ).strftime("%Y-%m-%d"), pred),
         "scope": scope,
         "month_cost": month_cost,
-        "meter": build_meter_payload(conn, scope),
+        "meter": _meter,
+        # Authoritative MTD figure: billed when a fresh meter exists, the
+        # estimate otherwise. See app/month_hero.py for the invariant.
+        "month_hero": month_hero_block(month_cost, _meter),
         "geo_assumed": _geo_assumed(scope),
         "month_label": month_label,
     }

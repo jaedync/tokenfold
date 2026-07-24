@@ -1026,6 +1026,21 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   margin-top: 0.25rem;
 }
 
+/* Headroom against the monthly limit. Sits directly under the figure so the
+   spend and what is left of it are read in one glance. */
+.month-counter-headroom {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--gray-dim);
+  margin-top: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+.month-counter-headroom[hidden] { display: none; }
+.month-counter-headroom.is-warn { color: var(--yellow-text); }
+.month-counter-headroom.is-over { color: var(--red); }
+
 @media (max-width: 900px) {
   .month-counter-value { font-size: 3rem; }
   .month-counter { min-height: 100px; padding: 1.2rem 1.4rem 1rem; }
@@ -1034,6 +1049,7 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
 @media (max-width: 480px) {
   .month-counter-value { font-size: 2.2rem; }
   .month-counter { min-height: 80px; padding: 1rem; }
+  .month-counter-headroom { font-size: 0.72rem; }
 }
 
 /* ---- COST META BAR ---- */
@@ -2587,8 +2603,12 @@ th[data-info]:focus::after { opacity: 1; }
     <div class="rate-gauge month-counter-panel">
       <div class="month-counter">
         <div id="monthCostValue" class="month-counter-value">$0.00</div>
+        <!-- Headroom against the account limit. Hidden until the payload
+             supplies a billed figure AND a limit. This is the number whose
+             absence let the July 2026 overrun happen unseen. -->
+        <div id="monthCostHeadroom" class="month-counter-headroom" hidden></div>
         <div id="monthCostLabel" class="month-counter-label">MONTH TO DATE</div>
-        <div class="month-counter-note">raw API pricing</div>
+        <div id="monthCostNote" class="month-counter-note">raw API pricing</div>
       </div>
     </div>
     <!-- Secondary: 7-day pace stats + chart trigger (populated by fetch) -->
@@ -4122,18 +4142,74 @@ function renderMode(mode) {
 
     var monthCostEl = document.getElementById('monthCostValue');
     var monthLabelEl = document.getElementById('monthCostLabel');
-    var rawMonthCost = (D && typeof D.month_cost === 'number' && !isNaN(D.month_cost))
-      ? D.month_cost : 0;
+    var noteEl = document.getElementById('monthCostNote');
+    var headroomEl = document.getElementById('monthCostHeadroom');
+
+    // The server decides which figure is authoritative (app/month_hero.py):
+    // Anthropic's billed meter when fresh, the event estimate otherwise.
+    // Reading D.month_cost directly here is what made the headline number
+    // under-report real billing by the unaccounted gap.
+    var hero = (D && D.month_hero) ? D.month_hero : null;
+    var fromMeter = !!(hero && hero.source === 'meter');
+    var rawMonthCost = (hero && typeof hero.value === 'number' && !isNaN(hero.value))
+      ? hero.value
+      : ((D && typeof D.month_cost === 'number' && !isNaN(D.month_cost)) ? D.month_cost : 0);
+
     var monthLabelText = (D && D.month_label) ? D.month_label : '';
     if(monthLabelEl && monthLabelText) {
       monthLabelEl.textContent = 'MONTH TO DATE · ' + monthLabelText;
     }
-    // honesty label: this instance bills enterprise usage at an ASSUMED
-    // US-residency rate (transcripts can't tell us where inference ran)
-    if(D && D.geo_assumed){
-      var noteEl = section.querySelector('.month-counter-note');
-      if(noteEl) noteEl.textContent = 'raw API pricing · US residency 1.1x assumed';
+
+    // The note states WHAT the figure is. Billed dollars are not an estimate,
+    // so the meter wording replaces the pricing/geo caveats outright rather
+    // than layering on top of them.
+    if(noteEl) {
+      if(fromMeter) {
+        var noteTxt = 'Anthropic billed';
+        if(typeof hero.measured_usd === 'number') {
+          noteTxt += ' · tokenfold measured ' + fC(hero.measured_usd);
+        }
+        if(typeof hero.unaccounted_usd === 'number' && hero.unaccounted_usd !== 0) {
+          noteTxt += ' · ' + fC(Math.abs(hero.unaccounted_usd))
+            + (hero.unaccounted_usd > 0 ? ' unmetered' : ' over-measured');
+        }
+        noteEl.textContent = noteTxt;
+      } else if(D && D.geo_assumed) {
+        // honesty label: this instance bills enterprise usage at an ASSUMED
+        // US-residency rate (transcripts can't tell us where inference ran)
+        noteEl.textContent = 'estimated · raw API pricing · US residency 1.1x assumed';
+      } else {
+        // Say "estimated" out loud whenever no billed figure backs the number.
+        noteEl.textContent = 'estimated · raw API pricing';
+      }
     }
+
+    // Headroom line, shown only with a real limit behind it.
+    if(headroomEl) {
+      var limit = hero && typeof hero.limit_usd === 'number' ? hero.limit_usd : null;
+      var util = hero && typeof hero.utilization === 'number' ? hero.utilization : null;
+      if(fromMeter && limit !== null && util !== null) {
+        var remaining = typeof hero.remaining_usd === 'number' ? hero.remaining_usd : 0;
+        // Colour off the percentage AS DISPLAYED. 99.95% prints as "100.0%",
+        // and a line reading 100% used has to be red. A caution colour next
+        // to a maxed-out number is the same kind of mixed signal this whole
+        // fix is about.
+        var utilShown = util.toFixed(1);
+        var utilNum = parseFloat(utilShown);
+        // Whole-dollar limits carry no cents: "$1,000", not "$1,000.00".
+        var limitTxt = (limit % 1 === 0)
+          ? '$' + limit.toLocaleString(undefined, {maximumFractionDigits: 0})
+          : fC(limit);
+        headroomEl.textContent = fC(remaining) + ' left of ' + limitTxt
+          + ' · ' + utilShown + '% used';
+        headroomEl.classList.toggle('is-over', utilNum >= 100);
+        headroomEl.classList.toggle('is-warn', utilNum >= 85 && utilNum < 100);
+        headroomEl.hidden = false;
+      } else {
+        headroomEl.hidden = true;
+      }
+    }
+
     if(monthCostEl) {
       if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         monthCostEl.textContent = fC(rawMonthCost);
@@ -4547,6 +4623,13 @@ function initRateLimits(){
   // oauth gauges (below) and the enterprise monthly card — one definition, no
   // duplicated palette logic (the marker/split-fill deadband constants match).
   function barColor(pct, expectedPct) {
+    // A consumed ceiling outranks any pace verdict. Every caller measures
+    // usage against a hard limit, so 100% means exhausted. Rendering that
+    // in caution-yellow because the PACE ratio looked mild is the same mixed
+    // signal that let a maxed-out month read as fine.
+    // Rounded, because the gauges PRINT Math.round(pct): 99.95% shows as
+    // "100%", and the colour has to match the number beside it.
+    if(Math.round(pct) >= 100) return 'var(--red)';
     if(expectedPct !== null && expectedPct !== undefined && expectedPct > 2) {
       var ratio = pct / expectedPct;
       if(ratio <= 1.1) return 'var(--blue)';
@@ -6803,6 +6886,15 @@ function renderSpendMonthlyChart(months){
               var m = months[items[0].dataIndex];
               var lines = ['total ' + fC(m.total || 0)];
               if(m.partial) lines.push('(month in progress)');
+              // The stack is event-derived by necessity, because the billing
+              // meter carries no per-model split. Say so on the current month and
+              // name the billed figure, so this chart can never quietly
+              // contradict the hero above it.
+              var mh = (D && D.month_hero) ? D.month_hero : null;
+              if(m.partial && mh && mh.source === 'meter'
+                  && typeof mh.value === 'number') {
+                lines.push('measured estimate · Anthropic billed ' + fC(mh.value));
+              }
               return lines;
             }
           }
