@@ -102,6 +102,7 @@ from .install import router as install_router
 from .monthly_budget import router as monthly_budget_router
 from .stream import router as stream_router
 from .agent_state import router as agent_state_router
+from .agent_events import router as agent_events_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
@@ -116,6 +117,7 @@ app.include_router(install_router)
 app.include_router(monthly_budget_router)
 app.include_router(stream_router)
 app.include_router(agent_state_router)
+app.include_router(agent_events_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():

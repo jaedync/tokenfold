@@ -15,7 +15,7 @@ import httpx
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
-from . import agent_state
+from . import agent_events, agent_state
 from .config import (
     AGENT_PRESENCE_DAMPING_S,
     HA_DEVICES,
@@ -305,6 +305,47 @@ def _reset_pending() -> None:
     _pending_receipts.clear()
 
 
+# Hard cap on per-tool SSE events fanned out from a single tool_activity ingest.
+# A new relay posts count=1 tools={name:1} (one event); an old relay can coalesce
+# a burst of ~30 tools into one batch, and expanding that 1:1 would blast that
+# many cube ripples at once. Overflow past the cap is silently dropped, taking
+# the first _MAX_TOOL_EVENTS in tally order.
+_MAX_TOOL_EVENTS = 8
+
+
+def _publish_tool_events(session_id: str, data: dict) -> None:
+    """Fan a tool_activity ingest out to the SSE stream as one event per
+    individual tool call. tools is a {name: n} tally expanded in insertion
+    order, each name n times. A missing or empty tally (legacy relay) falls back
+    to max(1, count) events of last_tool (or ""). Capped at _MAX_TOOL_EVENTS.
+
+    State-only: this only puts events onto in-memory SSE queues; it never
+    touches the HA push path, preserving the tool_activity early-return
+    invariant."""
+    tools = data.get("tools")
+    if isinstance(tools, dict) and tools:
+        published = 0
+        for name, n in tools.items():
+            try:
+                n = int(n)
+            except (TypeError, ValueError):
+                n = 0
+            for _ in range(max(0, n)):
+                if published >= _MAX_TOOL_EVENTS:
+                    return
+                agent_events.publish(session_id, name)
+                published += 1
+        return
+    # Legacy relay with no tally: one event per counted call of last_tool.
+    try:
+        count = int(data.get("count", 1))
+    except (TypeError, ValueError):
+        count = 1
+    last_tool = data.get("last_tool") or ""
+    for _ in range(min(max(1, count), _MAX_TOOL_EVENTS)):
+        agent_events.publish(session_id, last_tool)
+
+
 @router.post("/api/notify")
 async def notify(request: Request, authorization: str | None = Header(default=None)):
     if not _check_auth(authorization):
@@ -352,6 +393,11 @@ async def notify(request: Request, authorization: str | None = Header(default=No
                 session_id, machine, project,
                 count=data.get("count", 1), last_tool=data.get("last_tool"),
                 event_ts=client_ts, fleet_rev=fleet_rev, model=data.get("model"))
+            # Per-call SSE fan-out (v2.3): expand the batch into individual
+            # tool_call events for realtime cube ripples. State-only: publishes
+            # to in-memory SSE queues, never the HA push, so the early return
+            # below (the binding tool_activity invariant) stays intact.
+            _publish_tool_events(session_id, data)
             # Fresh tool progress means the turn is still running: void the receipt.
             _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "tool_activity"}
