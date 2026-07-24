@@ -12,7 +12,16 @@ services:
       - STATS_API_KEY=${STATS_API_KEY}
       - DB_PATH=/app/data/claude_stats.db
       - TZ=${TZ:-America/Chicago}
-      # - STATS_OWNER=your-name
+      - STATS_OWNER=jaedyn
+      # Dashboard HTTP Basic auth. An UNSET password disables auth entirely
+      # (app/config.py), so these must stay here: when the deploy moved off
+      # the ~/services compose on 2026-07-22 this file lacked them and
+      # usage.jaedynchilton.com served the full dashboard unauthenticated.
+      - DASHBOARD_USER=jaedyn
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      # Prod view defaults + enterprise geo pricing, lost in the same move.
+      - TOKENFOLD_DEFAULT_SCOPE=personal
+      - TOKENFOLD_ENTERPRISE_GEO=us
       # Notification relay
       - NOTIFY_TOKEN=${NOTIFY_TOKEN}
       - HA_URL=${HA_URL}
