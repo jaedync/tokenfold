@@ -94,6 +94,13 @@ def _prune(now: float) -> None:
         subs = s.get("subagents")
         if subs:
             s["subagents"] = _drawable_subagents(s, now)
+        tomb = s.get("sub_tombstones")
+        if tomb:
+            # A tombstone outlives its pruned mote by the subagent TTL: long
+            # enough that no still-fresh transcript mtime or queue-lagged
+            # start can resurrect the agent, then it expires.
+            s["sub_tombstones"] = {aid: t for aid, t in tomb.items()
+                                   if now - t <= AGENT_STATE_SUBAGENT_TTL_S}
     for sid in stale:
         del _sessions[sid]
 
@@ -156,7 +163,8 @@ def tool_activity(session_id: str, machine: str, project: str,
                   count: int = 1, last_tool: str | None = None,
                   now: float | None = None, event_ts: float | None = None,
                   fleet_rev: str | None = None,
-                  model: str | None = None) -> None:
+                  model: str | None = None,
+                  refresh_subagents: bool = True) -> None:
     """PostToolUse batch: the working heartbeat AND the cumulative tool ticker.
     Routes the working transition through update() (so it clears trouble, arms
     presence, and keeps subagents alive exactly like the old heartbeat), then
@@ -164,7 +172,8 @@ def tool_activity(session_id: str, machine: str, project: str,
     activity spark."""
     now = time.time() if now is None else now
     update(session_id, machine, project, "working", now=now,
-           event_ts=event_ts, fleet_rev=fleet_rev, model=model)
+           event_ts=event_ts, fleet_rev=fleet_rev, model=model,
+           refresh_subagents=refresh_subagents)
     s = _sessions.get(session_id)
     if s is None or s.get("ending_ts") is not None:
         return
@@ -235,8 +244,16 @@ def _compacting(s: dict, now: float) -> bool:
 
 def update(session_id: str, machine: str, project: str, state: str,
            now: float | None = None, event_ts: float | None = None,
-           fleet_rev: str | None = None, model: str | None = None) -> str | None:
+           fleet_rev: str | None = None, model: str | None = None,
+           refresh_subagents: bool = True) -> str | None:
     """Record a state transition. Returns the session's previous state.
+
+    refresh_subagents: a working event normally blanket-refreshes every live
+    mote (the legacy keep-alive for clients that send nothing else about
+    fan-out). An event that carried its own live_subagents snapshot passes
+    False: reconcile_subagents already refreshed exactly the motes that are
+    really alive, and the blanket refresh is what used to keep zombie motes
+    (dropped SubagentStop) lit forever while the parent stayed busy.
 
     A working event clears the waiting_notified flag: the next waiting
     spell is a fresh one and may notify again.
@@ -287,7 +304,8 @@ def update(session_id: str, machine: str, project: str, state: str,
         # subagent removed by SubagentStop is already gone from the dict,
         # so this never resurrects a finished one. Only the last-seen ts is
         # bumped; spawn_ts/model/stop_ts on each mote are preserved.
-        if s.get("subagents"):
+        # Gated: snapshot-carrying events refresh via reconcile instead.
+        if refresh_subagents and s.get("subagents"):
             s["subagents"] = {aid: dict(m, ts=now)
                               for aid, m in s["subagents"].items()}
     _sessions[session_id] = s
@@ -317,11 +335,20 @@ def _drawable_subagents(s: dict, now: float) -> dict:
 def add_subagent(session_id: str, agent_id: str, machine: str = "",
                  project: str = "", agent_type: str = "",
                  now: float | None = None, fleet_rev: str | None = None,
-                 model: str | None = None) -> int:
+                 model: str | None = None,
+                 event_ts: float | None = None) -> int:
     """Record a subagent spawn under its PARENT session. Returns the new
     fan-out width. If the parent has not reported yet (or aged out),
     create a minimal working record: spawning a subagent means the parent
-    is working."""
+    is working.
+
+    event_ts is the CLIENT's clock at hook time. Claude Code drains hooks
+    out of order under fan-out load, so a SubagentStart can arrive AFTER
+    the same agent's SubagentStop: if this start's event_ts predates the
+    recorded stop (mote stop_ts or its tombstone), it is stale news and
+    must not resurrect the mote as a zombie. A start with a NEWER
+    event_ts is a genuine re-spawn and wins. Legacy events without
+    event_ts keep arrival-order semantics."""
     now = time.time() if now is None else now
     _prune(now)
     s = _sessions.get(session_id)
@@ -332,6 +359,24 @@ def add_subagent(session_id: str, agent_id: str, machine: str = "",
             time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
             flush=True)
     subs = dict(s.get("subagents") or {})
+    tomb = dict(s.get("sub_tombstones") or {})
+    if agent_id in tomb:
+        if event_ts is not None and event_ts <= tomb[agent_id]:
+            # Stale start draining late from the hook queue: keep it dead.
+            s["sub_tombstones"] = tomb
+            s["ts"] = now
+            _sessions[session_id] = s
+            return len(_active_subagents(s, now))
+        # A newer event_ts, or a legacy event with none (arrival order):
+        # genuine re-spawn, clear the grave.
+        del tomb[agent_id]
+    stopped = subs.get(agent_id, {}).get("stop_ts")
+    if (stopped is not None and event_ts is not None
+            and event_ts <= stopped):
+        # Same out-of-order drain, mote still resident: stop stays final.
+        s["ts"] = now
+        _sessions[session_id] = s
+        return len(_active_subagents(s, now))
     is_new_mote = agent_id not in subs
     if is_new_mote:
         # A genuinely new spawn anchors its own spawn_ts and model; stop_ts
@@ -356,6 +401,7 @@ def add_subagent(session_id: str, agent_id: str, machine: str = "",
         if model:
             subs[agent_id]["model"] = model
     s["subagents"] = subs
+    s["sub_tombstones"] = tomb
     s["ts"] = now                     # fan-out activity keeps the parent alive
     if is_new_mote:
         # A genuinely new spawn is a work action and marks the parent working.
@@ -386,6 +432,13 @@ def remove_subagent(session_id: str, agent_id: str,
     subs = dict(s.get("subagents") or {})
     if agent_id in subs:
         subs[agent_id] = dict(subs[agent_id], stop_ts=now)
+    # Tombstone the id either way (also when the mote never arrived: its
+    # start may still be stuck in Claude Code's hook queue). The tombstone
+    # outlives the pruned mote record so a late start or a still-fresh
+    # transcript-mtime snapshot cannot resurrect a finished agent.
+    tomb = dict(s.get("sub_tombstones") or {})
+    tomb[agent_id] = now
+    s["sub_tombstones"] = tomb
     s["subagents"] = subs
     s["ts"] = now
     _sessions[session_id] = s
@@ -394,6 +447,69 @@ def remove_subagent(session_id: str, agent_id: str,
 
 def get_session(session_id: str) -> dict | None:
     return _sessions.get(session_id)
+
+
+def reconcile_subagents(session_id: str, entries,
+                        now: float | None = None) -> int:
+    """v2.5 handshake: heal the mote table from the client's ground truth.
+
+    `entries` is the relay's live_subagents snapshot ({agent_id, model?,
+    spawn_ts?} per agent), globbed from the session's subagents/ directory at
+    HOOK RUN TIME. Claude Code's hook dispatcher lags minutes and silently
+    sheds queued lifecycle hooks under fan-out load (measured 2026-07-26: a
+    SubagentStart ran 103s after its spawn; a SubagentStop was discarded at
+    turn end), so no single subagent_start/stop can be trusted to arrive.
+    Whichever post survives carries this snapshot: creates missing motes with
+    the client's TRUE spawn_ts, refreshes last-seen on live ones, backfills
+    empty models. NEVER revives a stopped mote - an explicit SubagentStop
+    (mote stop_ts or its tombstone) is authoritative, because a finished
+    agent's transcript mtime stays fresh for a while. Unknown parents are
+    created working (live children prove the parent). Malformed input is
+    ignored entry by entry (external data, validated here). Returns the
+    resulting live fan-out width."""
+    now = time.time() if now is None else now
+    if not isinstance(entries, list):
+        s = _sessions.get(session_id)
+        return len(_active_subagents(s, now)) if s else 0
+    clean = [e for e in entries
+             if isinstance(e, dict) and e.get("agent_id")
+             and isinstance(e.get("agent_id"), str)]
+    s = _sessions.get(session_id)
+    if s is None:
+        if not clean:
+            return 0
+        s = {"waiting_notified": False, "state": "working",
+             "machine": "", "project": "", "working_ts": now}
+        print("[agent-state] {} {}: new -> working (fanout snapshot)".format(
+            time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
+            flush=True)
+    tomb = {aid: t for aid, t in (s.get("sub_tombstones") or {}).items()
+            if now - t <= AGENT_STATE_SUBAGENT_TTL_S}
+    subs = dict(s.get("subagents") or {})
+    for e in clean:
+        aid = e["agent_id"]
+        if aid in tomb:
+            continue                  # freshly stopped: mtime lag, not life
+        m = subs.get(aid)
+        if m is not None:
+            if m.get("stop_ts") is not None:
+                continue              # stopped is authoritative
+            m = dict(m, ts=now)
+            if e.get("model") and not m.get("model"):
+                m["model"] = str(e["model"])
+            subs[aid] = m
+            continue
+        try:
+            spawn = min(float(e.get("spawn_ts", now)), now)
+        except (TypeError, ValueError):
+            spawn = now
+        subs[aid] = {"spawn_ts": spawn, "ts": now,
+                     "model": str(e.get("model") or ""), "stop_ts": None}
+    s["subagents"] = subs
+    s["sub_tombstones"] = tomb
+    s["ts"] = now
+    _sessions[session_id] = s
+    return len(_active_subagents(s, now))
 
 
 def has_live_subagents(session_id: str, now: float | None = None) -> bool:
