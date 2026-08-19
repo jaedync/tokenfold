@@ -699,3 +699,192 @@ class AgentStateEndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReconcileHandshakeTests(unittest.TestCase):
+    """v2.5 live_subagents snapshot handshake. Claude Code's hook dispatcher
+    lags minutes and silently sheds queued lifecycle hooks under fan-out load
+    (measured 2026-07-26: a SubagentStart ran 103s after its spawn; a
+    SubagentStop was discarded at turn end and left a zombie mote). Every
+    relay post may therefore carry a `live_subagents` ground-truth snapshot;
+    reconcile_subagents heals the mote table from whichever post survives."""
+
+    def setUp(self):
+        agent_state.reset()
+
+    def test_reconcile_creates_missing_motes_with_client_spawn_ts(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        n = agent_state.reconcile_subagents("p1", [
+            {"agent_id": "kid1", "model": "opus", "spawn_ts": 940.0},
+            {"agent_id": "kid2", "model": "sonnet", "spawn_ts": 950.0},
+        ], now=1000.0)
+        self.assertEqual(n, 2)
+        snap = agent_state.snapshot(now=1001.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 2)
+        motes = {a["id"]: a for a in snap["agents"] if a["kind"] == "subagent"}
+        self.assertEqual(motes["p1:kid1"]["model"], "opus")
+        # Displayed age runs from the CLIENT's true spawn moment, not from
+        # whenever the snapshot finally got through.
+        self.assertAlmostEqual(motes["p1:kid1"]["age_s"], 61.0, places=1)
+
+    def test_reconcile_refreshes_live_mote_past_ttl(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kidA", now=1000.0)
+        # Without a refresh the mote would TTL out at 1000+180; the snapshot
+        # heartbeat at 1150 must carry it through to 1250.
+        agent_state.reconcile_subagents(
+            "p1", [{"agent_id": "kidA"}], now=1150.0)
+        snap = agent_state.snapshot(now=1250.0)
+        self.assertEqual(snap["sessions"].get("p1", {}).get("fanout"), 1)
+
+    def test_reconcile_backfills_model_only_when_empty(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kidA", now=1000.0)          # no model
+        agent_state.add_subagent("p1", "kidB", now=1000.0, model="opus")
+        agent_state.reconcile_subagents("p1", [
+            {"agent_id": "kidA", "model": "sonnet"},
+            {"agent_id": "kidB", "model": "haiku"},
+        ], now=1001.0)
+        snap = agent_state.snapshot(now=1002.0)
+        motes = {a["id"]: a for a in snap["agents"] if a["kind"] == "subagent"}
+        self.assertEqual(motes["p1:kidA"]["model"], "sonnet")   # backfilled
+        self.assertEqual(motes["p1:kidB"]["model"], "opus")     # kept
+
+    def test_reconcile_never_revives_stopped_mote(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kidA", now=1000.0)
+        agent_state.remove_subagent("p1", "kidA", now=1010.0)
+        # The agent's transcript mtime stays fresh for a while after it
+        # finishes; the snapshot may still list it. Stopped is authoritative.
+        n = agent_state.reconcile_subagents(
+            "p1", [{"agent_id": "kidA"}], now=1010.4)
+        self.assertEqual(n, 0)
+        snap = agent_state.snapshot(now=1010.5)
+        motes = [a for a in snap["agents"] if a["kind"] == "subagent"]
+        self.assertEqual(len(motes), 1)
+        self.assertEqual(motes[0]["state"], "sunsetting")
+
+    def test_tombstone_blocks_recreate_after_mote_is_pruned(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kidA", now=1000.0)
+        agent_state.remove_subagent("p1", "kidA", now=1010.0)
+        # Past min-visible + sunset: the mote record itself is pruned...
+        snap = agent_state.snapshot(now=1020.0)
+        self.assertEqual([a for a in snap["agents"] if a["kind"] == "subagent"],
+                         [])
+        # ...but a snapshot that still lists it (mtime lag) must not
+        # resurrect it as a fresh live mote.
+        n = agent_state.reconcile_subagents(
+            "p1", [{"agent_id": "kidA"}], now=1030.0)
+        self.assertEqual(n, 0)
+        snap = agent_state.snapshot(now=1031.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 0)
+
+    def test_stale_start_after_stop_is_suppressed_by_client_ts(self):
+        """Out-of-order hook drain: the stop ran, then the delayed start
+        finally drains from Claude Code's queue. Its client_ts predates the
+        stop, so it is stale news and must not create a zombie mote."""
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.remove_subagent("p1", "kidA", now=1010.0)
+        n = agent_state.add_subagent("p1", "kidA", now=1011.0, event_ts=1005.0)
+        self.assertEqual(n, 0)
+        snap = agent_state.snapshot(now=1012.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 0)
+
+    def test_genuine_respawn_after_stop_wins_by_client_ts(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kidA", now=1000.0, event_ts=1000.0)
+        agent_state.remove_subagent("p1", "kidA", now=1010.0)
+        n = agent_state.add_subagent("p1", "kidA", now=1020.0, event_ts=1019.0)
+        self.assertEqual(n, 1)
+        snap = agent_state.snapshot(now=1021.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 1)
+
+    def test_keep_alive_gated_by_refresh_subagents(self):
+        """A working event that carried its own snapshot must NOT blanket-
+        refresh every mote: that blanket refresh is what kept zombie motes
+        alive forever while the parent stayed busy. Legacy events (no
+        snapshot) keep the old keep-alive."""
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "zombie", now=1000.0)
+        agent_state.update("p1", "mac", "proj", "working", now=1150.0,
+                           refresh_subagents=False)
+        snap = agent_state.snapshot(now=1250.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 0)
+        # Legacy path (default True) still refreshes: the mote survives.
+        agent_state.reset()
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        agent_state.add_subagent("p1", "kid", now=1000.0)
+        agent_state.update("p1", "mac", "proj", "working", now=1150.0)
+        snap = agent_state.snapshot(now=1250.0)
+        self.assertEqual(snap["sessions"]["p1"]["fanout"], 1)
+
+    def test_reconcile_creates_parent_when_unknown(self):
+        n = agent_state.reconcile_subagents(
+            "ghost", [{"agent_id": "kid1", "spawn_ts": 990.0}], now=1000.0)
+        self.assertEqual(n, 1)
+        snap = agent_state.snapshot(now=1001.0)
+        self.assertEqual(snap["sessions"]["ghost"]["state"], "working")
+
+    def test_reconcile_ignores_garbage(self):
+        agent_state.update("p1", "mac", "proj", "working", now=1000.0)
+        n = agent_state.reconcile_subagents("p1", [
+            "not-a-dict", {}, {"agent_id": ""}, {"agent_id": None},
+            {"agent_id": "ok1", "spawn_ts": "bogus"},
+            {"agent_id": "ok2", "spawn_ts": 99999999999.0},   # future clock
+        ], now=1000.0)
+        self.assertEqual(n, 2)
+        snap = agent_state.snapshot(now=1001.0)
+        motes = {a["id"]: a for a in snap["agents"] if a["kind"] == "subagent"}
+        # Bad spawn_ts falls back to now; future spawn_ts clamps to now.
+        self.assertAlmostEqual(motes["p1:ok1"]["age_s"], 1.0, places=1)
+        self.assertAlmostEqual(motes["p1:ok2"]["age_s"], 1.0, places=1)
+        n2 = agent_state.reconcile_subagents("p1", "not-a-list", now=1002.0)
+        self.assertEqual(n2, 2)
+
+
+class ReconcileNotifyTests(NotifyPolicyTests):
+    """The handshake through the real endpoint (harness from NotifyPolicyTests:
+    real /api/notify, HA relay mocked, receipts stubbed)."""
+
+    def test_notify_payload_with_snapshot_reconciles(self):
+        r = self.post({
+            "event": "tool_activity", "machine": "mac", "project": "proj",
+            "session_id": "api1", "count": 1, "last_tool": "Bash",
+            "client_ts": 1.0, "state_only": True,
+            "live_subagents": [
+                {"agent_id": "kidX", "model": "opus", "spawn_ts": 1.0}]})
+        self.assertEqual(r.status_code, 200)
+        snap = agent_state.snapshot()
+        self.assertEqual(snap["sessions"]["api1"]["fanout"], 1)
+        motes = [a for a in snap["agents"] if a["kind"] == "subagent"]
+        self.assertEqual(motes[0]["model"], "opus")
+        self.assertEqual(self.pushes, [])       # ambient, never a phone buzz
+
+    def test_notify_tool_activity_agent_id_heartbeats_mote(self):
+        r = self.post({
+            "event": "tool_activity", "machine": "mac", "project": "proj",
+            "session_id": "api2", "count": 1, "last_tool": "Bash",
+            "client_ts": 1.0, "state_only": True, "agent_id": "kidY"})
+        self.assertEqual(r.status_code, 200)
+        snap = agent_state.snapshot()
+        self.assertEqual(snap["sessions"]["api2"]["fanout"], 1)
+        self.assertEqual(self.pushes, [])
+
+    def test_notify_empty_snapshot_does_not_blanket_refresh(self):
+        """A tool_activity carrying live_subagents [] must not keep-alive
+        stale motes: [] is the authoritative all-done statement, and the
+        gated keep-alive is what lets a dropped-stop zombie finally age out."""
+        self.post({"event": "subagent_start", "machine": "mac",
+                   "project": "proj", "session_id": "api3",
+                   "agent_id": "zomb", "client_ts": 1.0, "state_only": True})
+        r = self.post({
+            "event": "tool_activity", "machine": "mac", "project": "proj",
+            "session_id": "api3", "count": 1, "last_tool": "Bash",
+            "client_ts": 2.0, "state_only": True, "live_subagents": []})
+        self.assertEqual(r.status_code, 200)
+        s = agent_state.get_session("api3")
+        spawn = s["subagents"]["zomb"]["spawn_ts"]
+        # The mote's last-seen was NOT bumped past its spawn heartbeat: with
+        # no further snapshots listing it, the TTL fade owns it from here.
+        self.assertEqual(s["subagents"]["zomb"]["ts"], spawn)

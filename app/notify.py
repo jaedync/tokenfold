@@ -367,13 +367,26 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             client_ts = None
         fleet_rev = data.get("fleet_rev") or None
 
+        # v2.5 handshake: any event may carry the client's ground-truth
+        # live_subagents snapshot (globbed from the session's subagents/
+        # directory at hook run time). Reconcile BEFORE dispatch so every
+        # branch, including the early returns, sees a healed mote table.
+        # Claude Code's hook dispatcher lags minutes and sheds queued
+        # lifecycle hooks under fan-out load, so this ride-along snapshot,
+        # not the subagent_start/stop events, is the reliable signal.
+        snapshot = data.get("live_subagents")
+        has_snapshot = isinstance(snapshot, list)
+        if has_snapshot:
+            agent_state.reconcile_subagents(session_id, snapshot)
+
         if event == "working":
             # Pure state transition: never a push. This is what clears a
             # waiting spell and feeds the presence signal. model (relay Task 1)
             # colors the session dot by model on the cube.
             agent_state.update(session_id, machine, project, "working",
                                event_ts=client_ts, fleet_rev=fleet_rev,
-                               model=data.get("model"))
+                               model=data.get("model"),
+                               refresh_subagents=not has_snapshot)
             # A user prompt means the turn resumed: void any pending receipt.
             _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "working"}
@@ -392,7 +405,14 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             agent_state.tool_activity(
                 session_id, machine, project,
                 count=data.get("count", 1), last_tool=data.get("last_tool"),
-                event_ts=client_ts, fleet_rev=fleet_rev, model=data.get("model"))
+                event_ts=client_ts, fleet_rev=fleet_rev, model=data.get("model"),
+                refresh_subagents=not has_snapshot)
+            # A child's own tool call carries its agent_id (the relay forwards
+            # it): direct proof that specific mote is alive right now, even
+            # when its SubagentStart is still stuck in the hook queue.
+            if data.get("agent_id"):
+                agent_state.reconcile_subagents(
+                    session_id, [{"agent_id": data["agent_id"]}])
             # Per-call SSE fan-out (v2.3): expand the batch into individual
             # tool_call events for realtime cube ripples. State-only: publishes
             # to in-memory SSE queues, never the HA push, so the early return
@@ -423,7 +443,8 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             n = agent_state.add_subagent(
                 session_id, data.get("agent_id", ""), machine=machine,
                 project=project, agent_type=data.get("agent_type", ""),
-                fleet_rev=fleet_rev, model=data.get("model"))
+                fleet_rev=fleet_rev, model=data.get("model"),
+                event_ts=client_ts)
             # A new fan-out means the turn handed off, not ended: void the receipt.
             _cancel_pending_receipt(session_id)
             return {"ok": True, "state": "subagent_start", "fanout": n}
