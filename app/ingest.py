@@ -16,6 +16,7 @@ from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
 from .models import BackfillRequest, CursorState, IngestRequest, IngestResponse
+from .sigheader import decode_header, split_signature
 
 router = APIRouter()
 TZ = ZoneInfo(TZ_NAME)
@@ -35,6 +36,65 @@ def _safe_count(value, cap=10**12) -> int:
     if not 0 <= value < cap:
         return 0
     return value
+
+
+# Bounds for the signature-header columns. The blob itself never reaches the
+# DB; only the ~200-byte plaintext header does (4096 leaves generous headroom
+# for a format change without letting a hostile payload store a novel).
+MAX_SIG_HEADER_CHARS = 4096
+MAX_SIG_BLOB_CHARS = 65536      # raw-signature fallback: bound the parse work
+MAX_SIG_VERSION = 10**6
+MAX_SIG_CIPHER_LEN = 10**9
+
+
+def _sig_columns(sig_version, sig_header, sig_cipher_len) -> dict | None:
+    """Validate a client-decoded signature header -> the five events columns.
+
+    Returns None when the header is unusable, so the row simply keeps its
+    NULLs (a backfill can fill them in later). Everything here comes from
+    untrusted transcript JSON: a dict/list bound to sqlite raises and would
+    500 the whole batch, and a str in an INTEGER column poisons every SUM
+    over it, so each value is coerced, not trusted.
+    """
+    if not isinstance(sig_header, str) or not sig_header:
+        return None
+    if len(sig_header) > MAX_SIG_HEADER_CHARS:
+        return None
+    decoded = decode_header(sig_header)
+    if not decoded["fields"]:
+        return None  # nothing parsed out of it, not a header we understand
+    return {
+        "served_model": decoded["served_model"],
+        "sig_version": _safe_count(sig_version, cap=MAX_SIG_VERSION),
+        "sig_header": sig_header,
+        "sig_cipher_len": _safe_count(sig_cipher_len, cap=MAX_SIG_CIPHER_LEN),
+        "sig_fields": decoded["fields"],
+    }
+
+
+def _signature_fields(blk: dict) -> dict:
+    """Signature columns for one thinking block, or {} when it carries none.
+
+    Prefers the fields a current client already split out (the blob is dropped
+    client-side: it is 7% of all uploaded bytes and the header is all the
+    plaintext there is). Falls back to splitting a raw `signature` server-side
+    so older clients, and any transcript replayed straight through, keep
+    working. One decoder either way.
+    """
+    header = blk.get("sig_header")
+    if isinstance(header, str) and header:
+        return _sig_columns(blk.get("sig_version"), header,
+                            blk.get("sig_cipher_len")) or {}
+
+    raw = blk.get("signature")
+    if not isinstance(raw, str) or not raw or len(raw) > MAX_SIG_BLOB_CHARS:
+        return {}
+    # A new client sends the "[N chars]" placeholder here; split_signature
+    # returns no header for it, so it falls out as {} like any other garbage.
+    version, header_b64, cipher_len = split_signature(raw)
+    if header_b64 is None:
+        return {}
+    return _sig_columns(version, header_b64, cipher_len) or {}
 
 
 def _parse_ts(ts_str: str) -> tuple[datetime, float, str] | None:
@@ -119,6 +179,11 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
         "service_tier": None,
         "speed": None,
         "inference_geo": None,
+        "served_model": None,
+        "sig_version": None,
+        "sig_header": None,
+        "sig_cipher_len": None,
+        "sig_fields": None,
         "has_text": 0,
         "has_thinking": 0,
         "has_tool_use": 0,
@@ -206,6 +271,11 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
                 elif bt == "thinking":
                     row["has_thinking"] = 1
                     row["thinking_length"] += len(blk.get("thinking", ""))
+                    # One thinking block per assistant record in Claude Code
+                    # transcripts; if that ever changes, the first block with
+                    # a readable header wins (the spec's tie-break).
+                    if row["sig_header"] is None:
+                        row.update(_signature_fields(blk))
                 elif bt == "tool_use":
                     row["has_tool_use"] = 1
                 elif bt == "image":
@@ -303,6 +373,7 @@ EVENT_COLS = [
     "cache_ephemeral_5m", "cache_ephemeral_1h",
     "web_search_requests", "web_fetch_requests",
     "service_tier", "speed", "inference_geo",
+    "served_model", "sig_version", "sig_header", "sig_cipher_len", "sig_fields",
     "has_text", "has_thinking", "has_tool_use", "has_tool_result", "has_image",
     "is_human_prompt", "text_length", "thinking_length",
     "level", "duration_ms", "error_status", "retry_attempt", "max_retries",
@@ -442,13 +513,14 @@ def ingest(req: IngestRequest):
 @router.post("/api/backfill", dependencies=[Depends(require_api_key)])
 def backfill(req: BackfillRequest):
     """Repair historical rows from a machine's local transcripts: set the
-    cache-tier split and server-tool request counts on events where they are
-    still unset (never clobbers real data) and upsert AI session titles that
-    predate ai-title capture (an existing title wins — live ingest is fresher
-    than a backfill). Re-rolls every day whose events changed so stored costs
-    correct themselves."""
+    cache-tier split, server-tool request counts and thinking-signature header
+    on events where they are still unset (never clobbers real data) and upsert
+    AI session titles that predate ai-title capture (an existing title wins,
+    live ingest is fresher than a backfill). Re-rolls every day whose events
+    changed so stored costs correct themselves."""
     updated_events = 0
     updated_server_tools = 0
+    updated_sig_headers = 0
     touched_days: set[str] = set()
     with write_txn() as conn:
         cur = conn.cursor()
@@ -494,6 +566,28 @@ def backfill(req: BackfillRequest):
             updated_server_tools += 1
             touched_days.add(row["day"])
 
+        # Signature headers: same fill-only-unset contract. These days are
+        # deliberately NOT added to touched_days: no rollup or stored cost
+        # reads served_model (the dashboard chip and /api/served-models both
+        # query events directly), so re-rolling them would be pure cost.
+        for uuid, triple in req.sig_headers.items():
+            if not (isinstance(triple, list) and len(triple) == 3):
+                continue
+            cols = _sig_columns(triple[0], triple[1], triple[2])
+            if cols is None:
+                continue
+            row = cur.execute(
+                "SELECT day FROM events WHERE uuid=? AND sig_header IS NULL",
+                (uuid,)).fetchone()
+            if row is None:
+                continue
+            cur.execute(
+                "UPDATE events SET served_model=?, sig_version=?, sig_header=?, "
+                "sig_cipher_len=?, sig_fields=? WHERE uuid=?",
+                (cols["served_model"], cols["sig_version"], cols["sig_header"],
+                 cols["sig_cipher_len"], cols["sig_fields"], uuid))
+            updated_sig_headers += 1
+
         updated_titles = 0
         now = datetime.now(TZ).isoformat()
         for sid, title in req.titles.items():
@@ -519,6 +613,7 @@ def backfill(req: BackfillRequest):
     return {
         "updated_events": updated_events,
         "updated_server_tools": updated_server_tools,
+        "updated_sig_headers": updated_sig_headers,
         "updated_titles": updated_titles,
         "touched_days": sorted(touched_days),
     }

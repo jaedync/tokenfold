@@ -34,7 +34,7 @@ class HarvestServerToolsTest(unittest.TestCase):
         path = self._write([_arec("u1", {
             "server_tool_use": {"web_search_requests": 2,
                                 "web_fetch_requests": 1}})])
-        cache_tiers, server_tools, titles = bt.harvest_file(path)
+        cache_tiers, server_tools, titles, _sig = bt.harvest_file(path)
         self.assertEqual(server_tools, {"u1": [2, 1]})
         self.assertEqual(cache_tiers, {})
         self.assertEqual(titles, {})
@@ -45,7 +45,7 @@ class HarvestServerToolsTest(unittest.TestCase):
         path = self._write([_arec("u1", {
             "server_tool_use": {"web_search_requests": 0,
                                 "web_fetch_requests": 0}})])
-        _, server_tools, _ = bt.harvest_file(path)
+        _, server_tools, _, _ = bt.harvest_file(path)
         self.assertEqual(server_tools, {})
 
     def test_cache_tiers_and_titles_still_harvested(self):
@@ -57,7 +57,7 @@ class HarvestServerToolsTest(unittest.TestCase):
                                     "web_fetch_requests": 0}}),
             {"type": "ai-title", "sessionId": "s1", "aiTitle": "My Session"},
         ])
-        cache_tiers, server_tools, titles = bt.harvest_file(path)
+        cache_tiers, server_tools, titles, _sig = bt.harvest_file(path)
         self.assertEqual(cache_tiers, {"u1": [5, 7]})
         self.assertEqual(server_tools, {"u1": [3, 0]})
         self.assertEqual(titles, {"s1": "My Session"})
@@ -67,7 +67,7 @@ class HarvestServerToolsTest(unittest.TestCase):
                             _arec("u2", {"server_tool_use": {
                                 "web_search_requests": "2",
                                 "web_fetch_requests": 1}})])
-        _, server_tools, _ = bt.harvest_file(path)
+        _, server_tools, _, _ = bt.harvest_file(path)
         self.assertEqual(server_tools, {})
 
 

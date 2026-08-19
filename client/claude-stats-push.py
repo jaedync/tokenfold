@@ -7,6 +7,7 @@ Designed to run every 5 minutes via cron (Linux) or launchd (macOS).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -149,6 +150,91 @@ def save_cursors(cursors: dict):
     os.replace(tmp, CURSOR_FILE)
 
 
+def split_signature(b64):
+    """Split a thinking-block signature blob into (version, header_b64, cipher_len).
+
+    The blob is protobuf: top level f1 = varint format version (absent means 0),
+    f2 = envelope; the envelope's f1 is the plaintext header and f5 is the
+    ciphertext. Returns the header re-encoded as standard base64, or None when
+    the blob has no envelope/header.
+
+    Deliberately tolerant: the header format changed four times in six weeks,
+    so an unreadable signature must degrade to (0, None, 0) rather than raise.
+    Losing an event because its signature is a shape we have not seen would be
+    far worse than losing the signature.
+
+    Kept self-contained (nested helpers, no module-level dependencies beyond
+    base64) because an identical copy lives in the server's app/sigheader.py
+    and a test asserts the two sources match byte for byte.
+    """
+    try:
+        def read_varint(buf, i):
+            """Return (value, index just past the varint)."""
+            value = shift = 0
+            while True:
+                byte = buf[i]
+                i += 1
+                value |= (byte & 0x7F) << shift
+                if not byte & 0x80:
+                    return value, i
+                shift += 7
+                if shift > 63:
+                    raise ValueError("varint too long")
+
+        def walk(buf):
+            """Yield (field_number, value) for one protobuf message.
+
+            Varints come back as int and length-delimited fields as bytes;
+            fixed-width fields are skipped since no field we want uses them.
+            """
+            i, end = 0, len(buf)
+            while i < end:
+                tag, i = read_varint(buf, i)
+                field, wire = tag >> 3, tag & 7
+                if field == 0:
+                    raise ValueError("field number 0 is not valid protobuf")
+                if wire == 0:
+                    value, i = read_varint(buf, i)
+                    yield field, value
+                elif wire == 2:
+                    size, i = read_varint(buf, i)
+                    stop = i + size
+                    if stop > end:
+                        raise ValueError("length-delimited field overruns buffer")
+                    yield field, buf[i:stop]
+                    i = stop
+                elif wire == 5:
+                    i += 4
+                elif wire == 1:
+                    i += 8
+                else:
+                    raise ValueError("unsupported wire type")
+                if i > end:
+                    raise ValueError("field overruns buffer")
+
+        # Transcripts store the blob unpadded often enough to matter.
+        raw = base64.b64decode(b64 + "=" * (-len(b64) % 4))
+        version, envelope = 0, None
+        for field, value in walk(raw):
+            if field == 1 and isinstance(value, int):
+                version = value
+            elif field == 2 and isinstance(value, bytes):
+                envelope = value
+        if envelope is None:
+            return version, None, 0
+        header, cipher_len = None, 0
+        for field, value in walk(envelope):
+            if field == 1 and isinstance(value, bytes):
+                header = value
+            elif field == 5 and isinstance(value, bytes):
+                cipher_len = len(value)
+        if header is None:
+            return version, None, 0
+        return version, base64.b64encode(header).decode("ascii"), cipher_len
+    except Exception:
+        return 0, None, 0
+
+
 def strip_content(rec: dict) -> dict:
     """Strip large content from events, keeping only metadata and sizes."""
     rec = dict(rec)  # shallow copy
@@ -171,6 +257,23 @@ def strip_content(rec: dict) -> dict:
             if bt == "thinking":
                 # Keep type + length, strip text
                 blk["thinking"] = f"[{len(blk.get('thinking', ''))} chars]"
+                sig = blk.get("signature")
+                if isinstance(sig, str) and sig:
+                    # The blob averages 2.4 KB and is 7% of everything we
+                    # upload; only its ~200 byte plaintext header carries
+                    # signal (which model actually served the block), so ship
+                    # that and drop the rest, same convention as the text.
+                    version, header_b64, cipher_len = split_signature(sig)
+                    blk["signature"] = f"[{len(sig)} chars]"
+                    if header_b64 is None:
+                        # Unparseable: keep a short sample so a format change
+                        # stays diagnosable instead of silently going dark.
+                        blk["sig_error"] = True
+                        blk["sig_sample"] = sig[:256]
+                    else:
+                        blk["sig_version"] = version
+                        blk["sig_header"] = header_b64
+                        blk["sig_cipher_len"] = cipher_len
             elif bt == "text":
                 text = blk.get("text", "")
                 if len(text) > 500:

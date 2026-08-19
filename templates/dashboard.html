@@ -2053,6 +2053,19 @@ th[data-info]:focus::after { opacity: 1; }
   cursor: help;
 }
 
+/* Which model ACTUALLY served the request, when it was not the one asked for.
+   Deliberately deprioritized: no fill, no weight, dim text, a footnote next
+   to the model name, never part of it. */
+.served-chip {
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 0.65rem;
+  color: var(--gray-dim);
+  margin-left: 0.4rem;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .ingest-key-btn {
   font-family: var(--font-body);
   font-weight: 600;
@@ -4461,7 +4474,11 @@ function renderMode(mode) {
      order, and .tbl-wrap scroll position are restored afterwards. */
   const dot = '<span style="color:var(--gray-light)">&#183;</span>';
   const modelBody = document.getElementById('modelBody');
-  const modelKey = mode + '|' + JSON.stringify(activeMB);
+  /* Served-model chips for THIS window, keyed by display model name. Part of
+     the render key: chip text can change on a refresh that leaves the
+     breakdown numbers untouched. */
+  const servedMap = (D.served_models || {})[mode] || {};
+  const modelKey = mode + '|' + JSON.stringify(activeMB) + '|' + JSON.stringify(servedMap);
   if (modelBody._renderKey !== modelKey) {
   modelBody._renderKey = modelKey;
   const mbWrap = modelBody.closest('.tbl-wrap');
@@ -4487,6 +4504,7 @@ function renderMode(mode) {
     row.onclick = function(){ toggleMB(i); };
     row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow'+(isOpen?' open':'')+'" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
       +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
+      +(servedMap[m.model] ? ' <span class="served-chip" title="Share of this model\'s signed thinking blocks that a different model actually served">'+esc(servedMap[m.model])+'</span>' : '')
       +'</div></td>'
       +'<td>'+fN(m.api_calls)+'</td>'
       +'<td>'+fN(m[tokKey])+'</td>'

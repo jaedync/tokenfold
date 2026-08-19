@@ -27,6 +27,7 @@ from .pricing import (
     display_model, effective_geo, get_pricing, is_priced, load_pricing,
     model_sort_key,
 )
+from .served_models import served_model_chips
 from .water import compute_energy_wh, compute_water_ml
 
 # Per-request web-search fee for the cost-component breakdowns.
@@ -530,6 +531,7 @@ def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
             "recent_thinking": 0, "recent_tool_execution": 0,
         },
         "projects": [], "recent_sessions": [], "model_breakdown": [],
+        "served_models": {"all": {}, "14d": {}, "today": {}},
         "total_cost": 0, "total_orch_cost": 0, "total_agent_cost": 0,
         "benchmarks": {}, "output_pricing": {}, "model_pricing": {},
         "cutoff_date": cutoff_date,
@@ -839,6 +841,22 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         "projects": projects,
         "machine_summary": machine_summary,
     }
+
+
+def _served_model_chips_safe(conn, pred: str, cutoff_date: str) -> dict:
+    """served_model_chips with a narrow blast radius (api.py Fix 6 pattern).
+
+    The served-model capture is a best-effort observatory over a format
+    Anthropic changes without notice; a surprise in it must cost the dashboard
+    one small chip, never the whole page.
+    """
+    empty = {"all": {}, "14d": {}, "today": {}}
+    try:
+        return served_model_chips(
+            conn, pred, cutoff_date, datetime.now(TZ).strftime("%Y-%m-%d"))
+    except Exception:
+        logger.exception("served-model chip build failed, chips omitted")
+        return empty
 
 
 def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
@@ -1312,6 +1330,10 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "projects": _projects_list,
         "recent_sessions": recent_sessions,
         "model_breakdown": model_breakdown,
+        # Per-mode chip text, keyed by display model name. Its own small query
+        # over events: daily_summary has no served-model dimension, and this
+        # signal is deliberately not rolled up (see app/served_models.py).
+        "served_models": _served_model_chips_safe(conn, pred, cutoff_date),
         "unpriced_models": sorted(m["model"] for m in model_breakdown if m["unpriced"]),
         "total_cost": round(total_cost, 2),
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),

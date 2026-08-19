@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS events (
     service_tier          TEXT,
     speed             TEXT,
     inference_geo     TEXT,
+
+    -- Thinking-block signature header (see app/sigheader.py). served_model is
+    -- the model that ACTUALLY produced the block, which is not always `model`.
+    served_model      TEXT,
+    sig_version       INTEGER,
+    sig_header        TEXT,
+    sig_cipher_len    INTEGER,
+    sig_fields        TEXT,
+
     account_email     TEXT,
     org_name          TEXT,
     plan              TEXT,
@@ -264,8 +273,23 @@ _ADDED_COLUMNS = {
         "org_type": "TEXT", "org_uuid": "TEXT",
         "web_search_requests": "INTEGER DEFAULT 0",
         "web_fetch_requests": "INTEGER DEFAULT 0",
+        "served_model": "TEXT",
+        "sig_version": "INTEGER",
+        "sig_header": "TEXT",
+        "sig_cipher_len": "INTEGER",
+        "sig_fields": "TEXT",
     },
 }
+
+# Indexes over ALTER-added columns. These CANNOT live in SCHEMA: executescript
+# runs before _migrate, so on a pre-existing events table the CREATE INDEX
+# would reference a column that does not exist yet and abort the whole script.
+_POST_MIGRATION_INDEXES = (
+    # Partial: only signature-bearing rows (a minority of events) are ever
+    # grouped by served model, so the index stays small.
+    "CREATE INDEX IF NOT EXISTS idx_events_served "
+    "ON events(day, model, served_model) WHERE sig_header IS NOT NULL",
+)
 
 
 def _migrate(conn) -> None:
@@ -274,6 +298,9 @@ def _migrate(conn) -> None:
         for col, decl in cols.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+    for ddl in _POST_MIGRATION_INDEXES:
+        conn.execute(ddl)
 
     # daily_summary is a derived rollup — if it exists in a stale shape (missing
     # account_email or missing org_type), drop and recreate from _DAILY_SUMMARY_DDL.
