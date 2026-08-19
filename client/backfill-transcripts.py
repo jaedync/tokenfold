@@ -382,12 +382,20 @@ def main():
               f"+{r.get('updated_server_tools', 0)} events", flush=True)
 
     # Signature headers in their own batches, same deferred-re-roll protocol.
+    # A server that predates this field silently ignores it (pydantic drops
+    # unknown keys) and does not echo updated_sig_headers. That must NOT count
+    # as done: the fleet guard writes its done-marker on exit 0 and the
+    # skip-cache below would mark these files processed, so an old server
+    # would permanently swallow this machine's history. Track the ack.
+    sig_acked = True
     for i in range(0, len(sig_items), BATCH):
         chunk = dict(sig_items[i:i + BATCH])
         try:
             r = post(url, key, {"sig_headers": chunk, "reroll": False})
         except Exception as e:
             sys.exit(f"sig-header batch failed at offset {i}: {e}")
+        if "updated_sig_headers" not in r:
+            sig_acked = False
         tot_sig += r.get("updated_sig_headers", 0)
         days.update(r["touched_days"])
         print(f"  sig-header batch {i // BATCH + 1}: "
@@ -400,6 +408,12 @@ def main():
                             "reroll_days": sorted(days)})
         except Exception as e:
             sys.exit(f"final re-roll failed: {e} — re-run to retry")
+
+    if sig_items and not sig_acked:
+        print("server did not acknowledge sig_headers (predates this field): "
+              "skip-cache NOT saved, re-run after the server is upgraded",
+              file=sys.stderr, flush=True)
+        sys.exit(3)
 
     # only now is it safe to remember these files as fully processed
     _save_cache(sigs)

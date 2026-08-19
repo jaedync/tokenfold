@@ -304,3 +304,30 @@ class CacheVersionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_old_server_without_sig_ack_does_not_save_cache(tmp_path, monkeypatch, capsys):
+    """A server that predates sig_headers echoes no updated_sig_headers. The
+    client must neither save its skip-cache nor exit 0, or the fleet guard
+    marks the machine done and its history is never backfilled."""
+    import pytest
+    bt = _load("bf_sig_oldserver", "backfill-transcripts.py")
+    monkeypatch.setattr(bt, "CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(bt, "read_config", lambda: ("http://x", "k"))
+    fx = SIGS["kettle_v2"]
+    tdir = tmp_path / ".claude" / "projects" / "p"
+    tdir.mkdir(parents=True)
+    rec = {"uuid": "u1", "type": "assistant", "timestamp": "2026-08-17T16:29:36.021Z",
+           "message": {"model": "claude-fable-5", "content": [
+               {"type": "thinking", "thinking": "", "signature": fx["signature"]}]}}
+    (tdir / "s.jsonl").write_text(json.dumps(rec) + "\n")
+    monkeypatch.setattr(bt.Path, "home", classmethod(lambda cls: tmp_path))
+    # old server: answers every batch without the new key
+    monkeypatch.setattr(bt, "post", lambda url, key, payload: {
+        "updated_events": 0, "updated_titles": 0, "touched_days": []})
+    monkeypatch.setattr(sys, "argv", ["backfill-transcripts.py", "--serial"])
+    with pytest.raises(SystemExit) as ex:
+        bt.main()
+    assert ex.value.code == 3
+    assert not (tmp_path / "cache.json").exists()
+    assert "did not acknowledge" in capsys.readouterr().err
