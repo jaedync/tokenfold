@@ -140,3 +140,23 @@ harvest emits sig_headers, cache version bump forces rescan.
 
 dotfleet vendoring of the client, the one-shot fleet backfill, and the
 statusline (already done in dotfleet). Jaedyn does the deploy after local E2E.
+
+## Addendum 2026-08-18: runs and transitions, not shares
+
+Reroutes come and go in runs (a session is sticky for a stretch, then flips;
+fleet-wide the picture changes hour to hour), so a share of the range hid the
+story. Second pass, same capture, new reads:
+
+- Statusline (dotfleet): the final cell shows the last 24 blocks of the current
+  model as glyphs (self / other id / hidden) followed by the current run and its
+  start time, `▁▁▁▁████ kettle-e2c95a10-v2 since 14:02`, or the last runs when
+  the session flipped more than once. All-self and all-hidden sessions are quiet.
+- `GET /api/served-models/timeline?days=N`: bins per (model, time bin, state),
+  per-session runs, a first-seen ledger per (model, served, version, fields),
+  and the latest state per model. Contract in
+  `docs/superpowers/briefs/2026-08-18-served-model-timeline-backend.md`.
+- Dashboard: "Served Model" panel under Model Breakdown (strips per requested
+  model over the window, legend, change log), a runs bar per session in Recent
+  Sessions, and the model-row chip now reads as state + when
+  (`kettle-e2c95a10-v2 since Aug 17`, `hidden (v4) since Aug 19`) with the
+  range share moved into its title.

@@ -267,6 +267,14 @@ def served_model_chips(conn, pred: str, cutoff_date: str,
 # ── timeline ──────────────────────────────────────────────────────────────
 
 
+def _machine(row) -> Optional[str]:
+    """Canonical machine name at read time (hostname variants collapse), the
+    same normalisation the rest of the dashboard applies. Lazy import: the
+    aggregator imports this module for the chip data."""
+    from .aggregator import canonical_machine
+    return canonical_machine(row["source_machine"])
+
+
 def _timeline_rows(conn, pred: str, since_day: str) -> list:
     """Every signed block in the window, oldest first.
 
@@ -303,7 +311,7 @@ def _tally_session(tally: dict, row, name: str, state: str, ts: float) -> None:
     session = row["session_id"]
     if session is None:
         return  # no session to draw a bar for; the block still counts elsewhere
-    tally["machines"][session][row["source_machine"]] += 1
+    tally["machines"][session][_machine(row)] += 1
     if state != SELF:
         tally["session_nonself"][session] += 1
     runs = tally["runs"][session]
@@ -333,14 +341,14 @@ def _tally_ledger(tally: dict, row, name: str, state: str, ts: float) -> None:
             "first_seen": ts, "last_seen": ts, "blocks": 0,
             "sessions": set(), "machines": set(),
             "first_session": row["session_id"],
-            "first_machine": row["source_machine"],
+            "first_machine": _machine(row),
         }
         tally["ledger"][key] = record
     record["last_seen"] = ts
     record["blocks"] += 1
     if row["session_id"] is not None:
         record["sessions"].add(row["session_id"])
-    record["machines"].add(row["source_machine"])
+    record["machines"].add(_machine(row))
 
 
 def _tally_latest(tally: dict, name: str, state: str, ts: float) -> None:

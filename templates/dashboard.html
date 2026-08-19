@@ -2066,6 +2066,33 @@ th[data-info]:focus::after { opacity: 1; }
   cursor: help;
 }
 
+/* ---- SERVED MODEL TIMELINE ----
+   Reroutes come and go in runs (sticky for a stretch, then a flip), so the
+   panel draws them as time strips per requested model, plus a change log
+   and a per-session runs bar in Recent Sessions. Same palette family as the
+   rest of the page; "self" is muted so the anomalies carry the colour. */
+.served-strips { margin-top: 1.5rem; display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 0.9rem; align-items: center; }
+.served-strip-label { font-family: var(--font-body); font-weight: 700; font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--black); white-space: nowrap; }
+.served-strip { display: flex; height: 22px; border: 2px solid var(--black); background: var(--bg); overflow: hidden; }
+.served-cell { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid rgba(26,26,26,0.06); }
+.served-cell:last-child { border-right: 0; }
+.served-cell span { display: block; width: 100%; }
+.served-cell.is-empty { background: transparent; }
+.served-axis { grid-column: 2; position: relative; height: 14px; font-family: var(--font-body); font-size: 0.58rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-dim); }
+.served-axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.served-axis span::before { content: ''; position: absolute; left: 50%; top: -5px; width: 1px; height: 4px; background: var(--gray-dim); }
+.served-hidden-fill { background: var(--gray-dim); }
+.served-ledger td { font-size: 0.72rem; padding: 0.55rem 0.7rem; }
+.served-ledger td:not(.num) { text-align: left; }
+.served-ledger thead th { padding-left: 0.7rem; padding-right: 0.7rem; }
+.served-ledger td.wrap { white-space: normal; max-width: 150px; line-height: 1.25; }
+.served-ledger .is-self td { color: var(--gray-dim); }
+.served-ledger .served-state { font-weight: 700; }
+.served-ledger .served-meta { color: var(--gray-dim); font-size: 0.62rem; }
+.served-runs { display: inline-flex; width: 56px; height: 8px; margin-left: 0.5rem; vertical-align: middle; border: 1px solid var(--black); overflow: hidden; }
+.served-runs span { display: block; height: 100%; }
+.served-runs-empty { color: var(--gray-dim); }
+
 .ingest-key-btn {
   font-family: var(--font-body);
   font-weight: 600;
@@ -2778,6 +2805,27 @@ th[data-info]:focus::after { opacity: 1; }
     </table>
   </div>
   <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Costs use published Anthropic API rates (see Reference below). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
+</div>
+<!-- ======== SERVED MODEL (which model actually answered, as runs over time.
+     Secondary observatory over the thinking-block signature header, fetched
+     from /api/served-models/timeline per window; hidden while every block in
+     the window was served by the model that was asked for) ======== -->
+<div class="panel" id="servedSection" style="border-top:var(--border);display:none">
+  <div class="section-header">
+    <div class="section-header-bar section-header-bar--black"></div>
+    <h2>Served Model</h2>
+    <span class="period-chip" data-mode-chip></span>
+  </div>
+  <div id="servedStrips" class="served-strips" role="img" aria-label="Which model actually served each requested model, over time"></div>
+  <div id="servedLegend" class="hm-legend"></div>
+  <div class="section-subheader">Change Log</div>
+  <div class="tbl-wrap">
+    <table class="served-ledger">
+      <thead><tr><th>First seen</th><th>Requested</th><th>Served by</th><th>Header</th><th>Last seen</th><th class="num">Blocks</th><th class="num">Sessions</th><th>Machines</th></tr></thead>
+      <tbody id="servedLedger"></tbody>
+    </table>
+  </div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Every thinking block carries a signed header that names the model that produced it. Anthropic sometimes answers a request with a different model, in runs: a stretch of blocks, then a flip. Light grey = served by the model asked for; dark grey = the header format hides the model id (v4, from Aug 19). Change log rows are first sightings of each (requested, served, header format) combination.</div>
 </div>
 </div><!-- /tf models -->
 <div class="tf-section" data-section="machines">
@@ -3872,6 +3920,218 @@ function tfTzOffsetMin(ms, tz) {
   } catch (e) { return -360; }
 }
 function tfChicagoOffsetMin(ms) { return tfTzOffsetMin(ms, 'America/Chicago'); }
+/* ---- SERVED MODEL TIMELINE ----
+   Which model actually answered, as runs over time. Data comes from
+   /api/served-models/timeline (per window: today = 1 day, 14d = 14, all =
+   400), fetched on demand and cached per window until the next data push.
+   Secondary observatory: any failure leaves the panel hidden, no banner. */
+var _servedTL = { cache: {}, inflight: {}, colors: {}, palette: ['#e63329', '#1a4b8c', '#9a7a00', '#2e7d4f', '#7b3fa0', '#c2410c'] };
+var SERVED_SELF_COLOR = '#b8b4ac';
+function servedDaysForMode(mode){ return mode === 'today' ? 1 : mode === '14d' ? 14 : 400; }
+function servedTimelineInvalidate(){ _servedTL.cache = {}; }
+/* Stable colour per foreign slug, first come first served across windows,
+   so a slug never changes colour when the period toggle moves. */
+function servedColor(state){
+  if(state === 'self') return SERVED_SELF_COLOR;
+  if(state === 'hidden') return null;   // hatched via CSS class
+  if(!_servedTL.colors[state]){
+    var n = Object.keys(_servedTL.colors).length;
+    _servedTL.colors[state] = _servedTL.palette[n % _servedTL.palette.length];
+  }
+  return _servedTL.colors[state];
+}
+function servedFillStyle(state){
+  var c = servedColor(state);
+  return c ? 'background:' + c : '';
+}
+function servedFillClass(state){ return state === 'hidden' ? ' served-hidden-fill' : ''; }
+function servedStateLabel(state, model){ return state === 'self' ? (model || 'self') + ' (self)' : (model ? model + ' → ' : '') + state; }
+function servedChipText(v){ return typeof v === 'string' ? v : (v && v.text) || ''; }
+function servedChipTitle(v){ return typeof v === 'string' ? 'Share of this model\'s signed thinking blocks that a different model actually served' : (v && v.title) || ''; }
+function servedFetch(days){
+  if(_servedTL.cache[days]) return Promise.resolve(_servedTL.cache[days]);
+  if(_servedTL.inflight[days]) return _servedTL.inflight[days];
+  var url = '/api/served-models/timeline?days=' + days + '&scope=' + encodeURIComponent(TF_SCOPE);
+  var p = fetch(url)
+    .then(function(r){ if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
+    .then(function(data){ _servedTL.cache[days] = data; delete _servedTL.inflight[days]; return data; })
+    .catch(function(){ delete _servedTL.inflight[days]; return null; });
+  _servedTL.inflight[days] = p;
+  return p;
+}
+function servedFmtDate(epoch){
+  var d = new Date(epoch * 1000);
+  return d.toLocaleDateString('en-US', {month:'short', day:'numeric'});
+}
+function servedFmtDateTime(epoch){
+  var d = new Date(epoch * 1000);
+  return servedFmtDate(epoch) + ' ' + d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false});
+}
+function servedFmtRange(t0, t1, bin){
+  var a = new Date(t0 * 1000), b = new Date(t1 * 1000);
+  var opt = {hour:'2-digit', minute:'2-digit', hour12:false};
+  if(bin >= 86400) return servedFmtDate(t0);
+  return servedFmtDate(t0) + ' ' + a.toLocaleTimeString('en-US', opt) + ' to ' + b.toLocaleTimeString('en-US', opt);
+}
+function renderServedTimeline(mode){
+  var section = document.getElementById('servedSection');
+  if(!section) return;
+  var days = servedDaysForMode(mode);
+  servedFetch(days).then(function(data){
+    // the mode may have moved while we waited: only paint the current one
+    if((lsGet('dashMode') || '14d') !== mode) return;
+    if(!data || !(data.models || []).length){ section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    renderServedStrips(data);
+    renderServedLedger(data);
+  });
+  // sessions bars join on the widest window, fetched once and reused
+  servedFetch(400).then(function(){ if(typeof renderSessions === 'function'){ var b = document.getElementById('sessionsBody'); if(b) b._renderKey = null; renderSessions(); } });
+}
+/* Percent per [state, blocks] pair. Non-self states get a floor (a 5-block
+   reroute inside a 1000-block day must still be visible in the cell): the
+   floor is applied, then everything is renormalised to 100. */
+function servedShares(pairs, floor){
+  var total = pairs.reduce(function(a, p){ return a + p[1]; }, 0) || 1;
+  var raw = pairs.map(function(p){ var h = p[1] / total; return (p[0] !== 'self' && h < floor) ? floor : h; });
+  var sum = raw.reduce(function(a, h){ return a + h; }, 0) || 1;
+  return raw.map(function(h){ return (100 * h / sum).toFixed(1); });
+}
+function renderServedStrips(data){
+  var host = document.getElementById('servedStrips');
+  var legend = document.getElementById('servedLegend');
+  if(!host) return;
+  var bin = data.bin_seconds, t0 = data.since_epoch;
+  var now = Date.now() / 1000;
+  if(data.days >= 400 && (data.bins || []).length){
+    // all time: the capture only goes back so far, so start the strip at the
+    // first signed block (local midnight) instead of a mostly empty 400 days
+    var first = Math.min.apply(null, data.bins.map(function(b){ return b[1]; }));
+    var fd = new Date(first * 1000);
+    t0 = Math.max(t0, new Date(fd.getFullYear(), fd.getMonth(), fd.getDate()).getTime() / 1000);
+  }
+  var nCells = Math.max(1, Math.ceil((now - t0) / bin));
+  // model -> cell index -> {state: blocks}
+  var grid = {};
+  (data.bins || []).forEach(function(b){
+    var idx = Math.floor((b[1] - t0) / bin);
+    if(idx < 0 || idx >= nCells) return;
+    var row = grid[b[0]] = grid[b[0]] || {};
+    var cell = row[idx] = row[idx] || {};
+    cell[b[2]] = (cell[b[2]] || 0) + b[3];
+  });
+  var seenStates = {};
+  var html = '';
+  (data.models || []).forEach(function(model){
+    var row = grid[model] || {};
+    html += '<div class="served-strip-label">' + esc(model) + '</div><div class="served-strip">';
+    for(var i = 0; i < nCells; i++){
+      var cell = row[i];
+      if(!cell){ html += '<div class="served-cell is-empty"></div>'; continue; }
+      var states = Object.keys(cell).sort(function(a, b){ return cell[b] - cell[a]; });
+      var heights = servedShares(states.map(function(k){ return [k, cell[k]]; }), 0.25);
+      var title = servedFmtRange(t0 + i * bin, t0 + (i + 1) * bin, bin) + ' · ' + states.map(function(k){ return servedStateLabel(k, model) + ' ' + cell[k]; }).join(' · ');
+      html += '<div class="served-cell" title="' + esc(title) + '">';
+      states.forEach(function(k, j){
+        seenStates[k] = true;
+        html += '<span class="' + servedFillClass(k).trim() + '" style="height:' + heights[j] + '%;' + servedFillStyle(k) + '"></span>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  // time axis under the last strip
+  html += '<div class="served-axis">' + servedAxisTicks(t0, now, bin) + '</div>';
+  host.innerHTML = html;
+  if(legend){
+    var items = [];
+    if(seenStates.self) items.push('<span><span class="sw" style="background:' + SERVED_SELF_COLOR + '"></span> served by the model asked for</span>');
+    Object.keys(seenStates).filter(function(k){ return k !== 'self' && k !== 'hidden'; }).forEach(function(k){
+      items.push('<span><span class="sw" style="background:' + servedColor(k) + '"></span> ' + esc(k) + '</span>');
+    });
+    if(seenStates.hidden) items.push('<span><span class="sw served-hidden-fill"></span> model id hidden by the header (v4)</span>');
+    items.push('<span class="gap">cells: ' + (bin >= 86400 ? '1 day' : bin >= 3600 ? (bin / 3600) + ' h' : (bin / 60) + ' min') + '</span>');
+    legend.innerHTML = items.join('');
+  }
+}
+function servedAxisTicks(t0, now, bin){
+  var span = now - t0;
+  var ticks = [];
+  var d = new Date(t0 * 1000);
+  if(bin >= 86400){
+    // month starts
+    d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    while(d.getTime() / 1000 < now){ ticks.push([d.getTime() / 1000, d.toLocaleDateString('en-US', {month:'short'})]); d = new Date(d.getFullYear(), d.getMonth() + 1, 1); }
+  } else if(span > 2 * 86400){
+    // local midnights, thinned to at most ~10 labels
+    var everyN = Math.max(1, Math.ceil(span / 86400 / 10));
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    var k = 0;
+    while(d.getTime() / 1000 < now){ if(k % everyN === 0) ticks.push([d.getTime() / 1000, servedFmtDate(d.getTime() / 1000)]); d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); k++; }
+  } else {
+    // every 6 hours
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 6);
+    while(d.getTime() / 1000 < now){ ticks.push([d.getTime() / 1000, d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false})]); d = new Date(d.getTime() + 6 * 3600 * 1000); }
+  }
+  return ticks.map(function(t){ return '<span style="left:' + (100 * (t[0] - t0) / span).toFixed(2) + '%">' + esc(t[1]) + '</span>'; }).join('');
+}
+function renderServedLedger(data){
+  var body = document.getElementById('servedLedger');
+  if(!body) return;
+  var rows = data.ledger || [];
+  if(!rows.length){ body.innerHTML = '<tr><td colspan="8" style="color:var(--gray-dim)">nothing recorded in this window</td></tr>'; return; }
+  var prevFields = {};   // model|state -> previous header field list, for the "+14,17" delta
+  body.innerHTML = rows.map(function(r){
+    var isSelf = r.state === 'self';
+    var key = r.model + '|' + r.state;
+    var fields = r.sig_fields || '';
+    var hdr = 'v' + (r.sig_version == null ? '?' : r.sig_version);
+    if(prevFields[key] && prevFields[key] !== fields){
+      var prev = prevFields[key].split(',').filter(Boolean), cur = fields.split(',').filter(Boolean);
+      var added = cur.filter(function(f){ return prev.indexOf(f) < 0; }), removed = prev.filter(function(f){ return cur.indexOf(f) < 0; });
+      var delta = [];
+      if(added.length) delta.push('+' + added.join(','));
+      if(removed.length) delta.push('-' + removed.join(','));
+      hdr += ' <span class="served-meta">fields ' + esc(delta.join(' ')) + '</span>';
+    } else {
+      hdr += ' <span class="served-meta">fields ' + esc(fields || 'none') + '</span>';
+    }
+    prevFields[key] = fields;
+    var swatch = r.state === 'hidden'
+      ? '<span class="sw served-hidden-fill" style="display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px"></span>'
+      : '<span style="display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;background:' + servedColor(r.state) + '"></span>';
+    var served = isSelf ? 'self' : (r.state === 'hidden' ? 'hidden' : r.state);
+    var first = servedFmtDateTime(r.first_seen) + '<div class="served-meta">' + esc(r.first_machine || '') + (r.first_session ? ' · ' + esc(String(r.first_session).slice(0, 8)) : '') + '</div>';
+    var last = servedFmtDateTime(r.last_seen);
+    var lastAgeH = (Date.now() / 1000 - r.last_seen) / 3600;
+    if(lastAgeH < 6) last += ' <span class="served-meta">still active</span>';
+    return '<tr class="' + (isSelf ? 'is-self' : '') + '">'
+      + '<td>' + first + '</td>'
+      + '<td>' + esc(r.model) + '</td>'
+      + '<td title="' + esc(r.served_model || '') + '"><span class="served-state">' + swatch + esc(served) + '</span></td>'
+      + '<td>' + hdr + '</td>'
+      + '<td>' + last + '</td>'
+      + '<td class="num">' + fN(r.blocks) + '</td>'
+      + '<td class="num">' + fN(r.sessions) + '</td>'
+      + '<td class="wrap">' + esc((r.machines || []).join(', ')) + '</td>'
+      + '</tr>';
+  }).join('');
+}
+/* Per-session runs bar for the Recent Sessions table: segments in block
+   proportion, coloured by state; empty string when the session was served
+   entirely by the model asked for (or the timeline is not loaded yet). */
+function servedRunsBar(sessionId){
+  var data = _servedTL.cache[400];
+  var sess = data && data.sessions && data.sessions[sessionId];
+  if(!sess || !(sess.runs || []).length) return '';
+  var widths = servedShares(sess.runs.map(function(r){ return [r[1], r[4]]; }), Math.min(0.15, 0.5 / sess.runs.length));
+  var title = sess.runs.map(function(r){ return servedStateLabel(r[1], r[0]) + ' ×' + r[4]; }).join(' → ');
+  var segs = sess.runs.map(function(r, j){
+    return '<span class="' + servedFillClass(r[1]).trim() + '" style="flex:0 0 ' + widths[j] + '%;' + servedFillStyle(r[1]) + '"></span>';
+  }).join('');
+  return '<span class="served-runs" title="' + esc(title) + '">' + segs + '</span>';
+}
+
 function renderMode(mode) {
   const isRecent = mode === '14d';
   const isToday = mode === 'today';
@@ -3879,6 +4139,7 @@ function renderMode(mode) {
   // Each mode-aware section names its window via a header chip (P2-18)
   const chipText = isToday ? 'today' : isRecent ? 'last 14 days' : 'all time';
   document.querySelectorAll('[data-mode-chip]').forEach(el => { el.textContent = chipText; });
+  renderServedTimeline(mode);
 
   // Empty windows label themselves instead of showing bare axes (P3-34)
   function markEmpty(canvasId, isEmpty){
@@ -4504,7 +4765,7 @@ function renderMode(mode) {
     row.onclick = function(){ toggleMB(i); };
     row.innerHTML = '<td><div class="model-name-cell"><span class="model-dot" style="background:'+mColor(m.model)+'"></span><svg class="mb-arrow'+(isOpen?' open':'')+'" id="arrow'+i+'" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(m.model)
       +(m.unpriced ? ' <span class="unpriced-badge" title="No confirmed pricing for this model yet — its usage is excluded from cost totals">unpriced</span>' : '')
-      +(servedMap[m.model] ? ' <span class="served-chip" title="Share of this model\'s signed thinking blocks that a different model actually served">'+esc(servedMap[m.model])+'</span>' : '')
+      +(servedMap[m.model] ? ' <span class="served-chip" title="'+esc(servedChipTitle(servedMap[m.model]))+'">'+esc(servedChipText(servedMap[m.model]))+'</span>' : '')
       +'</div></td>'
       +'<td>'+fN(m.api_calls)+'</td>'
       +'<td>'+fN(m[tokKey])+'</td>'
@@ -6387,7 +6648,7 @@ function renderSessions(){
     return '<tr class="sess-row" onclick="toggleSess('+i+')" tabindex="0" aria-expanded="'+(isOpen?'true':'false')+'" style="cursor:pointer;--mc:'+mc+'">'
       +'<td title="'+esc(s.session_id)+'"><svg class="mb-arrow'+(isOpen?' open':'')+'" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+label+'</td>'
       +'<td><span class="sess-machine" style="border-bottom:2px solid '+mc+'">'+esc(s.machine||dot)+'</span></td>'
-      +'<td>'+esc(s.model||dot)+'</td>'
+      +'<td>'+esc(s.model||dot)+servedRunsBar(s.session_id)+'</td>'
       +'<td class="num">'+fN(s.total_tokens)+'</td>'
       +'<td class="num" style="color:'+(s.cost>0?'var(--black)':'var(--gray-dim)')+'">'+fC(s.cost)+'</td>'
       +'<td class="num">'+dur(s.duration_s)+'</td>'
@@ -6577,6 +6838,7 @@ renderBillingMeter();
       (data.model_order||[]).forEach(m=>MODEL_ORDER.push(m));
       // Re-render
       const mode=lsGet('dashMode')||'14d';
+      servedTimelineInvalidate();
       renderMode(mode);
       renderHeatmap();
       renderHourly();
