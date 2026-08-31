@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working on Tokenfold.
 
 ## Overview
 
-Tokenfold is a FastAPI analytics dashboard that ingests Claude Code session events from multiple machines and provides real-time usage statistics, cost tracking, and productivity metrics. Events are pushed by a cron client (`client/claude-stats-push.py`), stored in SQLite, and displayed via a Bauhaus-styled HTML dashboard.
+Tokenfold is a FastAPI analytics dashboard that ingests Claude Code session events and privacy-scrubbed normalized Pi Agent events from multiple machines. It provides real-time usage statistics, source/provider-aware cost tracking, and productivity metrics. Claude events are pushed by a cron client (`client/claude-stats-push.py`); Pi clients POST typed batches to `/api/ingest/pi`. Both are stored in SQLite and displayed via a Bauhaus-styled HTML dashboard.
 
 ## Commands
 
@@ -35,19 +35,22 @@ curl -X POST http://localhost:5000/api/ingest \
 ```
 Claude Code CLI -> ~/.claude/projects/**/*.jsonl
     -> client/claude-stats-push.py (cron every 5min, stdlib-only)
-    -> POST /api/ingest (X-API-Key auth, batches of 2000)
-    -> app/ingest.py (parse, deduplicate by UUID, INSERT OR IGNORE)
-    -> SQLite events + tool_uses tables (WAL mode)
+    -> POST /api/ingest (X-API-Key auth, Claude JSONL batches)
+    -> POST /api/ingest/pi (X-API-Key auth, typed Pi normalized batches)
+    -> app/ingest.py (privacy-safe normalization, source/provider metadata, namespaced IDs, dedup)
+    -> SQLite events + tool_uses tables (WAL mode; Pi reported costs remain distinct from Claude pricing)
     -> app/aggregator.py (thread-safe cached rebuild on invalidation)
     -> GET / (HTML dashboard) or GET /api/stats (JSON)
 ```
+
+`/api/ingest/pi` requires `X-API-Key`, a dotfleet `work`/`personal` account class, and bounded, typed, privacy-scrubbed events. The class maps to separate synthetic rollup identities so work and personal Pi usage cannot merge. Pi costs use reported component/total fields and group by provider/model. `/api/usage` remains Anthropic OAuth quota ingestion only; Pi data never enters that path.
 
 ### Key Modules
 
 | Module | Purpose |
 |--------|---------|
 | `app/main.py` | FastAPI app + lifespan (DB init, pricing load) |
-| `app/ingest.py` | POST /api/ingest - event parsing, normalization, dedup, tool extraction |
+| `app/ingest.py` | POST /api/ingest (Claude) and POST /api/ingest/pi (Pi Agent) - typed normalization, namespaced dedup, tool extraction |
 | `app/aggregator.py` | Core stats engine - session-by-session SQL aggregation with in-memory cache |
 | `app/pricing.py` | Model pricing (static + dynamic from LiteLLM GitHub, 24h DB cache) |
 | `app/dashboard.py` | GET / - Jinja2 HTML rendering with number formatting |

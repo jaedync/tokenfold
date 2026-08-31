@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn, write_txn
-from .pricing import compute_cost, display_model, effective_geo, load_pricing
+from .pricing import (compute_cost, display_model, display_model_for_row,
+                      effective_geo, load_pricing, reported_cost)
 
 TZ = ZoneInfo(TZ_NAME)
 
@@ -45,17 +46,20 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     # ── Q1: Token dedup per request_id, scoped to account + target days ──
     requests = conn.execute(
         f"SELECT request_id, COALESCE(project_dir,'unknown') as project_dir, "
-        f"source_machine, session_id, day, model, is_sidechain, agent_id, "
+        f"source_machine, session_id, day, model, provider, source_client, is_sidechain, agent_id, "
         f"speed, inference_geo, ({ENTERPRISE_PRED}) as is_ent, "
         f"MAX(input_tokens) as inp, MAX(output_tokens) as out, "
         f"MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         f"MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
         f"MAX(web_search_requests) as ws, MAX(web_fetch_requests) as wf, "
+        f"MAX(reported_cost_input) as reported_input, MAX(reported_cost_output) as reported_output, "
+        f"MAX(reported_cost_cache_read) as reported_cache_read, MAX(reported_cost_cache_write) as reported_cache_write, "
+        f"MAX(reported_cost_total) as reported_total, "
         f"MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
         f"FROM events "
         f"WHERE type='assistant' AND model IS NOT NULL AND model != '<synthetic>' "
         f"AND request_id IS NOT NULL AND day IN ({placeholders}) {acct_filter} "
-        f"GROUP BY request_id",
+        f"GROUP BY request_id, provider, source_client",
         days + [account],
     ).fetchall()
 
@@ -95,7 +99,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         dd = day_data[d]
         inp, out = r["inp"] or 0, r["out"] or 0
         cc, cr = r["cc"] or 0, r["cr"] or 0
-        dm = display_model(r["model"])
+        dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
         machine = r["source_machine"]
 
         dd["input_tokens"] += inp
@@ -107,12 +111,14 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         # old day after a pricing-era flip keeps its original rates. A local-TZ
         # day can straddle the UTC era boundary by a few hours; pricing each
         # request at its own first_ts is the accepted approximation.
-        req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"],
-                                effective_geo(r["inference_geo"],
-                                              enterprise=bool(r["is_ent"])),
-                                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                                web_search=r["ws"] or 0,
-                                ts_epoch=r["first_ts"])
+        req_cost = reported_cost(r)
+        if req_cost is None:
+            req_cost = compute_cost(dm, inp, out, cc, cr, r["speed"],
+                                    effective_geo(r["inference_geo"],
+                                                  enterprise=bool(r["is_ent"])),
+                                    cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                                    web_search=r["ws"] or 0,
+                                    ts_epoch=r["first_ts"])
         dd["cost"] += req_cost
         dd["project"][r["project_dir"]]["cost"] += req_cost
 
@@ -183,7 +189,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     pending_prompts = 0
     current_session = None
     for r in conn.execute(
-        f"SELECT session_id, day, ts_epoch, type, is_human_prompt, model "
+        f"SELECT session_id, day, ts_epoch, type, is_human_prompt, model, provider, source_client "
         f"FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL "
         f"AND ("
@@ -199,7 +205,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         if r["is_human_prompt"]:
             pending_prompts += 1
         elif r["type"] == "assistant":
-            dm = display_model(r["model"])
+            dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
             d = r["day"]
             if d in day_data:
                 day_data[d]["prompt_model"][dm] += pending_prompts
@@ -226,7 +232,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     if target_session_ids:
         ctx_placeholders = ",".join("?" for _ in target_session_ids)
         for r in conn.execute(
-            f"SELECT session_id, project_dir, day, ts_epoch, type, model, "
+            f"SELECT session_id, project_dir, day, ts_epoch, type, model, provider, source_client, "
             f"has_tool_use, has_tool_result "
             f"FROM events "
             f"WHERE is_sidechain=0 AND agent_id IS NULL "
@@ -241,7 +247,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
 
     prev_main = None
     for r in conn.execute(
-        f"SELECT session_id, project_dir, day, ts_epoch, type, model, "
+        f"SELECT session_id, project_dir, day, ts_epoch, type, model, provider, source_client, "
         f"has_tool_use, has_tool_result "
         f"FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL "
@@ -268,11 +274,14 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
                     if prev_main["type"] == "assistant":
                         pm = prev_main["model"] or ""
                         if pm and pm != "<synthetic>":
-                            gap_model = display_model(pm)
+                            gap_model = display_model_for_row(
+                                pm, prev_main["provider"],
+                                prev_main["source_client"])
                     if not gap_model and r["type"] == "assistant":
                         cm = r["model"] or ""
                         if cm and cm != "<synthetic>":
-                            gap_model = display_model(cm)
+                            gap_model = display_model_for_row(
+                                cm, r["provider"], r["source_client"])
                     if gap_model:
                         dd["model"][gap_model]["active_s"] += gap
 
@@ -289,7 +298,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     agent_ids_seen: dict[str, set] = defaultdict(set)
     prev_sub = None
     for r in conn.execute(
-        f"SELECT agent_id, day, ts_epoch, type, model "
+        f"SELECT agent_id, day, ts_epoch, type, model, provider, source_client "
         f"FROM events "
         f"WHERE agent_id IS NOT NULL AND type IN ('user','assistant') "
         f"AND day IN ({placeholders}) {acct_filter} "
@@ -308,11 +317,13 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
                     if prev_sub["type"] == "assistant":
                         pm = prev_sub["model"] or ""
                         if pm and pm != "<synthetic>":
-                            gap_model = display_model(pm)
+                            gap_model = display_model_for_row(
+                                pm, prev_sub["provider"], prev_sub["source_client"])
                     if not gap_model and r["type"] == "assistant":
                         cm = r["model"] or ""
                         if cm and cm != "<synthetic>":
-                            gap_model = display_model(cm)
+                            gap_model = display_model_for_row(
+                                cm, r["provider"], r["source_client"])
                     if gap_model:
                         day_data[d]["model"][gap_model]["active_s"] += gap
         prev_sub = r
@@ -323,16 +334,16 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
 
     # ── Q7: Agent invocations per model per day ──
     for r in conn.execute(
-        f"SELECT day, agent_id, model FROM events "
+        f"SELECT day, agent_id, model, provider, source_client FROM events "
         f"WHERE agent_id IS NOT NULL AND type='assistant' "
         f"AND model IS NOT NULL AND model != '<synthetic>' "
         f"AND day IN ({placeholders}) {acct_filter} "
-        f"GROUP BY day, agent_id, model",
+        f"GROUP BY day, agent_id, model, provider, source_client",
         days + [account],
     ):
         d = r["day"]
         if d in day_data:
-            dm = display_model(r["model"])
+            dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
             day_data[d]["model"][dm]["agent_invocations"] += 1
 
     # ── Q8: Generation time ──
@@ -378,7 +389,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         gen_time = r["last_ts"] - preceding_user_ts
         if gen_time < 0.5 or gen_time > 120:
             continue
-        dm = display_model(r["model"])
+        dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
         day_data[d]["gen"][dm]["gen_s"] += gen_time
         day_data[d]["gen"][dm]["gen_out"] += out_tok
 

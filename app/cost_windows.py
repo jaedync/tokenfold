@@ -7,7 +7,8 @@ then sums costs across models using pricing.compute_cost().
 import sqlite3
 
 from .config import DEFAULT_SCOPE, scope_predicate
-from .pricing import compute_cost, display_model, effective_geo, era_boundaries
+from .pricing import (compute_cost, display_model_for_row, effective_geo,
+                      era_boundaries, reported_cost)
 
 
 def compute_window_cost(
@@ -68,38 +69,47 @@ def compute_window_cost_by_model(
         params = (start_epoch, end_epoch)
     by_model: dict = {}
     for r in conn.execute(
-        "SELECT model, speed, inference_geo, "
+        "SELECT model, provider, source_client, speed, inference_geo, "
         f"{era_sel}"
         "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
-        "SUM(ws) as ws "
+        "SUM(ws) as ws, "
+        "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
+        "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
+        "SUM(reported_total) as reported_total "
         "FROM ("
-        f"  SELECT model, request_id, {inner_ts}"
+        f"  SELECT model, provider, source_client, request_id, {inner_ts}"
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
-        "  MAX(web_search_requests) as ws "
+        "  MAX(web_search_requests) as ws, "
+        "  MAX(reported_cost_input) as reported_input, MAX(reported_cost_output) as reported_output, "
+        "  MAX(reported_cost_cache_read) as reported_cache_read, MAX(reported_cost_cache_write) as reported_cache_write, "
+        "  MAX(reported_cost_total) as reported_total "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
         "  AND ts_epoch >= ? AND ts_epoch < ? "
-        "  GROUP BY model, request_id"
-        f") GROUP BY model, speed, inference_geo{era_grp}",
+        "  GROUP BY model, provider, source_client, request_id"
+        f") GROUP BY model, provider, source_client, speed, inference_geo{era_grp}",
         params,
     ):
-        dm = display_model(r["model"])
-        by_model[dm] = by_model.get(dm, 0.0) + compute_cost(
-            dm,
-            r["inp"] or 0,
-            r["outp"] or 0,
-            r["cc"] or 0,
-            r["cr"] or 0,
-            r["speed"],
-            effective_geo(r["inference_geo"], enterprise=(scope == "enterprise")),
-            cw_5m=r["c5m"] or 0,
-            cw_1h=r["c1h"] or 0,
-            web_search=r["ws"] or 0,
-            ts_epoch=r["first_ts"] if bounds else None,
-        )
+        dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
+        req_cost = reported_cost(r)
+        if req_cost is None:
+            req_cost = compute_cost(
+                dm,
+                r["inp"] or 0,
+                r["outp"] or 0,
+                r["cc"] or 0,
+                r["cr"] or 0,
+                r["speed"],
+                effective_geo(r["inference_geo"], enterprise=(scope == "enterprise")),
+                cw_5m=r["c5m"] or 0,
+                cw_1h=r["c1h"] or 0,
+                web_search=r["ws"] or 0,
+                ts_epoch=r["first_ts"] if bounds else None,
+            )
+        by_model[dm] = by_model.get(dm, 0.0) + req_cost
     return by_model

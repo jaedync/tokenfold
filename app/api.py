@@ -16,7 +16,8 @@ from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost, compute_window_cost_by_model
 from .db import get_conn
-from .pricing import compute_cost, display_model, effective_geo
+from .pricing import (compute_cost, display_model, display_model_for_row,
+                      effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
 
 
@@ -187,39 +188,46 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     hourly_costs = []
     for r in conn.execute(
         "SELECT CAST((first_ts - ?) / 3600 AS INTEGER) as h, "
-        "model, speed, inference_geo, MIN(first_ts) as min_ts, "
+        "model, provider, source_client, speed, inference_geo, MIN(first_ts) as min_ts, "
         "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
-        "SUM(ws) as ws "
+        "SUM(ws) as ws, SUM(reported_input) as reported_input, "
+        "SUM(reported_output) as reported_output, SUM(reported_cache_read) as reported_cache_read, "
+        "SUM(reported_cache_write) as reported_cache_write, SUM(reported_total) as reported_total "
         "FROM ("
-        "  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
+        "  SELECT MIN(ts_epoch) as first_ts, model, provider, source_client, request_id, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
         "  MAX(web_search_requests) as ws, "
+        "  MAX(reported_cost_input) as reported_input, MAX(reported_cost_output) as reported_output, "
+        "  MAX(reported_cost_cache_read) as reported_cache_read, MAX(reported_cost_cache_write) as reported_cache_write, "
+        "  MAX(reported_cost_total) as reported_total, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
         "  AND ts_epoch>=? AND ts_epoch<? "
-        "  GROUP BY model, request_id"
-        ") GROUP BY h, model, speed, inference_geo",
+        "  GROUP BY model, provider, source_client, request_id"
+        ") GROUP BY h, model, provider, source_client, speed, inference_geo",
         (week_start_epoch, week_start_epoch, window_end),
     ):
-        dm = display_model(r["model"])
+        dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
         # Era representative = the group's earliest event ts (data-derived, so
         # the same historical events never re-price as the sliding week window
         # moves; a group straddling the boundary prices at its start era —
         # accepted hour-scale approximation).
-        c = compute_cost(
-            dm, r["inp"] or 0, r["outp"] or 0,
-            r["cc"] or 0, r["cr"] or 0,
-            r["speed"],
-            effective_geo(r["inference_geo"],
-                          enterprise=(effective == "enterprise")),
-            cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-            web_search=r["ws"] or 0,
-            ts_epoch=r["min_ts"])
+        c = reported_cost(r)
+        if c is None:
+            c = compute_cost(
+                dm, r["inp"] or 0, r["outp"] or 0,
+                r["cc"] or 0, r["cr"] or 0,
+                r["speed"],
+                effective_geo(r["inference_geo"],
+                              enterprise=(effective == "enterprise")),
+                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                web_search=r["ws"] or 0,
+                ts_epoch=r["min_ts"])
         if c > 0:
             h_idx = r["h"]
             found = False

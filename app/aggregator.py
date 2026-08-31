@@ -24,7 +24,8 @@ from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
-    display_model, effective_geo, get_pricing, is_priced, load_pricing,
+    display_model, display_model_for_row, effective_geo, get_pricing, is_priced,
+    load_pricing, reported_cost,
     model_sort_key,
 )
 from .served_models import served_model_chips
@@ -365,26 +366,32 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
     to an hourly rate produces absurd numbers."""
     cutoff_epoch = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).timestamp()
     rows = conn.execute(
-        "SELECT session_id, model, speed, inference_geo, COUNT(*) as reqs, "
+        "SELECT session_id, model, provider, source_client, speed, inference_geo, COUNT(*) as reqs, "
         "MIN(first_ts) as min_ts, MAX(last_ts) as max_ts, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
         "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws, "
+        "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
+        "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
+        "SUM(reported_total) as reported_total, "
         "MAX(machine) as machine, MAX(project_dir) as project_dir "
         "FROM ("
-        "  SELECT session_id, model, request_id, "
+        "  SELECT session_id, model, provider, source_client, request_id, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
         "  MAX(web_search_requests) as ws, "
+        "  MAX(reported_cost_input) as reported_input, MAX(reported_cost_output) as reported_output, "
+        "  MAX(reported_cost_cache_read) as reported_cache_read, MAX(reported_cost_cache_write) as reported_cache_write, "
+        "  MAX(reported_cost_total) as reported_total, "
         "  MAX(source_machine) as machine, MAX(project_dir) as project_dir "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         "  AND session_id IS NOT NULL "
         f"  AND {pred} AND ts_epoch >= ? "
-        "  GROUP BY session_id, model, request_id"
-        ") GROUP BY session_id, model, speed, inference_geo",
+        "  GROUP BY session_id, model, provider, source_client, request_id"
+        ") GROUP BY session_id, model, provider, source_client, speed, inference_geo",
         (cutoff_epoch,),
     ).fetchall()
 
@@ -401,32 +408,41 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
             "_parts": {"input": 0.0, "output": 0.0, "cache_5m": 0.0,
                        "cache_1h": 0.0, "cache_read": 0.0, "web_search": 0.0},
         })
-        dm = display_model(r["model"])
+        dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
         # Group min_ts as the era representative: data-derived, so displayed
         # historical session costs can't move when the wall clock crosses a
         # pricing-era boundary. A session straddling the boundary prices
         # entirely at its start era — including sessions resumed days later
         # under the same session_id. Accepted coarseness; bounded to this
         # card, daily totals are unaffected.
-        c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
-                         r["cr"] or 0, r["speed"],
-                         effective_geo(r["inference_geo"], enterprise=enterprise),
-                         cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                         web_search=r["ws"] or 0, ts_epoch=r["min_ts"])
+        c = reported_cost(r)
+        if c is None:
+            c = compute_cost(dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0,
+                             r["cr"] or 0, r["speed"],
+                             effective_geo(r["inference_geo"], enterprise=enterprise),
+                             cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                             web_search=r["ws"] or 0, ts_epoch=r["min_ts"])
         st["cost"] += c
         st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
-        # per-kind dollar parts for the expanded row's cost-mix card — same
-        # list-price convention as the model breakdown (no geo/fast modifiers),
-        # era-resolved at the same min_ts as the cost above
+        # Prefer reported component dollars for Pi. Claude keeps the
+        # historical list-price breakdown.
         parts = st["_parts"]
-        p = get_pricing(dm, r["min_ts"])
-        if p:
-            c5, c1 = _tiered_cw_parts(r["cc"] or 0, r["c1h"] or 0, p)
-            parts["input"] += (r["inp"] or 0) * p[0] / 1e6
-            parts["output"] += (r["outp"] or 0) * p[1] / 1e6
-            parts["cache_5m"] += c5
-            parts["cache_1h"] += c1
-            parts["cache_read"] += (r["cr"] or 0) * p[3] / 1e6
+        if r["source_client"] == "pi-agent":
+            if any(r[k] is not None for k in ("reported_input", "reported_output",
+                                               "reported_cache_read", "reported_cache_write")):
+                parts["input"] += r["reported_input"] or 0
+                parts["output"] += r["reported_output"] or 0
+                parts["cache_read"] += r["reported_cache_read"] or 0
+                parts["cache_5m"] += r["reported_cache_write"] or 0
+        else:
+            p = get_pricing(dm, r["min_ts"])
+            if p:
+                c5, c1 = _tiered_cw_parts(r["cc"] or 0, r["c1h"] or 0, p)
+                parts["input"] += (r["inp"] or 0) * p[0] / 1e6
+                parts["output"] += (r["outp"] or 0) * p[1] / 1e6
+                parts["cache_5m"] += c5
+                parts["cache_1h"] += c1
+                parts["cache_read"] += (r["cr"] or 0) * p[3] / 1e6
         # the web-search fee is model-independent and bills even unpriced models
         parts["web_search"] += (r["ws"] or 0) * _WS_FEE
         st["total_tokens"] += (r["inp"] or 0) + (r["outp"] or 0) + (r["cc"] or 0) + (r["cr"] or 0)
@@ -647,34 +663,43 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
             hourly_list[idx]["tool_calls"] = r["cnt"]
 
     for r in conn.execute(
-        f"SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, speed, inference_geo, "
+        f"SELECT CAST(first_ts / 3600 AS INTEGER) * 3600 as bucket, model, provider, source_client, speed, inference_geo, "
         "SUM(inp) as inp, SUM(outp) as outp, SUM(cc) as cc, SUM(cr) as cr, "
-        "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws "
+        "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws, "
+        "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
+        "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
+        "SUM(reported_total) as reported_total "
         "FROM ("
-        f"  SELECT MIN(ts_epoch) as first_ts, model, request_id, "
+        f"  SELECT MIN(ts_epoch) as first_ts, model, provider, source_client, request_id, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
         "  MAX(cache_ephemeral_5m) as c5m, MAX(cache_ephemeral_1h) as c1h, "
-        "  MAX(web_search_requests) as ws "
+        "  MAX(web_search_requests) as ws, "
+        "  MAX(reported_cost_input) as reported_input, MAX(reported_cost_output) as reported_output, "
+        "  MAX(reported_cost_cache_read) as reported_cache_read, MAX(reported_cost_cache_write) as reported_cache_write, "
+        "  MAX(reported_cost_total) as reported_total "
         f"  FROM events WHERE type='assistant' AND model IS NOT NULL "
         f"  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
         "  AND ts_epoch>=? AND ts_epoch<? "
-        "  GROUP BY model, request_id"
-        ") GROUP BY bucket, model, speed, inference_geo",
+        "  GROUP BY model, provider, source_client, request_id"
+        ") GROUP BY bucket, model, provider, source_client, speed, inference_geo",
         (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
         if idx is not None:
-            dm = display_model(r["model"])
+            dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
             # hour-bucket epoch as era representative for this group
-            hourly_list[idx]["cost"] += compute_cost(
-                dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
-                r["speed"],
-                effective_geo(r["inference_geo"], enterprise=enterprise),
-                cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
-                web_search=r["ws"] or 0, ts_epoch=r["bucket"])
+            c = reported_cost(r)
+            if c is None:
+                c = compute_cost(
+                    dm, r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0,
+                    r["speed"],
+                    effective_geo(r["inference_geo"], enterprise=enterprise),
+                    cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
+                    web_search=r["ws"] or 0, ts_epoch=r["bucket"])
+            hourly_list[idx]["cost"] += c
 
     for hl in hourly_list:
         hl["cost"] = round(hl["cost"], 2)

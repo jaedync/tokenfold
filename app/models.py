@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CursorState(BaseModel):
@@ -79,3 +80,68 @@ class DesktopMetadataResponse(BaseModel):
     inserted: int
     updated: int
     ignored_stale: int
+
+
+class PiCursor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    last_line_num: int = Field(default=0, ge=0, le=10**12)
+
+
+class PiUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input: int = Field(default=0, ge=0, le=10**12)
+    output: int = Field(default=0, ge=0, le=10**12)
+    cache_read: int = Field(default=0, ge=0, le=10**12)
+    cache_write: int = Field(default=0, ge=0, le=10**12)
+    reasoning: int = Field(default=0, ge=0, le=10**12)
+    cost_input: float | None = Field(default=None, ge=0, le=10**9)
+    cost_output: float | None = Field(default=None, ge=0, le=10**9)
+    cost_cache_read: float | None = Field(default=None, ge=0, le=10**9)
+    cost_cache_write: float | None = Field(default=None, ge=0, le=10**9)
+    cost_total: float | None = Field(default=None, ge=0, le=10**9)
+
+
+class PiTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_use_id: str = Field(min_length=1, max_length=512)
+    name: str = Field(min_length=1, max_length=512)
+
+
+class PiEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1, max_length=512)
+    timestamp: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=512)
+    parent_event_id: str | None = Field(default=None, max_length=512)
+    kind: Literal["user", "assistant", "tool_result", "compaction", "branch_summary", "tool_usage"]
+    provider: str | None = Field(default=None, max_length=128)
+    api: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=256)
+    request_id: str | None = Field(default=None, max_length=512)
+    agent_id: str | None = Field(default=None, max_length=512)
+    is_sidechain: bool = False
+    stop_reason: str | None = Field(default=None, max_length=128)
+    usage: PiUsage | None = None
+    has_text: bool = False
+    has_thinking: bool = False
+    has_tool_use: bool = False
+    has_tool_result: bool = False
+    has_image: bool = False
+    text_length: int = Field(default=0, ge=0, le=10**9)
+    thinking_length: int = Field(default=0, ge=0, le=10**9)
+    tools: list[PiTool] = Field(default_factory=list, max_length=1000)
+
+
+class PiIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine: str = Field(min_length=1, max_length=128)
+    account_class: Literal["work", "personal"]
+    project_dir: str = Field(min_length=1, max_length=1024)
+    session_file: str = Field(min_length=1, max_length=1024)
+    cursor: PiCursor = Field(default_factory=PiCursor)
+    events: list[PiEvent] = Field(max_length=5000)

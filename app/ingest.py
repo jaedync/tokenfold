@@ -5,6 +5,7 @@ POST /api/usage - store OAuth usage data from client.
 import json
 import logging
 import re
+import hashlib
 import sqlite3
 import time
 from datetime import datetime
@@ -15,7 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
-from .models import BackfillRequest, CursorState, IngestRequest, IngestResponse
+from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
+                     PiIngestRequest)
 from .sigheader import decode_header, split_signature
 
 router = APIRouter()
@@ -204,6 +206,16 @@ def _extract_event(rec: dict, machine: str, project_dir: str,
         "file_op_type": None,
         "file_path": None,
         "queue_operation": None,
+        "source_client": "claude-code",
+        "provider": None,
+        "api": None,
+        "usage_kind": None,
+        "reasoning_tokens": 0,
+        "reported_cost_input": None,
+        "reported_cost_output": None,
+        "reported_cost_cache_read": None,
+        "reported_cost_cache_write": None,
+        "reported_cost_total": None,
     }
 
     msg = rec.get("message", {})
@@ -358,6 +370,9 @@ def _extract_tool_uses(rec: dict, event_uuid: str, machine: str,
             "result_event_uuid": None,
             "is_error": 0,
             "duration_ms": None,
+            "source_client": "claude-code",
+            "provider": None,
+            "api": None,
         })
     return tools
 
@@ -379,12 +394,16 @@ EVENT_COLS = [
     "level", "duration_ms", "error_status", "retry_attempt", "max_retries",
     "progress_type", "hook_event", "hook_name", "tool_use_id_ref",
     "file_op_type", "file_path", "queue_operation",
+    "source_client", "provider", "api", "usage_kind", "reasoning_tokens",
+    "reported_cost_input", "reported_cost_output",
+    "reported_cost_cache_read", "reported_cost_cache_write", "reported_cost_total",
 ]
 
 TOOL_COLS = [
     "tool_use_id", "event_uuid", "session_id", "source_machine",
     "name", "timestamp", "ts_epoch", "day",
     "result_event_uuid", "is_error", "duration_ms",
+    "source_client", "provider", "api",
 ]
 
 _EVENT_SQL = (
@@ -503,6 +522,193 @@ def ingest(req: IngestRequest):
                 "stored, rollup will self-heal on next batch/sweep",
                 sorted(touched_days))
 
+    return IngestResponse(
+        accepted=accepted,
+        duplicates=duplicates,
+        cursor=CursorState(last_line_num=req.cursor.last_line_num + len(req.events)),
+    )
+
+
+_PI_USAGE_KINDS = {"assistant", "compaction", "branch_summary", "tool_usage"}
+
+
+def _pi_namespace(machine: str, session_file: str, session_id: str) -> str:
+    """Stable, bounded namespace for native Pi identifiers."""
+    raw = "\0".join((machine, session_file, session_id)).encode()
+    return "pi:" + hashlib.sha256(raw).hexdigest()[:40]
+
+
+def _pi_id(namespace: str, value: str) -> str:
+    return f"{namespace}:{value}"
+
+
+def _pi_account(account_class: str) -> dict[str, str]:
+    """Stable synthetic identity keeps Pi work/personal rollups disjoint."""
+    return {
+        "account_email": f"pi-{account_class}@dotfleet.local",
+        "org_name": "dotfleet",
+        "plan": "enterprise" if account_class == "work" else "personal",
+        "org_type": f"dotfleet_{account_class}",
+    }
+
+
+def _pi_event_row(event, machine: str, project_dir: str, session_file: str,
+                  account_class: str):
+    parsed = _parse_ts(event.timestamp)
+    if parsed is None:
+        raise HTTPException(status_code=422, detail="events.timestamp must be ISO-8601")
+    ts_dt, ts_epoch, day = parsed
+    ns = _pi_namespace(machine, session_file, event.session_id)
+    usage_kind = event.kind if event.kind in _PI_USAGE_KINDS else None
+    usage = event.usage
+    # Every usage-bearing Pi record is a canonical assistant row. A stable
+    # fallback request id is essential for cost/token aggregation and replay.
+    req_id = None
+    if usage_kind:
+        req_id = _pi_id(ns, event.request_id or "event:" + event.event_id)
+    elif event.request_id:
+        req_id = _pi_id(ns, event.request_id)
+    model = event.model if usage_kind else event.model
+    if usage_kind and not model:
+        model = "<unknown>"
+    account = _pi_account(account_class)
+    row = {c: None for c in EVENT_COLS}
+    row.update({
+        "uuid": _pi_id(ns, event.event_id),
+        "type": "assistant" if usage_kind else ("user" if event.kind == "tool_result" else event.kind),
+        "subtype": None,
+        "timestamp": event.timestamp,
+        "ts_epoch": ts_epoch,
+        "day": day,
+        "session_id": _pi_id(ns, event.session_id),
+        "parent_uuid": (_pi_id(ns, event.parent_event_id)
+                         if event.parent_event_id else None),
+        "is_sidechain": int(event.is_sidechain),
+        "user_type": None,
+        "cwd": None,
+        "git_branch": None,
+        "version": None,
+        "slug": None,
+        "agent_id": (_pi_id(ns, event.agent_id) if event.agent_id else None),
+        "permission_mode": None,
+        "source_machine": machine,
+        "project_dir": project_dir,
+        "account_email": account["account_email"],
+        "org_name": account["org_name"],
+        "plan": account["plan"],
+        "rate_limit_tier": None,
+        "org_type": account["org_type"],
+        "org_uuid": None,
+        "model": model,
+        "message_id": None,
+        "request_id": req_id,
+        "stop_reason": event.stop_reason,
+        "api_error": None,
+        "is_api_error": 0,
+        "input_tokens": usage.input if usage else 0,
+        "output_tokens": usage.output if usage else 0,
+        "cache_creation_tokens": usage.cache_write if usage else 0,
+        "cache_read_tokens": usage.cache_read if usage else 0,
+        "cache_ephemeral_5m": 0,
+        "cache_ephemeral_1h": 0,
+        "web_search_requests": 0,
+        "web_fetch_requests": 0,
+        "service_tier": None,
+        "speed": None,
+        "inference_geo": None,
+        "has_text": int(event.has_text),
+        "has_thinking": int(event.has_thinking),
+        "has_tool_use": int(event.has_tool_use or bool(event.tools)),
+        "has_tool_result": int(event.has_tool_result or event.kind == "tool_result"),
+        "has_image": int(event.has_image),
+        "is_human_prompt": int(event.kind == "user" and not event.is_sidechain),
+        "text_length": event.text_length,
+        "thinking_length": event.thinking_length,
+        "source_client": "pi-agent",
+        "provider": event.provider,
+        "api": event.api,
+        "usage_kind": usage_kind,
+        "reasoning_tokens": usage.reasoning if usage else 0,
+        "reported_cost_input": usage.cost_input if usage else None,
+        "reported_cost_output": usage.cost_output if usage else None,
+        "reported_cost_cache_read": usage.cost_cache_read if usage else None,
+        "reported_cost_cache_write": usage.cost_cache_write if usage else None,
+        "reported_cost_total": usage.cost_total if usage else None,
+    })
+    tools = []
+    for tool in event.tools:
+        tools.append({
+            "tool_use_id": _pi_id(ns, tool.tool_use_id),
+            "event_uuid": row["uuid"],
+            "session_id": row["session_id"],
+            "source_machine": machine,
+            "name": tool.name,
+            "timestamp": event.timestamp,
+            "ts_epoch": ts_epoch,
+            "day": day,
+            "result_event_uuid": None,
+            "is_error": 0,
+            "duration_ms": None,
+            "source_client": "pi-agent",
+            "provider": event.provider,
+            "api": event.api,
+        })
+    return row, tools
+
+
+def _store_pi_rows(req: PiIngestRequest, event_rows: list[tuple],
+                   tool_rows: list[tuple]) -> tuple[int, int]:
+    accepted = duplicates = 0
+    with write_txn() as conn:
+        cur = conn.cursor()
+        for values in event_rows:
+            try:
+                cur.execute(_EVENT_SQL, values)
+                accepted += int(cur.rowcount > 0)
+                duplicates += int(cur.rowcount <= 0)
+            except sqlite3.IntegrityError:
+                duplicates += 1
+        for values in tool_rows:
+            try:
+                cur.execute(_TOOL_SQL, values)
+            except sqlite3.IntegrityError:
+                pass
+        now = datetime.now(TZ).isoformat()
+        cursor_machine = "pi:" + req.machine
+        last_ts = req.events[-1].timestamp if req.events else None
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_cursors(machine, project_dir, session_file, "
+            "last_line_num, last_timestamp, updated_at) VALUES(?,?,?,?,?,?)",
+            (cursor_machine, req.project_dir, req.session_file,
+             req.cursor.last_line_num + len(req.events), last_ts, now),
+        )
+    return accepted, duplicates
+
+
+@router.post("/api/ingest/pi", response_model=IngestResponse,
+             dependencies=[Depends(require_api_key)])
+def ingest_pi(req: PiIngestRequest):
+    """Ingest privacy-scrubbed normalized Pi Agent events."""
+    event_rows, tool_rows, touched_days = [], [], set()
+    for event in req.events:
+        row, tools = _pi_event_row(event, req.machine, req.project_dir,
+                                   req.session_file, req.account_class)
+        event_rows.append(tuple(row[c] for c in EVENT_COLS))
+        touched_days.add(row["day"])
+        tool_rows.extend(tuple(tool[c] for c in TOOL_COLS) for tool in tools)
+    if len(tool_rows) > 20000:
+        raise HTTPException(status_code=422, detail="too many tools in batch")
+
+    accepted, duplicates = _store_pi_rows(req, event_rows, tool_rows)
+    if accepted > 0:
+        from .summarizer import summarize_days
+        from .aggregator import trigger_eager_rebuild
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        try:
+            summarize_days(sorted(touched_days | {today}))
+            trigger_eager_rebuild()
+        except Exception:
+            logger.exception("post-Pi-ingest summary rebuild failed; events are durable")
     return IngestResponse(
         accepted=accepted,
         duplicates=duplicates,

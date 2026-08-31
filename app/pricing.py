@@ -128,6 +128,45 @@ def display_model(mid: str) -> str:
     return name.replace("-", " ").title()
 
 
+def display_model_for_row(model: str | None, provider: str | None = None,
+                          source_client: str | None = None) -> str | None:
+    """Display key for an event, qualifying Pi models by provider.
+
+    Claude keeps the historical display_model behavior. Pi provider names are
+    part of the key so e.g. openai/gpt-4o and google/gpt-4o never merge.
+    """
+    if model is None:
+        return None
+    displayed = display_model(model)
+    if source_client == "pi-agent" and provider:
+        return f"{provider}/{displayed}"
+    return displayed
+
+
+def reported_cost(row) -> float | None:
+    """Return a client-reported Pi cost, preserving explicit zero.
+
+    Claude rows always return None and retain server-side Anthropic pricing.
+    """
+    keys = row.keys() if hasattr(row, "keys") else row
+    source = row["source_client"] if "source_client" in keys else None
+    if source != "pi-agent":
+        return None
+    total_key = "reported_total" if "reported_total" in keys else "reported_cost_total"
+    total = row[total_key] if total_key in keys else None
+    if total is not None:
+        return float(total)
+    aliases = (("reported_input", "reported_cost_input"),
+               ("reported_output", "reported_cost_output"),
+               ("reported_cache_read", "reported_cost_cache_read"),
+               ("reported_cache_write", "reported_cost_cache_write"))
+    vals = []
+    for a, b in aliases:
+        key = a if a in keys else (b if b in keys else None)
+        if key is not None and row[key] is not None:
+            vals.append(row[key])
+    return sum(float(v) for v in vals) if vals else None
+
 def load_pricing(force=False):
     """Fetch Claude pricing from LiteLLM GitHub, with 24h DB-backed cache.
     force=True bypasses a still-fresh cache (used when an unknown model shows
