@@ -151,9 +151,10 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
                         |
               client/claude-stats-push.py  (cron, every 5min)
                         |
-              POST /api/ingest  (X-API-Key auth, batches of 2000)
+              POST /api/ingest  (X-API-Key auth, Claude JSONL batches)
+              POST /api/ingest/pi (X-API-Key auth, typed Pi normalized batches)
                         |
-              app/ingest.py  (parse, deduplicate by UUID)
+              app/ingest.py  (privacy-safe normalization and ID namespacing)
                         |
               SQLite  (WAL mode, events + tool_uses tables)
                         |
@@ -170,9 +171,10 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `GET` | `/` | No | HTML dashboard |
 | `GET` | `/api/stats` | No | Full stats JSON |
 | `GET` | `/api/stats/version` | No | Cache version (for polling) |
-| `POST` | `/api/ingest` | `X-API-Key` | Ingest session events |
+| `POST` | `/api/ingest` | `X-API-Key` | Ingest Claude Code JSONL session events |
+| `POST` | `/api/ingest/pi` | `X-API-Key` | Ingest typed, privacy-scrubbed Pi Agent events; provider-aware reported costs and required dotfleet `work`/`personal` account class |
 | `POST` | `/api/desktop-metadata` | `X-API-Key` | Ingest Claude Desktop session metadata (macOS) |
-| `POST` | `/api/usage` | `X-API-Key` | Push OAuth usage data |
+| `POST` | `/api/usage` | `X-API-Key` | Push Anthropic OAuth usage/quota data (Claude-only; not Pi) |
 | `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |
 

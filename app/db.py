@@ -132,7 +132,18 @@ CREATE TABLE IF NOT EXISTS events (
     file_op_type      TEXT,
     file_path         TEXT,
 
-    queue_operation   TEXT
+    queue_operation   TEXT,
+
+    source_client     TEXT NOT NULL DEFAULT 'claude-code',
+    provider          TEXT,
+    api               TEXT,
+    usage_kind        TEXT,
+    reasoning_tokens INTEGER DEFAULT 0,
+    reported_cost_input       REAL,
+    reported_cost_output      REAL,
+    reported_cost_cache_read  REAL,
+    reported_cost_cache_write REAL,
+    reported_cost_total       REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_session_type_ts ON events(session_id, type, ts_epoch);
@@ -157,7 +168,10 @@ CREATE TABLE IF NOT EXISTS tool_uses (
     day               TEXT NOT NULL,
     result_event_uuid TEXT,
     is_error          INTEGER DEFAULT 0,
-    duration_ms       REAL
+    duration_ms       REAL,
+    source_client     TEXT NOT NULL DEFAULT 'claude-code',
+    provider          TEXT,
+    api               TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tool_uses_name ON tool_uses(name);
@@ -278,6 +292,16 @@ _ADDED_COLUMNS = {
         "sig_header": "TEXT",
         "sig_cipher_len": "INTEGER",
         "sig_fields": "TEXT",
+        "source_client": "TEXT NOT NULL DEFAULT 'claude-code'",
+        "provider": "TEXT", "api": "TEXT", "usage_kind": "TEXT",
+        "reasoning_tokens": "INTEGER DEFAULT 0",
+        "reported_cost_input": "REAL", "reported_cost_output": "REAL",
+        "reported_cost_cache_read": "REAL", "reported_cost_cache_write": "REAL",
+        "reported_cost_total": "REAL",
+    },
+    "tool_uses": {
+        "source_client": "TEXT NOT NULL DEFAULT 'claude-code'",
+        "provider": "TEXT", "api": "TEXT",
     },
 }
 
