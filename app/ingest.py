@@ -532,9 +532,10 @@ def ingest(req: IngestRequest):
 _PI_USAGE_KINDS = {"assistant", "compaction", "branch_summary", "tool_usage"}
 
 
-def _pi_namespace(machine: str, session_file: str, session_id: str) -> str:
-    """Stable, bounded namespace for native Pi identifiers."""
-    raw = "\0".join((machine, session_file, session_id)).encode()
+def _pi_namespace(account_class: str, machine: str, session_file: str,
+                  session_id: str) -> str:
+    """Stable, scope-isolated namespace for native Pi identifiers."""
+    raw = "\0".join((account_class, machine, session_file, session_id)).encode()
     return "pi:" + hashlib.sha256(raw).hexdigest()[:40]
 
 
@@ -558,7 +559,7 @@ def _pi_event_row(event, machine: str, project_dir: str, session_file: str,
     if parsed is None:
         raise HTTPException(status_code=422, detail="events.timestamp must be ISO-8601")
     ts_dt, ts_epoch, day = parsed
-    ns = _pi_namespace(machine, session_file, event.session_id)
+    ns = _pi_namespace(account_class, machine, session_file, event.session_id)
     usage_kind = event.kind if event.kind in _PI_USAGE_KINDS else None
     usage = event.usage
     # Every usage-bearing Pi record is a canonical assistant row. A stable
@@ -674,7 +675,7 @@ def _store_pi_rows(req: PiIngestRequest, event_rows: list[tuple],
             except sqlite3.IntegrityError:
                 pass
         now = datetime.now(TZ).isoformat()
-        cursor_machine = "pi:" + req.machine
+        cursor_machine = f"pi:{req.account_class}:{req.machine}"
         last_ts = req.events[-1].timestamp if req.events else None
         conn.execute(
             "INSERT OR REPLACE INTO sync_cursors(machine, project_dir, session_file, "

@@ -16,8 +16,8 @@ from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
 from .cost_windows import compute_window_cost, compute_window_cost_by_model
 from .db import get_conn
-from .pricing import (compute_cost, display_model, display_model_for_row,
-                      effective_geo, reported_cost)
+from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
+                      display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
 
 
@@ -193,7 +193,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
         "SUM(ws) as ws, SUM(reported_input) as reported_input, "
         "SUM(reported_output) as reported_output, SUM(reported_cache_read) as reported_cache_read, "
-        "SUM(reported_cache_write) as reported_cache_write, SUM(reported_total) as reported_total "
+        "SUM(reported_cache_write) as reported_cache_write, "
+        f"{REPORTED_COST_SUM_SQL} as reported_total "
         "FROM ("
         "  SELECT MIN(ts_epoch) as first_ts, model, provider, source_client, request_id, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "

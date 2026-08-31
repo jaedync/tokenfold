@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CursorState(BaseModel):
@@ -134,6 +134,13 @@ class PiEvent(BaseModel):
     text_length: int = Field(default=0, ge=0, le=10**9)
     thinking_length: int = Field(default=0, ge=0, le=10**9)
     tools: list[PiTool] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def require_usage_identity(self):
+        """Usage must retain provider/model identity for safe pricing."""
+        if self.usage is not None and (not self.provider or not self.model):
+            raise ValueError("usage-bearing events require provider and model")
+        return self
 
 
 class PiIngestRequest(BaseModel):

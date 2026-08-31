@@ -128,6 +128,16 @@ def display_model(mid: str) -> str:
     return name.replace("-", " ").title()
 
 
+REPORTED_COST_SUM_SQL = (
+    "SUM(CASE WHEN reported_total IS NOT NULL THEN reported_total "
+    "WHEN reported_input IS NOT NULL OR reported_output IS NOT NULL "
+    "OR reported_cache_read IS NOT NULL OR reported_cache_write IS NOT NULL "
+    "THEN COALESCE(reported_input, 0) + COALESCE(reported_output, 0) "
+    "+ COALESCE(reported_cache_read, 0) + COALESCE(reported_cache_write, 0) "
+    "ELSE NULL END)"
+)
+
+
 def display_model_for_row(model: str | None, provider: str | None = None,
                           source_client: str | None = None) -> str | None:
     """Display key for an event, qualifying Pi models by provider.

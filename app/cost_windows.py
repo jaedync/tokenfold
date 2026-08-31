@@ -7,8 +7,9 @@ then sums costs across models using pricing.compute_cost().
 import sqlite3
 
 from .config import DEFAULT_SCOPE, scope_predicate
-from .pricing import (compute_cost, display_model_for_row, effective_geo,
-                      era_boundaries, reported_cost)
+from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
+                      display_model_for_row, effective_geo, era_boundaries,
+                      reported_cost)
 
 
 def compute_window_cost(
@@ -76,7 +77,7 @@ def compute_window_cost_by_model(
         "SUM(ws) as ws, "
         "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
         "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
-        "SUM(reported_total) as reported_total "
+        f"{REPORTED_COST_SUM_SQL} as reported_total "
         "FROM ("
         f"  SELECT model, provider, source_client, request_id, {inner_ts}"
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "

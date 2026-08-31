@@ -102,6 +102,48 @@ class PiIngestTest(TempDBTestCase):
             f"SUM({PERSONAL_PRED}) AS personal FROM events").fetchone()
         self.assertEqual((row["enterprise"], row["personal"]), (1, 1))
 
+    def test_identical_native_ids_are_namespaced_by_scope(self):
+        event = self.event()
+        personal = self.post([event], account_class="personal")
+        work = self.post([event], account_class="work")
+        self.assertEqual(personal.json()["accepted"], 1)
+        self.assertEqual(work.json()["accepted"], 1)
+        rows = self.conn.execute(
+            "SELECT uuid, session_id, account_email FROM events ORDER BY account_email"
+        ).fetchall()
+        self.assertEqual(len({row["uuid"] for row in rows}), 2)
+        self.assertEqual(len({row["session_id"] for row in rows}), 2)
+        self.assertEqual({row["account_email"] for row in rows},
+                         {"pi-personal@dotfleet.local", "pi-work@dotfleet.local"})
+        cursors = self.conn.execute(
+            "SELECT machine FROM sync_cursors ORDER BY machine").fetchall()
+        self.assertEqual([row["machine"] for row in cursors],
+                         ["pi:personal:m", "pi:work:m"])
+
+    def test_mixed_reported_cost_shapes_are_summed_per_request(self):
+        total = self.event(eid="total", request_id="total",
+                           usage={"input": 1, "cost_total": 4})
+        components = self.event(
+            eid="components", request_id="components",
+            usage={"input": 1, "cost_input": 1, "cost_output": 2})
+        self.assertEqual(self.post([total, components]).status_code, 200)
+        from app.cost_windows import compute_window_cost
+        cost = compute_window_cost(self.conn, 1_781_000_000, 1_782_000_000,
+                                   scope="personal")
+        self.assertEqual(cost, 7)
+        from app.summarizer import summarize_days
+        summarize_days(["2026-06-09"])
+        summary = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE account_email=?",
+            ("pi-personal@dotfleet.local",)).fetchone()
+        self.assertEqual(summary["cost"], 7)
+
+    def test_usage_requires_provider_and_model(self):
+        self.assertEqual(self.post([self.event(provider=None)]).status_code, 422)
+        self.assertEqual(self.post([self.event(model=None)]).status_code, 422)
+        no_cost = self.event(usage={"input": 1, "output": 1})
+        self.assertEqual(self.post([no_cost]).status_code, 200)
+
     def test_bounds_and_malformed(self):
         self.assertEqual(self.post([self.event(kind="bad")]).status_code, 422)
         self.assertEqual(self.post([self.event()], account_class="unknown").status_code, 422)

@@ -24,8 +24,8 @@ from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
-    display_model, display_model_for_row, effective_geo, get_pricing, is_priced,
-    load_pricing, reported_cost,
+    REPORTED_COST_SUM_SQL, display_model, display_model_for_row, effective_geo,
+    get_pricing, is_priced, load_pricing, reported_cost,
     model_sort_key,
 )
 from .served_models import served_model_chips
@@ -372,7 +372,7 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
         "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws, "
         "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
         "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
-        "SUM(reported_total) as reported_total, "
+        f"{REPORTED_COST_SUM_SQL} as reported_total, "
         "MAX(machine) as machine, MAX(project_dir) as project_dir "
         "FROM ("
         "  SELECT session_id, model, provider, source_client, request_id, "
@@ -668,7 +668,7 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
         "SUM(c5m) as c5m, SUM(c1h) as c1h, SUM(ws) as ws, "
         "SUM(reported_input) as reported_input, SUM(reported_output) as reported_output, "
         "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
-        "SUM(reported_total) as reported_total "
+        f"{REPORTED_COST_SUM_SQL} as reported_total "
         "FROM ("
         f"  SELECT MIN(ts_epoch) as first_ts, model, provider, source_client, request_id, "
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
