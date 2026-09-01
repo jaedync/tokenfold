@@ -3498,7 +3498,11 @@ function fN(n){
    so durations read identically everywhere (P3-31). */
 function fT(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?h+'h '+m+'m':m+'m'}
 function fHM(totalMin){return fT(Math.round(totalMin)*60)}
-function fC(n){if(n==null||isNaN(n))return '$0.00';return '$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function fC(n){
+  if(n==null||isNaN(n))return '$0.00';
+  const value=Number(n), digits=Math.abs(value)>0&&Math.abs(value)<0.01?4:2;
+  return '$'+value.toLocaleString(undefined,{minimumFractionDigits:digits,maximumFractionDigits:digits});
+}
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
@@ -4512,7 +4516,7 @@ function renderMode(mode) {
   const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
   const otherCostKey = isRecent ? 'recent_cost_other' : 'cost_other';
   const wsKey = isRecent ? 'recent_cost_web_search' : 'cost_web_search';
-  const costModels = activeMB;
+  const costModels = activeMB.filter(m=>m[cKey]>0);
   if(!costModels.length) {
     dropChart('costByModel');
     document.getElementById('costWrap').innerHTML = '';
