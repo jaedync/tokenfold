@@ -357,6 +357,34 @@ def _tiered_cw_cost(cw, c1h, p):
     return c5 + c1
 
 
+def _summary_model_identity(name: str) -> tuple[str, str]:
+    """Internal provider/model identity for a daily-summary display key."""
+    if " / " in name:
+        provider, model = name.split(" / ", 1)
+        return provider, model
+    # The original ingest path is Claude-only and historically stored bare
+    # Anthropic model names. Treat it as the same identity as Pi/Anthropic.
+    return "Anthropic", name
+
+
+def _conditional_model_names(
+        identities: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """Show providers only when one normalized model has multiple providers."""
+    providers: dict[str, set[str]] = defaultdict(set)
+    for provider, model in identities:
+        providers[model].add(provider)
+    return {
+        identity: (f"{identity[0]} / {identity[1]}"
+                   if len(providers[identity[1]]) > 1 else identity[1])
+        for identity in identities
+    }
+
+
+def _round_visible_cost(value: float) -> float:
+    """Retain sub-cent reported costs instead of presenting them as zero."""
+    return round(value, 4 if 0 < abs(value) < 0.01 else 2)
+
+
 def _summary_cost_parts(md, pricing):
     """Cost-chart parts, preferring exact Pi-reported component dollars."""
     if md.get("has_reported_cost"):
@@ -445,7 +473,8 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
                              cw_5m=r["c5m"] or 0, cw_1h=r["c1h"] or 0,
                              web_search=r["ws"] or 0, ts_epoch=r["min_ts"])
         st["cost"] += c
-        st["_model_cost"][dm] = st["_model_cost"].get(dm, 0.0) + c
+        identity = _summary_model_identity(dm)
+        st["_model_cost"][identity] = st["_model_cost"].get(identity, 0.0) + c
         # Prefer reported component dollars for Pi. Claude keeps the
         # historical list-price breakdown.
         parts = st["_parts"]
@@ -492,25 +521,34 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
     project_names = _make_display_names(
         sorted({st["project_dir"] for st in sessions.values() if st["project_dir"]}))
 
+    session_identities = {
+        identity for session in sessions.values()
+        for identity in session["_model_cost"]
+    }
+    display_names = _conditional_model_names(session_identities)
     out = []
     for st in sorted(sessions.values(), key=lambda x: -x["max_ts"])[:limit]:
         duration_s = max(0.0, st["max_ts"] - st["min_ts"])
         burn = round(st["cost"] / (duration_s / 3600), 2) if duration_s >= 300 else None
-        primary_model = max(st["_model_cost"], key=st["_model_cost"].get) if st["_model_cost"] else None
+        primary_identity = (max(st["_model_cost"], key=st["_model_cost"].get)
+                            if st["_model_cost"] else None)
+        primary_model = display_names.get(primary_identity)
         out.append({
             "session_id": st["session_id"],
             "title": titles.get(st["session_id"]),
             "project": project_names.get(st["project_dir"], st["project_dir"]),
             "machine": canonical_machine(st["machine"]),
             "model": primary_model,
-            "cost": round(st["cost"], 2),
+            "cost": _round_visible_cost(st["cost"]),
             "total_tokens": st["total_tokens"],
             "input": st["input"], "output": st["output"],
             "cache_write": st["cache_write"], "cache_read": st["cache_read"],
             "api_calls": st["api_calls"],
             "prompts": prompt_counts.get(st["session_id"], 0),
-            "models": [{"model": m, "cost": round(c, 2)} for m, c in
-                       sorted(st["_model_cost"].items(), key=lambda kv: -kv[1])],
+            "models": [{"model": display_names[identity],
+                        "cost": _round_visible_cost(cost)}
+                       for identity, cost in sorted(
+                           st["_model_cost"].items(), key=lambda item: -item[1])],
             "first_ts": st["min_ts"],
             "duration_s": round(duration_s),
             "burn_per_hr": burn,
@@ -751,19 +789,44 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
 
     row = _merge_summary_rows(ent_rows)
 
-    # Model breakdown for today
-    model_data = json.loads(row["model_json"] or "{}")
-    gen_data = json.loads(row["gen_json"] or "{}")
+    # Model breakdown for today. Merge storage keys that describe the same
+    # provider/model identity, while decomposing cost before the merge so
+    # reported Pi components and priced Claude components both survive.
+    raw_model_data = json.loads(row["model_json"] or "{}")
+    raw_gen_data = json.loads(row["gen_json"] or "{}")
+    model_data: dict[tuple[str, str], dict] = defaultdict(dict)
+    cost_parts: dict[tuple[str, str], dict] = defaultdict(
+        lambda: defaultdict(float))
+    gen_data: dict[tuple[str, str], dict] = defaultdict(
+        lambda: defaultdict(float))
+    for storage_name, source in raw_model_data.items():
+        identity = _summary_model_identity(storage_name)
+        target = model_data[identity]
+        for key, value in source.items():
+            if key == "has_reported_cost":
+                target[key] = bool(target.get(key)) or bool(value)
+            elif isinstance(value, (int, float)):
+                target[key] = target.get(key, 0) + value
+        parts = _summary_cost_parts(source, get_pricing(storage_name))
+        for key, value in parts.items():
+            cost_parts[identity][key] += value
+    for storage_name, source in raw_gen_data.items():
+        target = gen_data[_summary_model_identity(storage_name)]
+        target["gen_s"] += source.get("gen_s", 0.0)
+        target["gen_out"] += source.get("gen_out", 0)
+
+    display_names = _conditional_model_names(set(model_data))
     today_mb = []
-    for mname, md in sorted(model_data.items(), key=lambda kv: model_sort_key(kv[0])):
+    for identity in sorted(model_data, key=lambda item: model_sort_key(item[1])):
+        _provider, base_name = identity
+        mname = display_names[identity]
+        md = model_data[identity]
         inp = md.get("input", 0)
         out = md.get("output", 0)
         cw = md.get("cache_write", 0)
         cr = md.get("cache_read", 0)
         cost = md.get("cost", 0.0)
-        # Today's tokens: wall-clock now is by definition the correct era.
-        p = get_pricing(mname)
-        parts = _summary_cost_parts(md, p)
+        parts = cost_parts[identity]
         main_cost = md.get("main_cost", 0.0)
         agent_cost = round(cost - main_cost, 2)
         main_prompts = md.get("main_prompts", 0)
@@ -771,20 +834,20 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         avg_cost_per_turn = (main_cost / main_prompts) if main_prompts > 0 else None
         avg_cost_per_agent = (agent_cost / agent_invocations) if agent_invocations > 0 else None
         active_hours = md.get("active_s", 0.0) / 3600
-        gd = gen_data.get(mname, {})
+        gd = gen_data.get(identity, {})
         gen_s = gd.get("gen_s", 0.0)
         gen_out = gd.get("gen_out", 0)
-        energy = compute_energy_wh(mname, inp, out)
-        water = compute_water_ml(mname, inp, out)
+        energy = compute_energy_wh(base_name, inp, out)
+        water = compute_water_ml(base_name, inp, out)
         today_mb.append({
             "model": mname,
-            "unpriced": not is_priced(mname) and not md.get("has_reported_cost"),
+            "unpriced": not is_priced(base_name) and not md.get("has_reported_cost"),
             "has_reported_cost": bool(md.get("has_reported_cost")),
             "api_calls": md.get("api_calls", 0),
             "input": inp, "output": out,
             "cache_write": cw, "cache_read": cr,
             "total_tokens": inp + out + cw + cr,
-            "cost": round(cost, 2),
+            "cost": _round_visible_cost(cost),
             "main_cost": round(main_cost, 2),
             "agent_cost": agent_cost,
             "avg_cost_per_turn": round(avg_cost_per_turn, 4) if avg_cost_per_turn is not None else None,
@@ -798,34 +861,38 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "all_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
             "cache_5m": md.get("cache_5m", 0),
             "cache_1h": md.get("cache_1h", 0),
-            "cost_input": round(parts["input"], 2),
-            "cost_output": round(parts["output"], 2),
-            "cost_cache_write": round(parts["cache_5m"] + parts["cache_1h"]
-                                      + parts["cache_write_reported"], 2),
-            "cost_cache_5m": round(parts["cache_5m"], 2),
-            "cost_cache_1h": round(parts["cache_1h"], 2),
-            "cost_cache_write_reported": round(parts["cache_write_reported"], 2),
-            "cost_cache_read": round(parts["cache_read"], 2),
-            "cost_other": round(parts["other"], 2),
+            "cost_input": _round_visible_cost(parts["input"]),
+            "cost_output": _round_visible_cost(parts["output"]),
+            "cost_cache_write": _round_visible_cost(
+                parts["cache_5m"] + parts["cache_1h"]
+                + parts["cache_write_reported"]),
+            "cost_cache_5m": _round_visible_cost(parts["cache_5m"]),
+            "cost_cache_1h": _round_visible_cost(parts["cache_1h"]),
+            "cost_cache_write_reported": _round_visible_cost(
+                parts["cache_write_reported"]),
+            "cost_cache_read": _round_visible_cost(parts["cache_read"]),
+            "cost_other": _round_visible_cost(parts["other"]),
             "web_search": md.get("web_search", 0),
             "web_fetch": md.get("web_fetch", 0),
             "cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
             # Today view uses the same keys as recent/all for compatibility
-            "recent_cost": round(cost, 2),
+            "recent_cost": _round_visible_cost(cost),
             "recent_main_cost": round(main_cost, 2),
             "recent_agent_cost": agent_cost,
             "recent_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
             "recent_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
             "recent_active_hours": round(active_hours, 1),
-            "recent_cost_input": round(parts["input"], 2),
-            "recent_cost_output": round(parts["output"], 2),
-            "recent_cost_cache_write": round(parts["cache_5m"] + parts["cache_1h"]
-                                             + parts["cache_write_reported"], 2),
-            "recent_cost_cache_5m": round(parts["cache_5m"], 2),
-            "recent_cost_cache_1h": round(parts["cache_1h"], 2),
-            "recent_cost_cache_write_reported": round(parts["cache_write_reported"], 2),
-            "recent_cost_cache_read": round(parts["cache_read"], 2),
-            "recent_cost_other": round(parts["other"], 2),
+            "recent_cost_input": _round_visible_cost(parts["input"]),
+            "recent_cost_output": _round_visible_cost(parts["output"]),
+            "recent_cost_cache_write": _round_visible_cost(
+                parts["cache_5m"] + parts["cache_1h"]
+                + parts["cache_write_reported"]),
+            "recent_cost_cache_5m": _round_visible_cost(parts["cache_5m"]),
+            "recent_cost_cache_1h": _round_visible_cost(parts["cache_1h"]),
+            "recent_cost_cache_write_reported": _round_visible_cost(
+                parts["cache_write_reported"]),
+            "recent_cost_cache_read": _round_visible_cost(parts["cache_read"]),
+            "recent_cost_other": _round_visible_cost(parts["other"]),
             "recent_cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
             "recent_input": inp, "recent_output": out,
             "recent_cache_write": cw, "recent_cache_read": cr,
@@ -1032,8 +1099,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         # ── model_json ──
         model_data = json.loads(row["model_json"] or "{}")
         for mname, md in model_data.items():
-            models_seen.add(mname)
-            ms = model_stats[mname]
+            identity = _summary_model_identity(mname)
+            models_seen.add(identity)
+            ms = model_stats[identity]
             ms["input"] += md.get("input", 0)
             ms["output"] += md.get("output", 0)
             ms["cache_write"] += md.get("cache_write", 0)
@@ -1087,7 +1155,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         # ── gen_json (generation time — stored separately from model_json) ──
         gen_data = json.loads(row["gen_json"] or "{}")
         for mname, gd in gen_data.items():
-            ms = model_stats[mname]
+            ms = model_stats[_summary_model_identity(mname)]
             ms["gen_s"] += gd.get("gen_s", 0.0)
             ms["gen_out"] += gd.get("gen_out", 0)
             if is_recent:
@@ -1179,8 +1247,11 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     # ── Model breakdown ──
     total_cost = 0.0
     model_breakdown = []
-    for name in sorted(model_stats, key=lambda m: model_sort_key(m)):
-        ms = model_stats[name]
+    display_names = _conditional_model_names(set(model_stats))
+    for identity in sorted(model_stats, key=lambda item: model_sort_key(item[1])):
+        _provider, base_name = identity
+        name = display_names[identity]
+        ms = model_stats[identity]
         total_tok = ms["input"] + ms["output"] + ms["cache_write"] + ms["cache_read"]
         cost = ms["cost"]
         total_cost += cost
@@ -1210,18 +1281,18 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         all_cost_per_hour = (cost / active_hours) if active_hours > 0 else None
         recent_output_tok_per_s = (ms["recent_gen_out"] / ms["recent_gen_s"]) if ms["recent_gen_s"] > 0 else None
         all_output_tok_per_s = (ms["gen_out"] / ms["gen_s"]) if ms["gen_s"] > 0 else None
-        energy = compute_energy_wh(name, ms["input"], ms["output"])
-        water = compute_water_ml(name, ms["input"], ms["output"])
-        recent_energy = compute_energy_wh(name, ms["recent_input"], ms["recent_output"])
-        recent_water = compute_water_ml(name, ms["recent_input"], ms["recent_output"])
+        energy = compute_energy_wh(base_name, ms["input"], ms["output"])
+        water = compute_water_ml(base_name, ms["input"], ms["output"])
+        recent_energy = compute_energy_wh(base_name, ms["recent_input"], ms["recent_output"])
+        recent_water = compute_water_ml(base_name, ms["recent_input"], ms["recent_output"])
         model_breakdown.append({
             "model": name,
-            "unpriced": not is_priced(name) and not ms["has_reported_cost"],
+            "unpriced": not is_priced(base_name) and not ms["has_reported_cost"],
             "has_reported_cost": ms["has_reported_cost"],
             "api_calls": ms["api_calls"],
             "input": ms["input"], "output": ms["output"],
             "cache_write": ms["cache_write"], "cache_read": ms["cache_read"],
-            "total_tokens": total_tok, "cost": round(cost, 2),
+            "total_tokens": total_tok, "cost": _round_visible_cost(cost),
             "main_cost": main_cost, "agent_cost": agent_cost,
             "avg_cost_per_turn": round(avg_cost_per_turn, 4) if avg_cost_per_turn is not None else None,
             "avg_cost_per_agent": round(avg_cost_per_agent, 4) if avg_cost_per_agent is not None else None,
@@ -1233,15 +1304,17 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "cache_5m": ms["cache_5m"], "cache_1h": ms["cache_1h"],
             "recent_cache_5m": ms["recent_cache_5m"], "recent_cache_1h": ms["recent_cache_1h"],
             # dollar parts come from the per-day era-priced accumulators
-            "cost_input": round(ms["cost_input"], 2),
-            "cost_output": round(ms["cost_output"], 2),
-            "cost_cache_write": round(ms["cost_cache_5m"] + ms["cost_cache_1h"]
-                                      + ms["cost_cache_write_reported"], 2),
-            "cost_cache_5m": round(ms["cost_cache_5m"], 2),
-            "cost_cache_1h": round(ms["cost_cache_1h"], 2),
-            "cost_cache_write_reported": round(ms["cost_cache_write_reported"], 2),
-            "cost_cache_read": round(ms["cost_cache_read"], 2),
-            "cost_other": round(ms["cost_other"], 2),
+            "cost_input": _round_visible_cost(ms["cost_input"]),
+            "cost_output": _round_visible_cost(ms["cost_output"]),
+            "cost_cache_write": _round_visible_cost(
+                ms["cost_cache_5m"] + ms["cost_cache_1h"]
+                + ms["cost_cache_write_reported"]),
+            "cost_cache_5m": _round_visible_cost(ms["cost_cache_5m"]),
+            "cost_cache_1h": _round_visible_cost(ms["cost_cache_1h"]),
+            "cost_cache_write_reported": _round_visible_cost(
+                ms["cost_cache_write_reported"]),
+            "cost_cache_read": _round_visible_cost(ms["cost_cache_read"]),
+            "cost_other": _round_visible_cost(ms["cost_other"]),
             "web_search": ms["web_search"],
             "web_fetch": ms["web_fetch"],
             "cost_web_search": round(ms["web_search"] * _WS_FEE, 2),
@@ -1250,20 +1323,20 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_input": ms["recent_input"], "recent_output": ms["recent_output"],
             "recent_cache_write": ms["recent_cache_write"], "recent_cache_read": ms["recent_cache_read"],
             "recent_total_tokens": ms["recent_input"] + ms["recent_output"] + ms["recent_cache_write"] + ms["recent_cache_read"],
-            "recent_cost": round(recent_cost, 2),
+            "recent_cost": _round_visible_cost(recent_cost),
             "recent_main_cost": round(ms["recent_main_cost"], 2),
             "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
-            "recent_cost_input": round(ms["recent_cost_input"], 2),
-            "recent_cost_output": round(ms["recent_cost_output"], 2),
-            "recent_cost_cache_write": round(
+            "recent_cost_input": _round_visible_cost(ms["recent_cost_input"]),
+            "recent_cost_output": _round_visible_cost(ms["recent_cost_output"]),
+            "recent_cost_cache_write": _round_visible_cost(
                 ms["recent_cost_cache_5m"] + ms["recent_cost_cache_1h"]
-                + ms["recent_cost_cache_write_reported"], 2),
-            "recent_cost_cache_5m": round(ms["recent_cost_cache_5m"], 2),
-            "recent_cost_cache_1h": round(ms["recent_cost_cache_1h"], 2),
-            "recent_cost_cache_write_reported": round(
-                ms["recent_cost_cache_write_reported"], 2),
-            "recent_cost_cache_read": round(ms["recent_cost_cache_read"], 2),
-            "recent_cost_other": round(ms["recent_cost_other"], 2),
+                + ms["recent_cost_cache_write_reported"]),
+            "recent_cost_cache_5m": _round_visible_cost(ms["recent_cost_cache_5m"]),
+            "recent_cost_cache_1h": _round_visible_cost(ms["recent_cost_cache_1h"]),
+            "recent_cost_cache_write_reported": _round_visible_cost(
+                ms["recent_cost_cache_write_reported"]),
+            "recent_cost_cache_read": _round_visible_cost(ms["recent_cost_cache_read"]),
+            "recent_cost_other": _round_visible_cost(ms["recent_cost_other"]),
             "recent_cost_web_search": round(ms["recent_web_search"] * _WS_FEE, 2),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,
@@ -1408,16 +1481,23 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "total_orch_cost": round(sum(m["main_cost"] for m in model_breakdown), 2),
         "total_agent_cost": round(sum(m["agent_cost"] for m in model_breakdown), 2),
         "benchmarks": {
-            name: MODEL_BENCHMARKS.get(name, {})
-            for name in model_stats if MODEL_BENCHMARKS.get(name)
+            display_names[identity]: MODEL_BENCHMARKS.get(identity[1], {})
+            for identity in model_stats if MODEL_BENCHMARKS.get(identity[1])
         },
         # CURRENT list-price tables (rate columns on the dashboard): wall-clock
         # era is semantically intended — they show what a model costs now, not
         # a historical blend, so no ts_epoch here.
-        "output_pricing": {name: get_pricing(name)[1] for name in model_stats},
-        "model_pricing": {name: {"input": p[0], "output": p[1], "cache_write": p[2],
-                                 "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]}
-                          for name in model_stats for p in [get_pricing(name)]},
+        "output_pricing": {
+            display_names[identity]: get_pricing(identity[1])[1]
+            for identity in model_stats
+        },
+        "model_pricing": {
+            display_names[identity]: {
+                "input": p[0], "output": p[1], "cache_write": p[2],
+                "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]
+            }
+            for identity in model_stats for p in [get_pricing(identity[1])]
+        },
         "cutoff_date": cutoff_date,
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "data_range": (f"since {datetime.strptime(date_range[0], '%Y-%m-%d').strftime('%b %-d, %Y')}" if date_range else "No data"),
