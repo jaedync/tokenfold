@@ -87,9 +87,47 @@ class PiIngestTest(TempDBTestCase):
         row = self.conn.execute("SELECT cost, model_json FROM daily_summary").fetchone()
         self.assertEqual(row["cost"], 4)
         models = json.loads(row["model_json"])
-        self.assertEqual(set(models), {"openai/Same", "google/Same"})
-        self.assertGreater(models["openai/Same"]["active_s"], 0)
+        self.assertEqual(set(models), {"OpenAI / Same", "Google / Same"})
+        self.assertGreater(models["OpenAI / Same"]["active_s"], 0)
         self.assertNotIn("Same", models)
+
+    def test_pi_model_display_normalization(self):
+        from app.pricing import display_model_for_row
+        cases = {
+            ("openai-codex", "gpt-5.6-sol"): "OpenAI Codex / GPT-5.6 Sol",
+            ("openai-codex", "openai-codex/gpt-5.6-sol"): "OpenAI Codex / GPT-5.6 Sol",
+            ("anthropic", "claude-opus-4-8"): "Anthropic / Opus 4.8",
+            ("openrouter", "z-ai/glm-5.3"): "OpenRouter / GLM-5.3",
+            ("openrouter", "moonshotai/kimi-k3"): "OpenRouter / Kimi K3",
+            ("huggingface", "zai-org/GLM-5.3-Flash"): "Hugging Face / GLM-5.3 Flash",
+        }
+        for (provider, model), expected in cases.items():
+            with self.subTest(provider=provider, model=model):
+                self.assertEqual(display_model_for_row(model, provider, "pi-agent"), expected)
+
+    def test_reported_cost_components_populate_model_breakdown(self):
+        component = self.event(
+            eid="component", provider="openai-codex", model="gpt-5.6-sol",
+            request_id="component")
+        residual = self.event(
+            eid="residual", sid="router", provider="openrouter",
+            model="z-ai/glm-5.3", request_id="residual",
+            usage={"input": 1, "cost_total": 4})
+        self.assertEqual(self.post([component, residual]).status_code, 200)
+        from app.aggregator import _build_dashboard_data_inner
+        dashboard = _build_dashboard_data_inner("personal")
+        models = {item["model"]: item for item in dashboard["model_breakdown"]}
+        codex = models["OpenAI Codex / GPT-5.6 Sol"]
+        self.assertEqual(codex["cost_input"], 1)
+        self.assertEqual(codex["cost_output"], 2)
+        self.assertEqual(codex["cost_cache_read"], .1)
+        self.assertEqual(codex["cost_cache_write_reported"], .2)
+        self.assertEqual(codex["cost_other"], 0)
+        self.assertFalse(codex["unpriced"])
+        self.assertTrue(codex["has_reported_cost"])
+        router = models["OpenRouter / GLM-5.3"]
+        self.assertEqual(router["cost"], 4)
+        self.assertEqual(router["cost_other"], 4)
 
     def test_work_and_personal_scope_partition(self):
         personal = self.event(eid="personal", sid="personal", request_id="personal")

@@ -14,6 +14,20 @@ from .pricing import (compute_cost, display_model, display_model_for_row,
 TZ = ZoneInfo(TZ_NAME)
 
 
+def _reported_cost_parts(
+        row, total: float) -> tuple[float, float, float, float, float] | None:
+    """Return Pi-reported cost components plus any undecomposed residual."""
+    if row["source_client"] != "pi-agent":
+        return None
+    keys = ("reported_input", "reported_output", "reported_cache_read",
+            "reported_cache_write", "reported_total")
+    if not any(row[key] is not None for key in keys):
+        return None
+    parts = tuple(float(row[key] or 0) for key in keys[:4])
+    residual = max(0.0, float(total) - sum(parts))
+    return (*parts, residual)
+
+
 def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     """Build per-day accumulators for a single account.
 
@@ -77,7 +91,10 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
                 "cache_5m": 0, "cache_1h": 0,
                 "web_search": 0, "web_fetch": 0,
                 "api_calls": 0, "main_api_calls": 0, "main_cost": 0.0,
-                "cost": 0.0,
+                "cost": 0.0, "has_reported_cost": False,
+                "reported_cost_input": 0.0, "reported_cost_output": 0.0,
+                "reported_cost_cache_read": 0.0,
+                "reported_cost_cache_write": 0.0, "reported_cost_other": 0.0,
                 "main_prompts": 0, "agent_invocations": 0,
                 "active_s": 0.0, "gen_s": 0.0, "gen_out": 0,
             }),
@@ -133,6 +150,14 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         ms["cache_read"] += cr
         ms["api_calls"] += 1
         ms["cost"] += req_cost
+        reported_parts = _reported_cost_parts(r, req_cost)
+        if reported_parts is not None:
+            ms["has_reported_cost"] = True
+            for key, value in zip(
+                    ("reported_cost_input", "reported_cost_output",
+                     "reported_cost_cache_read", "reported_cost_cache_write",
+                     "reported_cost_other"), reported_parts):
+                ms[key] += value
         if not r["is_sidechain"]:
             ms["main_api_calls"] += 1
             ms["main_cost"] += req_cost
