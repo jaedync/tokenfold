@@ -2804,7 +2804,7 @@ th[data-info]:focus::after { opacity: 1; }
       <tbody id="modelBody"></tbody>
     </table>
   </div>
-  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Costs use published Anthropic API rates (see Reference below). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
+  <div style="color:var(--gray-dim);font-size:.72rem;margin-top:12px">Click a row for full breakdown. Costs use provider-reported amounts when available, otherwise published API rates (see Reference below). Sub-agent output token counts are understated due to a Claude Code logging limitation.</div>
 </div>
 <!-- ======== SERVED MODEL (which model actually answered, as runs over time.
      Secondary observatory over the thinking-block signature header, fetched
@@ -4148,11 +4148,14 @@ function renderMode(mode) {
   }
   const todayMB = isToday ? (D.today.model_breakdown || []) : null;
   const cphFilterKey = isRecent ? 'recent_cost_per_hour' : 'all_cost_per_hour';
+  const activeCostKey = isRecent ? 'recent_cost' : 'cost';
+  const activeTokenKey = isRecent ? 'recent_total_tokens' : 'total_tokens';
   const activeMB = isToday
     ? todayMB.filter(m => m.cost > 0 || m.api_calls > 0)
-    : mb.filter(m => (m[cphFilterKey] != null && m[cphFilterKey] > 0)
-        /* unpriced models have $0 cost everywhere — keep them visible by token activity */
-        || (m.unpriced && m[isRecent ? 'recent_total_tokens' : 'total_tokens'] > 0));
+    : mb.filter(m => m[activeCostKey] > 0
+        || (m[cphFilterKey] != null && m[cphFilterKey] > 0)
+        /* Keep zero-cost and unknown-price models visible by token activity. */
+        || m[activeTokenKey] > 0);
   const cutoff = D.cutoff_date;
   const todayStr = D.generation_time.slice(0, 10); // YYYY-MM-DD from server TZ
   const daily = isToday
@@ -4505,7 +4508,9 @@ function renderMode(mode) {
   const coKey = isRecent ? 'recent_cost_output' : 'cost_output';
   const cw5Key = isRecent ? 'recent_cost_cache_5m' : 'cost_cache_5m';
   const cw1Key = isRecent ? 'recent_cost_cache_1h' : 'cost_cache_1h';
+  const rcwKey = isRecent ? 'recent_cost_cache_write_reported' : 'cost_cache_write_reported';
   const crKey = isRecent ? 'recent_cost_cache_read' : 'cost_cache_read';
+  const otherCostKey = isRecent ? 'recent_cost_other' : 'cost_other';
   const wsKey = isRecent ? 'recent_cost_web_search' : 'cost_web_search';
   const costModels = activeMB;
   if(!costModels.length) {
@@ -4520,7 +4525,9 @@ function renderMode(mode) {
         {label:'Output',data:costModels.map(m=>m[coKey]),backgroundColor:'#e6332980',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache 5m',data:costModels.map(m=>m[cw5Key]||0),backgroundColor:'#f5c51880',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache 1h',data:costModels.map(m=>m[cw1Key]||0),backgroundColor:'#d9900080',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Reported Cache Write',data:costModels.map(m=>m[rcwKey]||0),backgroundColor:'#7d5ba680',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Cache Read',data:costModels.map(m=>m[crKey]),backgroundColor:'#8b868060',borderColor:'#1a1a1a',borderWidth:1},
+        {label:'Other',data:costModels.map(m=>m[otherCostKey]||0),backgroundColor:'#6b686080',borderColor:'#1a1a1a',borderWidth:1},
         {label:'Web Search',data:costModels.map(m=>m[wsKey]||0),backgroundColor:'#2e7d4f80',borderColor:'#1a1a1a',borderWidth:1}
       ]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,

@@ -357,6 +357,28 @@ def _tiered_cw_cost(cw, c1h, p):
     return c5 + c1
 
 
+def _summary_cost_parts(md, pricing):
+    """Cost-chart parts, preferring exact Pi-reported component dollars."""
+    if md.get("has_reported_cost"):
+        return {
+            "input": md.get("reported_cost_input", 0),
+            "output": md.get("reported_cost_output", 0),
+            "cache_5m": 0, "cache_1h": 0,
+            "cache_write_reported": md.get("reported_cost_cache_write", 0),
+            "cache_read": md.get("reported_cost_cache_read", 0),
+            "other": md.get("reported_cost_other", 0),
+        }
+    c5, c1 = _tiered_cw_parts(md.get("cache_write", 0),
+                              md.get("cache_1h", 0), pricing)
+    return {
+        "input": md.get("input", 0) * pricing[0] / 1e6,
+        "output": md.get("output", 0) * pricing[1] / 1e6,
+        "cache_5m": c5, "cache_1h": c1, "cache_write_reported": 0,
+        "cache_read": md.get("cache_read", 0) * pricing[3] / 1e6,
+        "other": 0,
+    }
+
+
 def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
     """Per-session rollup over the recent window: cost, tokens, wall duration,
     burn rate ($/hr). Titles come from desktop_sessions (Claude Desktop pushes
@@ -741,6 +763,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         cost = md.get("cost", 0.0)
         # Today's tokens: wall-clock now is by definition the correct era.
         p = get_pricing(mname)
+        parts = _summary_cost_parts(md, p)
         main_cost = md.get("main_cost", 0.0)
         agent_cost = round(cost - main_cost, 2)
         main_prompts = md.get("main_prompts", 0)
@@ -755,7 +778,8 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         water = compute_water_ml(mname, inp, out)
         today_mb.append({
             "model": mname,
-            "unpriced": not is_priced(mname),
+            "unpriced": not is_priced(mname) and not md.get("has_reported_cost"),
+            "has_reported_cost": bool(md.get("has_reported_cost")),
             "api_calls": md.get("api_calls", 0),
             "input": inp, "output": out,
             "cache_write": cw, "cache_read": cr,
@@ -774,12 +798,15 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "all_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
             "cache_5m": md.get("cache_5m", 0),
             "cache_1h": md.get("cache_1h", 0),
-            "cost_input": round(inp * p[0] / 1e6, 2),
-            "cost_output": round(out * p[1] / 1e6, 2),
-            "cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
-            "cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
-            "cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
-            "cost_cache_read": round(cr * p[3] / 1e6, 2),
+            "cost_input": round(parts["input"], 2),
+            "cost_output": round(parts["output"], 2),
+            "cost_cache_write": round(parts["cache_5m"] + parts["cache_1h"]
+                                      + parts["cache_write_reported"], 2),
+            "cost_cache_5m": round(parts["cache_5m"], 2),
+            "cost_cache_1h": round(parts["cache_1h"], 2),
+            "cost_cache_write_reported": round(parts["cache_write_reported"], 2),
+            "cost_cache_read": round(parts["cache_read"], 2),
+            "cost_other": round(parts["other"], 2),
             "web_search": md.get("web_search", 0),
             "web_fetch": md.get("web_fetch", 0),
             "cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
@@ -790,12 +817,15 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
             "recent_cost_per_hour": round(cost / active_hours, 2) if active_hours > 0 else None,
             "recent_output_tok_per_s": round(gen_out / gen_s, 1) if gen_s > 0 else None,
             "recent_active_hours": round(active_hours, 1),
-            "recent_cost_input": round(inp * p[0] / 1e6, 2),
-            "recent_cost_output": round(out * p[1] / 1e6, 2),
-            "recent_cost_cache_write": round(_tiered_cw_cost(cw, md.get("cache_1h", 0), p), 2),
-            "recent_cost_cache_5m": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[0], 2),
-            "recent_cost_cache_1h": round(_tiered_cw_parts(cw, md.get("cache_1h", 0), p)[1], 2),
-            "recent_cost_cache_read": round(cr * p[3] / 1e6, 2),
+            "recent_cost_input": round(parts["input"], 2),
+            "recent_cost_output": round(parts["output"], 2),
+            "recent_cost_cache_write": round(parts["cache_5m"] + parts["cache_1h"]
+                                             + parts["cache_write_reported"], 2),
+            "recent_cost_cache_5m": round(parts["cache_5m"], 2),
+            "recent_cost_cache_1h": round(parts["cache_1h"], 2),
+            "recent_cost_cache_write_reported": round(parts["cache_write_reported"], 2),
+            "recent_cost_cache_read": round(parts["cache_read"], 2),
+            "recent_cost_other": round(parts["other"], 2),
             "recent_cost_web_search": round(md.get("web_search", 0) * _WS_FEE, 2),
             "recent_input": inp, "recent_output": out,
             "recent_cache_write": cw, "recent_cache_read": cr,
@@ -912,15 +942,17 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         "recent_active_s": 0.0, "recent_gen_s": 0.0, "recent_gen_out": 0,
         "recent_input": 0, "recent_output": 0, "recent_cache_write": 0,
         "recent_cache_read": 0, "recent_main_cost": 0.0, "last_seen": "",
-        "cost": 0.0, "recent_cost": 0.0,
+        "cost": 0.0, "recent_cost": 0.0, "has_reported_cost": False,
         # Dollar-parts decomposition, accumulated per-day at that day's era so
         # displayed historical costs never move when the wall clock crosses a
         # pricing-era boundary (see the model_json merge loop).
         "cost_input": 0.0, "cost_output": 0.0, "cost_cache_5m": 0.0,
-        "cost_cache_1h": 0.0, "cost_cache_read": 0.0,
+        "cost_cache_1h": 0.0, "cost_cache_write_reported": 0.0,
+        "cost_cache_read": 0.0, "cost_other": 0.0,
         "recent_cost_input": 0.0, "recent_cost_output": 0.0,
         "recent_cost_cache_5m": 0.0, "recent_cost_cache_1h": 0.0,
-        "recent_cost_cache_read": 0.0,
+        "recent_cost_cache_write_reported": 0.0,
+        "recent_cost_cache_read": 0.0, "recent_cost_other": 0.0,
     })
     project_seconds: Counter = Counter()
     project_cost: Counter = Counter()
@@ -1017,20 +1049,20 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             ms["agent_invocations"] += md.get("agent_invocations", 0)
             ms["active_s"] += md.get("active_s", 0.0)
             ms["cost"] += md.get("cost", 0.0)
+            ms["has_reported_cost"] = (ms["has_reported_cost"]
+                                       or bool(md.get("has_reported_cost")))
             # List-price dollar parts (no geo/fast modifiers), priced at THIS
             # day's era — a Sonnet 5 aggregate spanning the intro/standard flip
             # decomposes each day at its own rates.
             p = get_pricing(mname, day_epoch)
-            c5, c1 = _tiered_cw_parts(md.get("cache_write", 0),
-                                      md.get("cache_1h", 0), p)
-            d_inp = md.get("input", 0) * p[0] / 1e6
-            d_out = md.get("output", 0) * p[1] / 1e6
-            d_cr = md.get("cache_read", 0) * p[3] / 1e6
-            ms["cost_input"] += d_inp
-            ms["cost_output"] += d_out
-            ms["cost_cache_5m"] += c5
-            ms["cost_cache_1h"] += c1
-            ms["cost_cache_read"] += d_cr
+            parts = _summary_cost_parts(md, p)
+            ms["cost_input"] += parts["input"]
+            ms["cost_output"] += parts["output"]
+            ms["cost_cache_5m"] += parts["cache_5m"]
+            ms["cost_cache_1h"] += parts["cache_1h"]
+            ms["cost_cache_write_reported"] += parts["cache_write_reported"]
+            ms["cost_cache_read"] += parts["cache_read"]
+            ms["cost_other"] += parts["other"]
             if day > ms["last_seen"]:
                 ms["last_seen"] = day
             if is_recent:
@@ -1044,11 +1076,13 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
                 ms["recent_main_cost"] += md.get("main_cost", 0.0)
                 ms["recent_active_s"] += md.get("active_s", 0.0)
                 ms["recent_cost"] += md.get("cost", 0.0)
-                ms["recent_cost_input"] += d_inp
-                ms["recent_cost_output"] += d_out
-                ms["recent_cost_cache_5m"] += c5
-                ms["recent_cost_cache_1h"] += c1
-                ms["recent_cost_cache_read"] += d_cr
+                ms["recent_cost_input"] += parts["input"]
+                ms["recent_cost_output"] += parts["output"]
+                ms["recent_cost_cache_5m"] += parts["cache_5m"]
+                ms["recent_cost_cache_1h"] += parts["cache_1h"]
+                ms["recent_cost_cache_write_reported"] += parts["cache_write_reported"]
+                ms["recent_cost_cache_read"] += parts["cache_read"]
+                ms["recent_cost_other"] += parts["other"]
 
         # ── gen_json (generation time — stored separately from model_json) ──
         gen_data = json.loads(row["gen_json"] or "{}")
@@ -1181,7 +1215,9 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
         recent_energy = compute_energy_wh(name, ms["recent_input"], ms["recent_output"])
         recent_water = compute_water_ml(name, ms["recent_input"], ms["recent_output"])
         model_breakdown.append({
-            "model": name, "unpriced": not is_priced(name),
+            "model": name,
+            "unpriced": not is_priced(name) and not ms["has_reported_cost"],
+            "has_reported_cost": ms["has_reported_cost"],
             "api_calls": ms["api_calls"],
             "input": ms["input"], "output": ms["output"],
             "cache_write": ms["cache_write"], "cache_read": ms["cache_read"],
@@ -1199,10 +1235,13 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             # dollar parts come from the per-day era-priced accumulators
             "cost_input": round(ms["cost_input"], 2),
             "cost_output": round(ms["cost_output"], 2),
-            "cost_cache_write": round(ms["cost_cache_5m"] + ms["cost_cache_1h"], 2),
+            "cost_cache_write": round(ms["cost_cache_5m"] + ms["cost_cache_1h"]
+                                      + ms["cost_cache_write_reported"], 2),
             "cost_cache_5m": round(ms["cost_cache_5m"], 2),
             "cost_cache_1h": round(ms["cost_cache_1h"], 2),
+            "cost_cache_write_reported": round(ms["cost_cache_write_reported"], 2),
             "cost_cache_read": round(ms["cost_cache_read"], 2),
+            "cost_other": round(ms["cost_other"], 2),
             "web_search": ms["web_search"],
             "web_fetch": ms["web_fetch"],
             "cost_web_search": round(ms["web_search"] * _WS_FEE, 2),
@@ -1216,10 +1255,15 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
             "recent_agent_cost": round(recent_cost - ms["recent_main_cost"], 2),
             "recent_cost_input": round(ms["recent_cost_input"], 2),
             "recent_cost_output": round(ms["recent_cost_output"], 2),
-            "recent_cost_cache_write": round(ms["recent_cost_cache_5m"] + ms["recent_cost_cache_1h"], 2),
+            "recent_cost_cache_write": round(
+                ms["recent_cost_cache_5m"] + ms["recent_cost_cache_1h"]
+                + ms["recent_cost_cache_write_reported"], 2),
             "recent_cost_cache_5m": round(ms["recent_cost_cache_5m"], 2),
             "recent_cost_cache_1h": round(ms["recent_cost_cache_1h"], 2),
+            "recent_cost_cache_write_reported": round(
+                ms["recent_cost_cache_write_reported"], 2),
             "recent_cost_cache_read": round(ms["recent_cost_cache_read"], 2),
+            "recent_cost_other": round(ms["recent_cost_other"], 2),
             "recent_cost_web_search": round(ms["recent_web_search"] * _WS_FEE, 2),
             "recent_active_hours": round(recent_active_hours, 1),
             "recent_cost_per_hour": round(recent_cost_per_hour, 2) if recent_cost_per_hour is not None else None,

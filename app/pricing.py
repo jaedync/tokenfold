@@ -1,6 +1,7 @@
 """Model pricing: static rates + LiteLLM dynamic fetch with caching."""
 
 import json
+import re
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -138,19 +139,47 @@ REPORTED_COST_SUM_SQL = (
 )
 
 
+_PROVIDER_DISPLAY = {
+    "anthropic": "Anthropic",
+    "google": "Google",
+    "huggingface": "Hugging Face",
+    "openai": "OpenAI",
+    "openai-codex": "OpenAI Codex",
+    "opencode-go": "OpenCode Go",
+    "openrouter": "OpenRouter",
+    "redarch-local": "RedArch Local",
+    "unknown": "Unknown",
+}
+
+
+def _title_identifier(value: str) -> str:
+    return value.replace("_", "-").replace("-", " ").title()
+
+
+def _pi_model_name(provider: str, model: str) -> str:
+    """Normalize Pi's provider/model identifier without changing raw storage."""
+    parts = [part for part in model.lstrip("~").split("/") if part]
+    if len(parts) > 1 and parts[0].lower() == provider.lower():
+        parts = parts[1:]
+    leaf = display_model(parts[-1] if parts else model)
+    leaf = re.sub(r"^Gpt\s+", "GPT-", leaf)
+    leaf = re.sub(r"^Glm\s+", "GLM-", leaf)
+    leaf = re.sub(r"^Deepseek\b", "DeepSeek", leaf)
+    leaf = re.sub(r"^Ox\b", "OX", leaf)
+    leaf = re.sub(r"^(GPT-[0-9.]+)O\b", r"\1o", leaf)
+    return leaf
+
+
 def display_model_for_row(model: str | None, provider: str | None = None,
                           source_client: str | None = None) -> str | None:
-    """Display key for an event, qualifying Pi models by provider.
-
-    Claude keeps the historical display_model behavior. Pi provider names are
-    part of the key so e.g. openai/gpt-4o and google/gpt-4o never merge.
-    """
+    """Return a normalized display key while preserving provider identity."""
     if model is None:
         return None
-    displayed = display_model(model)
     if source_client == "pi-agent" and provider:
-        return f"{provider}/{displayed}"
-    return displayed
+        provider_name = _PROVIDER_DISPLAY.get(provider.lower(),
+                                              _title_identifier(provider))
+        return f"{provider_name} / {_pi_model_name(provider, model)}"
+    return display_model(model)
 
 
 def reported_cost(row) -> float | None:
