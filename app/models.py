@@ -170,10 +170,17 @@ class ProviderLimitSnapshot(BaseModel):
     provider: Literal["codex", "opencode-go", "opencode-zen"]
     observed_at_epoch: float | None = Field(default=None, ge=0, le=10**11)
     windows: list[ProviderLimitWindow] = Field(default_factory=list, max_length=8)
+    # The provider's own plan label ("plus", "enterprise", ...), shown as-is
+    # and useful for spotting a misclassified machine at a glance.
+    plan: str | None = Field(default=None, max_length=32, pattern=r"^[a-z0-9_-]+$")
 
 
 class ProviderUsageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     machine: str = Field(min_length=1, max_length=128)
+    # Same fleet classification Pi event batches carry; it selects the
+    # dashboard scope the snapshots land in. Required so pre-scope clients
+    # fail closed instead of stomping a peer scope.
+    account_class: Literal["work", "personal"]
     limits: list[ProviderLimitSnapshot] = Field(max_length=3)

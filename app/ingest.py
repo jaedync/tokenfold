@@ -830,7 +830,7 @@ def backfill(req: BackfillRequest):
 def store_provider_limits(req: ProviderUsageRequest):
     """Merge metadata-only quota snapshots reported by the Pi extension."""
     from .provider_usage import store_provider_usage
-    providers = store_provider_usage(req.machine, req.limits)
+    providers = store_provider_usage(req.machine, req.account_class, req.limits)
     return {"status": "ok", "providers": providers}
 
 

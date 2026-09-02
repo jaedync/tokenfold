@@ -331,9 +331,12 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
         self.assertIn("budgetStats", self.tpl)
 
     def test_provider_group_helper_is_generic_for_future_sources(self):
-        self.assertIn("function providerGroup(providerKey, providerName, content)",
+        self.assertIn("function providerGroup(providerKey, providerName, content, plan)",
                       self.tpl)
         self.assertIn("data-provider=\"' + esc(providerKey) + '\"", self.tpl)
+        # The provider's self-reported plan rides along as a label so a
+        # misclassified fleet box is visible on the dashboard itself.
+        self.assertIn("providerGroup(key, names[key], content, provider.plan)", self.tpl)
 
     def test_reported_provider_limits_render_without_fabricated_gauges(self):
         self.assertIn("wb.providers || {}", self.tpl)

@@ -450,15 +450,17 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
             except (ValueError, KeyError, TypeError):
                 pass  # malformed row — no oauth key
 
-        # Pi's dotfleet extension reports Codex/OpenCode subscription windows
-        # independently of transcript ingest. This remains personal-only even
-        # when no Claude OAuth snapshot exists.
-        try:
-            from .provider_usage import provider_usage_block
-            providers = provider_usage_block(now)
-            if providers:
-                weekly_budget["providers"] = providers
-        except Exception as e:
-            print(f"[rate-limits] provider usage failed: {e}", flush=True)
+    # Pi's dotfleet extension reports Codex/OpenCode subscription windows
+    # independently of transcript ingest, keyed by the reporting machine's
+    # account class. Each scope sees only its own snapshots, so this block is
+    # attached for both scopes and is empty (omitted) when nothing of that
+    # class has reported.
+    try:
+        from .provider_usage import provider_usage_block
+        providers = provider_usage_block(effective, now)
+        if providers:
+            weekly_budget["providers"] = providers
+    except Exception as e:
+        print(f"[rate-limits] provider usage failed: {e}", flush=True)
 
     return JSONResponse(content={"weekly_budget": weekly_budget})

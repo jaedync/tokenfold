@@ -5289,13 +5289,16 @@ function initRateLimits(){
     };
   }
 
-  function providerGroup(providerKey, providerName, content) {
+  function providerGroup(providerKey, providerName, content, plan) {
+    // plan is the provider's own label ("plus", "enterprise"); a personal
+    // view showing "enterprise" is the tell for a misclassified fleet box.
+    var label = 'Usage limits' + (plan ? ' \u00b7 ' + esc(String(plan)) : '');
     return '<section class="usage-limit-provider" data-provider="' + esc(providerKey) + '"'
       + ' aria-label="' + esc(providerName) + ' usage limits">'
       + '<div class="usage-limit-provider-head">'
       + '<span class="usage-limit-provider-mark" aria-hidden="true"></span>'
       + '<h3 class="usage-limit-provider-name">' + esc(providerName) + '</h3>'
-      + '<span class="usage-limit-provider-label">Usage limits</span>'
+      + '<span class="usage-limit-provider-label">' + label + '</span>'
       + '</div>' + content + '</section>';
   }
 
@@ -5351,7 +5354,7 @@ function initRateLimits(){
           + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + fC(monthCost)
           + '</div><div class="rate-gauge-stat-label">API-equivalent · month</div></div></div>';
       }
-      html += providerGroup(key, names[key], content);
+      html += providerGroup(key, names[key], content, provider.plan);
     }
     return html;
   }
