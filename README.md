@@ -177,7 +177,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `POST` | `/api/ingest/pi` | `X-API-Key` | Ingest typed, privacy-scrubbed Pi Agent events; provider-aware reported costs and required dotfleet `work`/`personal` account class |
 | `POST` | `/api/desktop-metadata` | `X-API-Key` | Ingest Claude Desktop session metadata (macOS) |
 | `POST` | `/api/usage` | `X-API-Key` | Push Anthropic OAuth usage/quota data (Claude-only; not Pi) |
-| `POST` | `/api/provider-usage` | `X-API-Key` | Merge best-effort Codex/OpenCode quota snapshots from Pi |
+| `POST` | `/api/provider-usage` | `X-API-Key` | Merge best-effort Codex/OpenCode quota snapshots from Pi, filed under the reporter's `account_class` (work = enterprise scope, personal = personal scope) |
 | `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |
 
