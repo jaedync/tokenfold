@@ -11,23 +11,38 @@ from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
                       reported_cost)
 
+# Claude-subscription spend ONLY. Non-Pi rows (Claude Code CLI etc.) are
+# Claude usage regardless of their (possibly NULL) provider; Pi rows count
+# only when they genuinely used Anthropic. Codex/OpenCode/OpenRouter Pi rows
+# must never inflate the Claude limit-window gauges.
+ANTHROPIC_ONLY_SQL = (
+    " (source_client != 'pi-agent' OR provider = 'anthropic') "
+)
+
 
 def compute_window_cost(
     conn: sqlite3.Connection,
     start_epoch: float,
     end_epoch: float,
     scope: str = DEFAULT_SCOPE,
+    anthropic_only: bool = False,
 ) -> float:
     """Sum assistant-event cost over [start_epoch, end_epoch) for the given scope.
 
     Thin wrapper over compute_window_cost_by_model — one query, identical
     dedupe/era/geo semantics; this just collapses the per-model split.
 
+    Pass anthropic_only=True for Claude subscription gauges so Codex,
+    OpenCode, OpenRouter, and other Pi provider rows never inflate the
+    Claude limit-window spend. Matches ONLY Claude Code CLI rows
+    (source_client='claude-code') and Pi rows that genuinely used Anthropic
+    (provider='anthropic').
+
     Returns 0.0 if the window is empty. Does not round — callers round
     to their preferred precision.
     """
     return sum(compute_window_cost_by_model(
-        conn, start_epoch, end_epoch, scope).values())
+        conn, start_epoch, end_epoch, scope, anthropic_only=anthropic_only).values())
 
 
 def compute_window_cost_by_model(
@@ -35,6 +50,7 @@ def compute_window_cost_by_model(
     start_epoch: float,
     end_epoch: float,
     scope: str = DEFAULT_SCOPE,
+    anthropic_only: bool = False,
 ) -> dict:
     """Per-display-model cost over [start_epoch, end_epoch) for the given scope.
 
@@ -43,13 +59,18 @@ def compute_window_cost_by_model(
     Synthetic events and rows missing model/request_id are excluded.
 
     Defaults to enterprise scope (fail-closed for /api/ha and HA integrations).
-    Pass scope='personal' for the personal usage view.
+    Pass scope='personal' for the personal usage view. Pass
+    anthropic_only=True to count only Claude Code CLI rows and Pi rows that
+    used Anthropic (provider='anthropic') — used by the Claude subscription
+    gauges so other Pi providers never inflate them.
 
     Returns {} if the window is empty; values are unrounded floats keyed by
     display_model() names (e.g. 'Sonnet 5'), so raw model-id aliases that
     share a display name are already merged.
     """
     pred = scope_predicate(scope)
+    if anthropic_only:
+        pred += " AND" + ANTHROPIC_ONLY_SQL
     # Era-split: the outer GROUP BY discards timestamps, so a window straddling
     # a pricing-era boundary would price both sides at one era. A SQL-side
     # bucket column ((first_ts >= b1) + (first_ts >= b2) + ...) splits groups

@@ -39,6 +39,78 @@ class WindowCostFastGeoTest(TempDBTestCase):
         self.assertAlmostEqual(got, 15.0, places=2)  # must NOT collapse to 2M tokens @ one rate
 
 
+class AnthropicOnlyWindowCostTest(TempDBTestCase):
+    """Claude subscription gauges must not count other Pi providers.
+
+    The 5h/7d "spent \u00b7 this window" figures describe the Claude limit
+    windows; Codex/OpenCode/OpenRouter Pi rows (reported costs) must never
+    inflate them. Claude Code CLI rows carry source_client='claude-code' and
+    no provider; Pi Anthropic rows carry provider='anthropic'.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+
+    def _ins(self, uuid, req, *, source_client="claude-code", provider=None,
+             model="claude-opus-4-8", inp=1_000_000, reported=0.0,
+             ts=1781000000.0):
+        """Personal-scope assistant row with optional Pi provider/reported cost."""
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
+            "request_id,source_machine,project_dir,model,is_sidechain,agent_id,"
+            "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
+            "speed,inference_geo,source_client,provider,reported_cost_total) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (uuid, "assistant", "2026-06-09T12:00:00Z", ts, "2026-06-09", "s",
+             req, "m", "proj", model, 0, None, inp, 0, 0, 0, None, None,
+             source_client, provider, reported),
+        )
+        self.conn.commit()
+
+    def test_default_counts_all_providers_at_reported_costs(self):
+        from app.cost_windows import compute_window_cost
+        self._ins("u1", "r1")  # claude-code, $5 server-priced
+        self._ins("u2", "r2", source_client="pi-agent",
+                  provider="openai-codex", reported=3.0)
+        got = compute_window_cost(self.conn, 1781000000.0 - 10,
+                                  1781000000.0 + 10, scope="personal")
+        self.assertAlmostEqual(got, 8.0, places=2)
+
+    def test_anthropic_only_counts_claude_cli_and_pi_anthropic(self):
+        from app.cost_windows import compute_window_cost
+        self._ins("u1", "r1")  # claude-code, $5
+        self._ins("u2", "r2", source_client="pi-agent",
+                  provider="anthropic", reported=1.25)
+        got = compute_window_cost(self.conn, 1781000000.0 - 10,
+                                  1781000000.0 + 10, scope="personal",
+                                  anthropic_only=True)
+        self.assertAlmostEqual(got, 6.25, places=2)
+
+    def test_legacy_claude_rows_with_null_source_still_count(self):
+        """Non-Pi rows (any client) are Claude rows regardless of provider."""
+        from app.cost_windows import compute_window_cost
+        self._ins("u1", "r1", source_client="claude-desktop")
+        self._ins("u2", "r2", source_client="pi-agent",
+                  provider="openai-codex", reported=3.0)
+        got = compute_window_cost(self.conn, 1781000000.0 - 10,
+                                  1781000000.0 + 10, scope="personal",
+                                  anthropic_only=True)
+        self.assertAlmostEqual(got, 5.0, places=2)
+
+    def test_anthropic_only_excludes_other_pi_providers(self):
+        from app.cost_windows import compute_window_cost
+        self._ins("u1", "r1")  # claude-code, $5
+        for i, prov in enumerate(("openai-codex", "opencode-go",
+                                  "openrouter", "huggingface"), 1):
+            self._ins(f"u{i+1}", f"r{i+1}", source_client="pi-agent",
+                      provider=prov, reported=10.0)
+        got = compute_window_cost(self.conn, 1781000000.0 - 10,
+                                  1781000000.0 + 10, scope="personal",
+                                  anthropic_only=True)
+        self.assertAlmostEqual(got, 5.0, places=2)
+
+
 class StreamedChunksMixedSpeedDedupTest(TempDBTestCase):
     """ONE request whose streamed chunks mix speed=NULL and speed='fast' must
     price as fast ($10) in ALL THREE cost paths.

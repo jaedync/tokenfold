@@ -14,7 +14,8 @@ from fastapi.responses import JSONResponse
 from .aggregator import build_dashboard_data, get_cache_version
 from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
-from .cost_windows import compute_window_cost, compute_window_cost_by_model
+from .cost_windows import (ANTHROPIC_ONLY_SQL, compute_window_cost,
+                          compute_window_cost_by_model)
 from .db import get_conn
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
@@ -181,13 +182,19 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
 
     # Cost: delegate to compute_window_cost which deduplicates by request_id
     # and correctly applies fast/geo pricing modifiers (speed, inference_geo).
-    week_cost = compute_window_cost(conn, week_start_epoch, window_end, scope=effective)
+    # Claude-subscription spend only (anthropic_only): the Codex/OpenCode
+    # gauges live in their own providers block; counting their events here
+    # would inflate the Claude gauges' "spent · this window".
+    week_cost = compute_window_cost(conn, week_start_epoch, window_end,
+                                    scope=effective, anthropic_only=True)
 
     # Active time: sum gaps within rolling window (shared with limit_window).
     week_active_s = _active_seconds(conn, pred, week_start_epoch, window_end)
 
     # Hourly cost breakdown for pace chart — mirrors aggregator._build_hourly's
-    # cost query with speed + inference_geo so fast/geo events are correctly priced.
+    # cost query with speed + inference_geo so fast/geo events are correctly
+    # priced. Anthropic-only for the same reason as week_cost: the chart sits
+    # inside the Claude weekly gauge card.
     hourly_costs = []
     for r in conn.execute(
         "SELECT CAST((first_ts - ?) / 3600 AS INTEGER) as h, "
@@ -211,6 +218,7 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         f"  AND {pred} "
+        f"  AND{ANTHROPIC_ONLY_SQL}"
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, provider, source_client, request_id"
         ") GROUP BY h, model, provider, source_client, speed, inference_geo",
@@ -370,7 +378,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                         oauth_block["limit_window"] = {
                             "start_epoch": lw_start,
                             "cost": round(compute_window_cost(
-                                conn, lw_start, now, scope=effective), 2),
+                                conn, lw_start, now, scope=effective,
+                                anthropic_only=True), 2),
                             "active_s": round(
                                 _active_seconds(conn, pred, lw_start, now)),
                         }
@@ -395,7 +404,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                         oauth_block["five_hour_window"] = {
                             "start_epoch": fh_start,
                             "cost": round(compute_window_cost(
-                                conn, fh_start, now, scope=effective), 2),
+                                conn, fh_start, now, scope=effective,
+                                anthropic_only=True), 2),
                         }
                 except Exception as e:
                     print(f"[rate-limits] five_hour_window computation "
