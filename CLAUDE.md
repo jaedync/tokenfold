@@ -37,6 +37,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
     -> client/claude-stats-push.py (cron every 5min, stdlib-only)
     -> POST /api/ingest (X-API-Key auth, Claude JSONL batches)
     -> POST /api/ingest/pi (X-API-Key auth, typed Pi normalized batches)
+    -> POST /api/provider-usage (X-API-Key auth, best-effort provider quota snapshots)
     -> app/ingest.py (privacy-safe normalization, source/provider metadata, namespaced IDs, dedup)
     -> SQLite events + tool_uses tables (WAL mode; Pi reported costs remain distinct from Claude pricing)
     -> app/aggregator.py (thread-safe cached rebuild on invalidation)
@@ -50,7 +51,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | Module | Purpose |
 |--------|---------|
 | `app/main.py` | FastAPI app + lifespan (DB init, pricing load) |
-| `app/ingest.py` | POST /api/ingest (Claude) and POST /api/ingest/pi (Pi Agent) - typed normalization, namespaced dedup, tool extraction |
+| `app/ingest.py` | POST /api/ingest (Claude), POST /api/ingest/pi (Pi Agent), and POST /api/provider-usage - typed normalization, namespaced dedup, tool extraction |
 | `app/aggregator.py` | Core stats engine - session-by-session SQL aggregation with in-memory cache |
 | `app/pricing.py` | Model pricing (static + dynamic from LiteLLM GitHub, 24h DB cache) |
 | `app/dashboard.py` | GET / - Jinja2 HTML rendering with number formatting |
@@ -76,6 +77,7 @@ Indexes on: `session_id+type+ts_epoch`, `day`, `request_id`, `model`, `source_ma
 - **Cache invalidation**: `aggregator.invalidate_cache()` called after successful ingest; dashboard rebuilt lazily on next request.
 - **Content stripping**: Client strips large message bodies before sending (privacy + bandwidth). Metadata (sizes, types) preserved.
 - **Pricing fallback chain**: LiteLLM GitHub -> DB cache -> static hardcoded prices.
+- **Provider quota reporting**: Pi sends short-timeout Codex/OpenCode Go snapshots; observed Zen fallback spend is derived from reclassified Pi events. Missing feeds never fabricate gauges.
 
 ## Environment Variables
 

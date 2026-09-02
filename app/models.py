@@ -159,7 +159,7 @@ class ProviderLimitWindow(BaseModel):
 
     key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
     label: str = Field(min_length=1, max_length=64)
-    pct: float = Field(ge=0, le=1000)
+    pct: float = Field(ge=0, le=100)
     resets_at_epoch: float | None = Field(default=None, ge=0, le=10**11)
     window_seconds: int | None = Field(default=None, ge=1, le=10 * 365 * 86400)
 

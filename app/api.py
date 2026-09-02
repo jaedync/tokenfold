@@ -160,6 +160,9 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
       a limits[]-only payload (legacy dicts nulled) still populates them.
     - enterprise scope, enterprise-locked instance, or no meta row -> the
       'oauth' key is NEVER present (compliance-facing invariant).
+    - personal scope may include 'providers' with fresh Codex/OpenCode Go
+      windows and actual observed OpenCode Zen API-equivalent spend. Missing
+      or stale feeds are omitted.
 
     Monthly budget contract (scope-gated, opposite direction):
     - enterprise scope, with a budget set via /api/enterprise-budget ->

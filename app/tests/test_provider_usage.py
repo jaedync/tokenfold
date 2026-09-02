@@ -67,6 +67,12 @@ class ProviderUsageTest(TempDBTestCase):
             }],
         }])
         self.assertEqual(invalid.status_code, 422)
+        over_limit = self.post([{
+            "provider": "codex",
+            "windows": [{"key": "primary", "label": "Primary", "pct": 101,
+                         "resets_at_epoch": time.time(), "window_seconds": 18000}],
+        }])
+        self.assertEqual(over_limit.status_code, 422)
 
     def test_zen_usage_comes_from_reported_pi_cost_without_fake_quota(self):
         now = time.time()

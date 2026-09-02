@@ -14,6 +14,7 @@ A lightweight client runs on each machine (via cron or launchd), pushing session
 - Active time tracking: thinking time, tool execution, main sessions, subagents
 - Per-machine stats for prompts, tokens, and costs
 - Weekly budget utilization gauge via Anthropic's OAuth API
+- Personal provider limit groups for Claude, Codex, OpenCode Go, and observed OpenCode Zen spend
 - 24-hour hourly activity heatmap
 - Stdlib-only Python client, no pip install needed
 - Message content is stripped before sending; only metadata and token counts are transmitted
@@ -153,6 +154,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
                         |
               POST /api/ingest  (X-API-Key auth, Claude JSONL batches)
               POST /api/ingest/pi (X-API-Key auth, typed Pi normalized batches)
+              POST /api/provider-usage (X-API-Key auth, best-effort quota snapshots)
                         |
               app/ingest.py  (privacy-safe normalization and ID namespacing)
                         |
@@ -175,6 +177,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `POST` | `/api/ingest/pi` | `X-API-Key` | Ingest typed, privacy-scrubbed Pi Agent events; provider-aware reported costs and required dotfleet `work`/`personal` account class |
 | `POST` | `/api/desktop-metadata` | `X-API-Key` | Ingest Claude Desktop session metadata (macOS) |
 | `POST` | `/api/usage` | `X-API-Key` | Push Anthropic OAuth usage/quota data (Claude-only; not Pi) |
+| `POST` | `/api/provider-usage` | `X-API-Key` | Merge best-effort Codex/OpenCode quota snapshots from Pi |
 | `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |
 
