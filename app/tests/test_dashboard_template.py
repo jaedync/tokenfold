@@ -300,6 +300,56 @@ class TableUxRegressionTest(unittest.TestCase):
         self.assertIn("minHeight", self.tpl)
 
 
+class ProviderUsageLimitsLayoutTest(unittest.TestCase):
+    """Personal subscription gauges are visibly grouped by provider."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tpl = TEMPLATE.read_text()
+
+    def test_claude_provider_group_wraps_existing_gauges(self):
+        self.assertIn('class="usage-limit-provider" data-provider="claude"',
+                      self.tpl)
+        self.assertIn('<h3 class="usage-limit-provider-name">Claude</h3>',
+                      self.tpl)
+        self.assertIn('aria-label="Claude usage limits"', self.tpl)
+        self.assertIn('class="usage-limit-provider-label">Usage limits</',
+                      self.tpl)
+
+    def test_provider_group_preserves_gauges_and_projection_cards(self):
+        assignment = re.search(
+            r"oauthPanel\.innerHTML\s*=\s*providerGroup\([^;]+;",
+            self.tpl)
+        self.assertIsNotNone(assignment, "OAuth gauges must render through the provider group")
+        rendered = assignment.group(0)
+        self.assertIn("gaugeHtml", rendered)
+        self.assertIn("modelRowsHtml", rendered)
+        self.assertIn("extraHtml", rendered)
+        self.assertIn("buildGauge('Weekly Limit'", self.tpl)
+        self.assertIn("buildGauge('5-Hour Window'", self.tpl)
+        self.assertIn("projectedPct", self.tpl)
+        self.assertIn("budgetStats", self.tpl)
+
+    def test_provider_group_helper_is_generic_for_future_sources(self):
+        self.assertIn("function providerGroup(providerKey, providerName, content)",
+                      self.tpl)
+        self.assertIn("data-provider=\"' + esc(providerKey) + '\"", self.tpl)
+
+    def test_reported_provider_limits_render_without_fabricated_gauges(self):
+        self.assertIn("wb.providers || {}", self.tpl)
+        self.assertIn("function buildReportedProviderGroups", self.tpl)
+        self.assertIn("'codex': 'Codex'", self.tpl)
+        self.assertIn("'opencode-go': 'OpenCode Go'", self.tpl)
+        self.assertIn("provider.windows || []", self.tpl)
+        self.assertIn("if (!windows.length", self.tpl)
+
+    def test_reported_provider_gauges_preserve_percent_and_projection(self):
+        self.assertIn("window.pct", self.tpl)
+        self.assertIn("window.window_seconds", self.tpl)
+        self.assertIn("provider-limit-projection", self.tpl)
+        self.assertIn("API-equivalent", self.tpl)
+
+
 class ScopedBucketGaugesTest(unittest.TestCase):
     """B3/B4: per-model gauge rows render from oauth.buckets ('scoped:' keys)
     instead of hardcoded opus_pct/sonnet_pct fields, with deterministic colors
@@ -804,7 +854,7 @@ class MarkerLabelOverlapTest(unittest.TestCase):
         # The pass body is hoisted (shared with the enterprise monthly card);
         # the oauth path CALLS it right after writing the panel HTML.
         render = self.tpl.index(
-            "oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;")
+            "oauthPanel.innerHTML = providerGroup(")
         window = self.tpl[render:render + 400]
         self.assertIn("runMarkerOverlapPass();", window)
         # The pass body itself still measures + hides colliding labels.

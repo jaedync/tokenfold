@@ -152,3 +152,28 @@ class PiIngestRequest(BaseModel):
     session_file: str = Field(min_length=1, max_length=1024)
     cursor: PiCursor = Field(default_factory=PiCursor)
     events: list[PiEvent] = Field(max_length=5000)
+
+
+class ProviderLimitWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    label: str = Field(min_length=1, max_length=64)
+    pct: float = Field(ge=0, le=1000)
+    resets_at_epoch: float | None = Field(default=None, ge=0, le=10**11)
+    window_seconds: int | None = Field(default=None, ge=1, le=10 * 365 * 86400)
+
+
+class ProviderLimitSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["codex", "opencode-go", "opencode-zen"]
+    observed_at_epoch: float | None = Field(default=None, ge=0, le=10**11)
+    windows: list[ProviderLimitWindow] = Field(default_factory=list, max_length=8)
+
+
+class ProviderUsageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine: str = Field(min_length=1, max_length=128)
+    limits: list[ProviderLimitSnapshot] = Field(max_length=3)

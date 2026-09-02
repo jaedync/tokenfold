@@ -764,11 +764,58 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   display: none;
 }
 
+/* Provider boundary around subscription limits. Today Claude supplies the
+   personal OAuth quota feed; the wrapper is deliberately provider-generic so
+   Codex/OpenCode feeds can become sibling groups without changing the gauges. */
+.usage-limit-provider {
+  border-top: var(--border);
+}
+
+.usage-limit-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 2rem;
+  background: var(--white);
+}
+
+.usage-limit-provider-mark {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  background: var(--red);
+  border: 2px solid var(--black);
+}
+
+.usage-limit-provider-name {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage-limit-provider-label {
+  margin-left: auto;
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gray-dim);
+}
+
 .rate-limits-grid {
   display: grid;
   grid-template-columns: 3fr 2fr;
   border-top: var(--border);
   margin-top: 1rem;
+}
+
+.provider-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  border-top: var(--border);
 }
 
 .rate-gauge {
@@ -2215,6 +2262,7 @@ th[data-info]:focus::after { opacity: 1; }
   .cost-hero-side { width: 140px; }
 
   .rate-limits-grid { grid-template-columns: 1fr 1fr; }
+  .provider-limits-grid { grid-template-columns: 1fr 1fr; }
 
   /* Switch to 2-col stat grid */
   .stats-grid { grid-template-columns: 1fr 1fr; }
@@ -2242,6 +2290,7 @@ th[data-info]:focus::after { opacity: 1; }
   .cost-hero-period { font-size: 0.8rem; }
 
   .rate-limits-grid { grid-template-columns: 1fr; }
+  .provider-limits-grid { grid-template-columns: 1fr; }
   .rate-gauge + .rate-gauge { border-left: none; border-top: var(--border); }
   .rate-limits-header { padding: 1rem 1.2rem 0; flex-wrap: wrap; }
   .rate-limits-updated { font-size: 0.65rem; }
@@ -2655,10 +2704,10 @@ th[data-info]:focus::after { opacity: 1; }
     <div id="weekPacePanel" class="rate-gauge"></div>
   </div>
   <!-- Personal-scope OAuth limit gauges. Scope is server-known, so personal
-       reserves the gauges' height (~325px) with a static placeholder — the
+       reserves the gauges' height (~375px) with a static placeholder — the
        fetch result replaces it without moving anything below. -->
-  <div id="oauthGaugesPanel"{% if scope == 'personal' %} style="display:block;min-height:325px"{% endif %}>
-    {%- if scope == 'personal' %}<div class="rate-gauge" style="border-top:var(--border)"><div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>{% endif -%}
+  <div id="oauthGaugesPanel"{% if scope == 'personal' %} style="display:block;min-height:375px"{% endif %}>
+    {%- if scope == 'personal' %}<section class="usage-limit-provider" data-provider="claude" aria-label="Claude usage limits"><div class="usage-limit-provider-head"><span class="usage-limit-provider-mark" aria-hidden="true"></span><h3 class="usage-limit-provider-name">Claude</h3><span class="usage-limit-provider-label">Usage limits</span></div><div class="rate-gauge"><div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div></section>{% endif -%}
   </div>
   {%- if scope == 'enterprise' %}
   <!-- Anthropic billing meter: the oauth/usage extra_usage block captured
@@ -5240,6 +5289,73 @@ function initRateLimits(){
     };
   }
 
+  function providerGroup(providerKey, providerName, content) {
+    return '<section class="usage-limit-provider" data-provider="' + esc(providerKey) + '"'
+      + ' aria-label="' + esc(providerName) + ' usage limits">'
+      + '<div class="usage-limit-provider-head">'
+      + '<span class="usage-limit-provider-mark" aria-hidden="true"></span>'
+      + '<h3 class="usage-limit-provider-name">' + esc(providerName) + '</h3>'
+      + '<span class="usage-limit-provider-label">Usage limits</span>'
+      + '</div>' + content + '</section>';
+  }
+
+  function buildReportedProviderGroups(providers) {
+    var names = { 'codex': 'Codex', 'opencode-go': 'OpenCode Go',
+      'opencode-zen': 'OpenCode Zen' };
+    var order = ['codex', 'opencode-go', 'opencode-zen'];
+    var html = '';
+    for(var pi = 0; pi < order.length; pi++) {
+      var key = order[pi], provider = providers[key];
+      if(!provider) continue;
+      var windows = provider.windows || [];
+      var monthCost = typeof provider.month_cost === 'number' ? provider.month_cost : 0;
+      if (!windows.length && monthCost <= 0) continue;
+      var content = '';
+      if(windows.length) {
+        content += '<div class="provider-limits-grid">';
+        for(var wi = 0; wi < windows.length; wi++) {
+          var window = windows[wi] || {};
+          var pct = typeof window.pct === 'number' && isFinite(window.pct) ? window.pct : 0;
+          var clamp = Math.max(0, Math.min(pct, 100));
+          var expected = null, projected = null;
+          if(window.resets_at && typeof window.window_seconds === 'number') {
+            var resetMs = new Date(window.resets_at).getTime();
+            var periodMs = window.window_seconds * 1000;
+            if(!isNaN(resetMs) && resetMs > Date.now() && periodMs > 0) {
+              expected = Math.max(0, Math.min(100,
+                (periodMs - (resetMs - Date.now())) / periodMs * 100));
+              if(expected > 2 && pct > 0) projected = pct / expected * 100;
+            }
+          }
+          var projection = projected === null ? ''
+            : '<div class="rate-gauge-projection provider-limit-projection">Projected by reset: <strong class="'
+              + (projected > 100 ? 'proj-warn' : '') + '">' + Math.round(projected)
+              + '%</strong> (window avg)</div>';
+          var reset = window.resets_at ? 'resets ' + new Date(window.resets_at).toLocaleString([], {
+            weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+          var color = barColor(pct, expected);
+          content += '<div class="rate-gauge"><div class="rate-gauge-head">'
+            + '<span class="rate-gauge-label">' + esc(window.label || window.key || 'Limit') + '</span>'
+            + (reset ? '<span class="rate-gauge-reset">' + esc(reset) + '</span>' : '')
+            + '</div><div class="rate-gauge-track"><div class="rate-gauge-fill" style="width:'
+            + clamp.toFixed(1) + '%;background:' + color + '"></div></div>'
+            + '<div class="rate-gauge-foot"><span class="rate-gauge-pct" style="color:'
+            + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
+            + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct))
+            + '% remaining</span></div>' + projection + '</div>';
+        }
+        content += '</div>';
+      }
+      if(monthCost > 0) {
+        content += '<div class="rate-gauge-stats" style="border-top:var(--border);padding:1rem 2rem">'
+          + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + fC(monthCost)
+          + '</div><div class="rate-gauge-stat-label">API-equivalent · month</div></div></div>';
+      }
+      html += providerGroup(key, names[key], content);
+    }
+    return html;
+  }
+
   /* ── Personal OAuth limit gauges (present only when wb.oauth is set by server) ── */
   /* The server gates this key: enterprise scope or locked instance → no oauth key.  */
   /* JS needs zero scope logic — presence of wb.oauth is the full gate.              */
@@ -5255,9 +5371,10 @@ function initRateLimits(){
     // the same gauge DOM/CSS/helpers as the oauth gauges. When enterprise has
     // NO budget set, mbHtml is a one-line "Set monthly budget…" affordance.
     var mbHtml = buildMonthlyBudgetSection(wb);
+    var reportedGroups = buildReportedProviderGroups(wb.providers || {});
 
     if(!oauth) {
-      if(mbHtml) {
+      if(mbHtml || reportedGroups) {
         // A 60s poll landing mid-edit would blow away the open .mb-edit-input
         // (innerHTML replace tears down the live input + its focus/typed
         // value). Skip this render cycle entirely — the next poll 60s later
@@ -5268,7 +5385,7 @@ function initRateLimits(){
         // stylesheet's display:none can't win — same reason as the oauth path.
         oauthPanel.style.display = 'block';
         oauthPanel.style.minHeight = '';
-        oauthPanel.innerHTML = mbHtml;
+        oauthPanel.innerHTML = mbHtml + reportedGroups;
         wireMonthlyBudgetEdit(oauthPanel);
         runMonthlyMarkerOverlapPass();
         armMarkerResizeOnce();
@@ -5790,7 +5907,8 @@ function initRateLimits(){
         + '</div></div>';
     }
 
-    oauthPanel.innerHTML = gaugeHtml + modelRowsHtml + extraHtml;
+    oauthPanel.innerHTML = providerGroup(
+      'claude', 'Claude', gaugeHtml + modelRowsHtml + extraHtml) + reportedGroups;
 
     // Marker-overlap pass + resize arming are hoisted to renderAllRateLimits
     // scope (shared with the enterprise monthly card, same #oauthGaugesPanel).
@@ -6567,16 +6685,21 @@ function bootCharts(){
   renderBenchmarks();
 }
 function reserveLimitsSpace(){
-  // Personal scope gets OAuth gauges (~325px) once /api/rate-limits resolves;
+  // Personal scope gets OAuth gauges (~375px) once /api/rate-limits resolves;
   // the server reserves the space with a static placeholder — this is just a
   // belt-and-braces fallback if that markup is ever missing.
   if(TF_SCOPE !== 'personal') return;
   var p = document.getElementById('oauthGaugesPanel');
   if(!p || p.innerHTML.trim()) return;     // server already reserved it
   p.style.display = 'block';
-  p.style.minHeight = '325px';
-  p.innerHTML = '<div class="rate-gauge" style="border-top:var(--border)">'
-    + '<div class="rate-gauge-head"><span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span></div></div>';
+  p.style.minHeight = '375px';
+  p.innerHTML = '<section class="usage-limit-provider" data-provider="claude" aria-label="Claude usage limits">'
+    + '<div class="usage-limit-provider-head"><span class="usage-limit-provider-mark" aria-hidden="true"></span>'
+    + '<h3 class="usage-limit-provider-name">Claude</h3>'
+    + '<span class="usage-limit-provider-label">Usage limits</span></div>'
+    + '<div class="rate-gauge"><div class="rate-gauge-head">'
+    + '<span class="rate-gauge-label" style="color:var(--gray-dim)">loading limits…</span>'
+    + '</div></div></section>';
 }
 function boot(){
   reserveLimitsSpace();

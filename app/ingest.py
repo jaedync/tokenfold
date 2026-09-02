@@ -17,7 +17,7 @@ from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
 from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
-                     PiIngestRequest)
+                     PiIngestRequest, ProviderUsageRequest)
 from .sigheader import decode_header, split_signature
 
 router = APIRouter()
@@ -824,6 +824,14 @@ def backfill(req: BackfillRequest):
         "updated_titles": updated_titles,
         "touched_days": sorted(touched_days),
     }
+
+
+@router.post("/api/provider-usage", dependencies=[Depends(require_api_key)])
+def store_provider_limits(req: ProviderUsageRequest):
+    """Merge metadata-only quota snapshots reported by the Pi extension."""
+    from .provider_usage import store_provider_usage
+    providers = store_provider_usage(req.machine, req.limits)
+    return {"status": "ok", "providers": providers}
 
 
 @router.post("/api/usage", dependencies=[Depends(require_api_key)])
