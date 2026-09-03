@@ -210,11 +210,11 @@ class LimitWindowTicksNodeTest(unittest.TestCase):
 
     def test_monthly_window_ticks_every_day_labels_mondays_only(self):
         ticks = self._ticks("2026-09-16T00:49:00Z", 30 * DAY_MS)
-        # Window opened Aug 16 19:49 CDT: midnights Aug 17 .. Sep 15.
+        # Window opened Aug 16 19:49 CDT: midnights Aug 17 .. Sep 15. Aug 17
+        # is a Monday but sits 0.58% in, so its caption is dropped (edge rule).
         self.assertEqual(len(ticks), 30)
         labeled = [t["label"] for t in ticks if t["label"]]
-        self.assertEqual(labeled,
-                         ["Aug 17", "Aug 24", "Aug 31", "Sep 7", "Sep 14"])
+        self.assertEqual(labeled, ["Aug 24", "Aug 31", "Sep 7", "Sep 14"])
 
     def test_edge_ticks_keep_tick_but_drop_caption(self):
         # Codex weekly: window opened Sun 21:32 CDT, so Monday midnight lands
