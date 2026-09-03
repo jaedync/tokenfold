@@ -421,6 +421,11 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                 # would make the raw slug miss every space-separated display
                 # name (review MEDIUM) — the stem ('opus') matches the whole
                 # family, which is exactly what a scoped limit governs.
+                # anthropic_only for the same reason as limit_window: a
+                # scoped limit is a Claude-subscription window, so a Pi row
+                # that ran the same family through OpenRouter (display name
+                # 'OpenRouter / Fable 5.1' still matches 'fable') is billed
+                # elsewhere and must not count.
                 # Per-bucket try/except: one bad bucket must not strip the
                 # others' costs (or anything else in the oauth block).
                 for bkt in buckets:
@@ -437,7 +442,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                         if not family:
                             continue
                         sb_by_model = compute_window_cost_by_model(
-                            conn, sb_start, now, scope=effective)
+                            conn, sb_start, now, scope=effective,
+                            anthropic_only=True)
                         bkt["window_cost"] = round(sum(
                             v for k, v in sb_by_model.items()
                             if family in k.lower()), 2)

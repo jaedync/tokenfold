@@ -34,6 +34,23 @@ def _ins_event(conn, uuid, req, ts, inp=0, model="claude-opus-4-8"):
     conn.commit()
 
 
+def _ins_pi_event(conn, uuid, req, ts, provider, model, cost):
+    """A Pi-agent row with a client-reported cost (Pi rows are never
+    server-priced), attributed to the same personal account as _ins_event."""
+    conn.execute(
+        "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
+        "request_id,source_machine,project_dir,model,is_sidechain,agent_id,"
+        "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
+        "account_email,plan,org_name,is_human_prompt,user_type,"
+        "source_client,provider,reported_cost_total) VALUES "
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (uuid, "assistant", "2026-07-01T12:00:00Z", ts, "2026-07-01", "s1",
+         req, "personal-mbp", "proj", model, 0, None, 1000, 0, 0, 0,
+         "me@gmail.com", "max", None, 0, None,
+         "pi-agent", provider, cost))
+    conn.commit()
+
+
 def _ins_reading(conn, bucket, fetched, pct, resets_epoch):
     conn.execute(
         "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
@@ -156,6 +173,33 @@ class BucketWindowsTest(TempDBTestCase):
         # Non-scoped buckets never grow the fields.
         self.assertNotIn("window_cost", by_key["seven_day"])
         self.assertNotIn("window_cost", by_key["five_hour"])
+
+    def test_scoped_window_cost_is_anthropic_only(self):
+        """A scoped gauge is a Claude-subscription limit, so its dollars must
+        come only from rows that consumed that subscription: Claude Code CLI
+        rows and Pi rows served by the Anthropic provider. A Pi row that ran
+        the SAME model family through OpenRouter, or any Codex row, is billed
+        elsewhere and must not count (the family-name match alone would let
+        'OpenRouter / Fable 5.1' through)."""
+        now = time.time()
+        resets = now + 3 * 86400
+        self._seed_oauth(resets, now + 2 * 3600, scoped={"fable": resets})
+        _ins_event(self.conn, "a1", "r1", now - 3600, inp=1_000_000,
+                   model="claude-fable-5")                          # $10
+        _ins_pi_event(self.conn, "a2", "r2", now - 3600,
+                      "anthropic", "claude-fable-5-1", 4.0)         # counts
+        _ins_pi_event(self.conn, "a3", "r3", now - 3600,
+                      "openrouter", "anthropic/claude-fable-5-1", 7.0)  # no
+        _ins_pi_event(self.conn, "a4", "r4", now - 3600,
+                      "openai-codex", "gpt-5.6-sol", 9.0)           # no
+        oauth = self._oauth()
+        by_key = {b["key"]: b for b in oauth["buckets"]}
+        self.assertAlmostEqual(by_key["scoped:fable"]["window_cost"], 14.0,
+                               places=2)
+        # The weekly and 5h dollars already follow the same rule.
+        self.assertAlmostEqual(oauth["limit_window"]["cost"], 14.0, places=2)
+        self.assertAlmostEqual(oauth["five_hour_window"]["cost"], 14.0,
+                               places=2)
 
     def test_scoped_window_cost_truncated_by_granted_reset(self):
         """Granted resets are tracked PER BUCKET: a grant on scoped:opus
