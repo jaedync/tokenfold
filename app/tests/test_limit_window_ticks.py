@@ -216,6 +216,17 @@ class LimitWindowTicksNodeTest(unittest.TestCase):
         self.assertEqual(labeled,
                          ["Aug 17", "Aug 24", "Aug 31", "Sep 7", "Sep 14"])
 
+    def test_edge_ticks_keep_tick_but_drop_caption(self):
+        # Codex weekly: window opened Sun 21:32 CDT, so Monday midnight lands
+        # 148 minutes in (1.47%): the tick stays, the caption would hang off
+        # the left border and is dropped.
+        ticks = self._ticks("2026-09-07T02:32:00Z", 7 * DAY_MS)
+        self.assertEqual(len(ticks), 7)
+        self.assertLess(ticks[0]["pct"], 1.5)
+        self.assertIsNone(ticks[0]["label"])
+        self.assertEqual([t["label"] for t in ticks[1:]],
+                         ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+
     def test_daily_window_thins_hour_labels(self):
         ticks = self._ticks("2026-09-03T05:00:00Z", 24 * HOUR_MS)
         self.assertEqual(len(ticks), 23)

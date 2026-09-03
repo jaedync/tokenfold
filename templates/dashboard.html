@@ -4026,6 +4026,9 @@ function tfWindowTicks(resetMs, periodMs) {
     } else {
       label = DAYS[w.getUTCDay()];
     }
+    // A caption is centered on its tick, so one within 1.5% of either end
+    // hangs off the track border: keep the tick, drop the caption.
+    if(pct < 1.5 || pct > 98.5) label = null;
     out.push({ pct: pct, label: label, kind: hourly ? 'hour' : 'day' });
   }
   return out;
