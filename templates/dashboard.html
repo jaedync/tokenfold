@@ -640,10 +640,12 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Business-day boundary ticks on the monthly budget track. Deliberately
-   fainter and shorter than the expected-pace marker: they read as a ruler
-   under the fill, never compete with it. z-index 1 sits above the fills
-   (unstacked) but below the marker (z-index 2). */
+/* Unlabeled boundary ticks on a limit track: business days on the monthly
+   budget card, every midnight of a monthly limit window, the thinned hours
+   of a daily one. Deliberately fainter and shorter than the expected-pace
+   marker: they read as a ruler under the fill, never compete with it.
+   z-index 1 sits above the fills (unstacked) but below the marker
+   (z-index 2). Labeled boundaries use .rate-gauge-dayline below. */
 .rate-gauge-tick {
   position: absolute;
   top: 0;
@@ -3973,6 +3975,61 @@ function tfTzOffsetMin(ms, tz) {
   } catch (e) { return -360; }
 }
 function tfChicagoOffsetMin(ms) { return tfTzOffsetMin(ms, 'America/Chicago'); }
+
+// Boundary ticks for a limit window that ends at resetMs and spans periodMs,
+// as [{pct, label|null, kind}] in track-% positions. Windows up to 36h (the
+// 5-hour Claude / Codex / OpenCode limits) get one tick per wall-clock hour;
+// longer ones (weekly, monthly) one per local midnight. Labels: every tick
+// while there are few, otherwise a thinned subset (every 3rd / 6th hour;
+// Mondays only past two weeks); unlabeled ticks still draw as the ruler.
+// Wall clock is America/Chicago, matching every other day-bucketed figure on
+// the page. Ticks within 0.5% of either end are dropped (they'd sit on the
+// track border). Garbage input yields [] so a bad payload can never flood
+// the track.
+function tfWindowTicks(resetMs, periodMs) {
+  var out = [];
+  if(typeof resetMs !== 'number' || !isFinite(resetMs)) return out;
+  if(typeof periodMs !== 'number' || !isFinite(periodMs) || periodMs <= 0) return out;
+  var HOUR = 3600000, DAY = 86400000, MAX_TICKS = 400;
+  var hourly = periodMs <= 36 * HOUR;
+  var step = hourly ? HOUR : DAY;
+  if(periodMs / step > MAX_TICKS) return out;
+  var start = resetMs - periodMs;
+  var offMs = tfChicagoOffsetMin(start) * 60000;
+  // Wall clock rendered as UTC fields so Date.UTC can floor it to the hour
+  // or the day; wallFirst is the first boundary strictly after the start.
+  var wall = new Date(start + offMs);
+  var wallFirst = hourly
+    ? Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), wall.getUTCHours())
+    : Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate());
+  if(wallFirst - offMs <= start) wallFirst += step;
+  var total = Math.floor((resetMs - (wallFirst - offMs)) / step) + 1;
+  var labelEvery = hourly ? (total <= 8 ? 1 : total <= 24 ? 3 : 6) : 1;
+  var mondaysOnly = !hourly && total > 14;
+  var DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  for(var k = 0; k < MAX_TICKS; k++) {
+    var wallAt = wallFirst + k * step;
+    // Re-read the offset per tick so a DST change inside the window moves
+    // the ticks after it instead of drifting every boundary by an hour.
+    var at = wallAt - tfChicagoOffsetMin(wallAt - offMs) * 60000;
+    if(at >= resetMs) break;
+    var pct = (at - start) / periodMs * 100;
+    if(pct <= 0.5 || pct >= 99.5) continue;
+    var w = new Date(wallAt);
+    var label = null;
+    if(hourly) {
+      var h = w.getUTCHours();
+      if(h % labelEvery === 0) label = (h % 12 || 12) + (h >= 12 ? 'p' : 'a');
+    } else if(mondaysOnly) {
+      if(w.getUTCDay() === 1) label = MONTHS[w.getUTCMonth()] + ' ' + w.getUTCDate();
+    } else {
+      label = DAYS[w.getUTCDay()];
+    }
+    out.push({ pct: pct, label: label, kind: hourly ? 'hour' : 'day' });
+  }
+  return out;
+}
 /* ---- SERVED MODEL TIMELINE ----
    Which model actually answered, as runs over time. Data comes from
    /api/served-models/timeline (per window: today = 1 day, 14d = 14, all =
@@ -4922,8 +4979,6 @@ function initRateLimits(){
     function renderAllRateLimits(wb) {
     if(!wb) return; // month hero still stands; just leave pace panel empty
 
-    var DAY_MS = 24 * 60 * 60 * 1000;
-    var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     var grid = document.getElementById('rateLimitsGrid');
 
     // ── 7-day pace secondary detail ──
@@ -4982,6 +5037,161 @@ function initRateLimits(){
   function textColorFor(color) {
     return color === 'var(--yellow)' ? 'var(--yellow-text)' : color;
   }
+
+  // Where the expected-pace marker sits: % of the window elapsed at this
+  // instant, from the window's resets_at and its length. Null on no reset.
+  function calcExpectedPct(resetIso, periodMs) {
+    if(!resetIso) return null;
+    try {
+      var resetTime = new Date(resetIso).getTime();
+      var now = Date.now();
+      var elapsed = periodMs - (resetTime - now);
+      if(elapsed < 0) elapsed = 0;
+      if(elapsed > periodMs) elapsed = periodMs;
+      return (elapsed / periodMs) * 100;
+    } catch(e) { return null; }
+  }
+
+  // One shared read of a limit window from its resets_at + length, for
+  // EVERY usage-limit gauge on the page (Claude weekly / 5-hour / per-model,
+  // Codex and OpenCode windows): the expected-pace marker position, the
+  // whole-window linear projection ("Projected by reset"), and the boundary
+  // ticks (hour lines for 5-hour windows, day lines for weekly and monthly
+  // ones; see tfWindowTicks). D6: a resets_at already in the past describes
+  // an ENDED window (the poller lags the real boundary during idle
+  // stretches): return nothing, so the gauge falls back to absolute-pct
+  // coloring with no marker, projection or ticks against stale utilization.
+  // The > 2% deadband on the projection matches barColor's: minutes after a
+  // reset any usage extrapolates to absurd figures.
+  function windowPace(resetIso, periodMs, pct) {
+    var none = { expected: null, projected: null, ticks: [] };
+    if(!resetIso || typeof periodMs !== 'number' || !(periodMs > 0)) return none;
+    var resetMs = new Date(resetIso).getTime();
+    if(isNaN(resetMs) || resetMs <= Date.now()) return none;
+    var expected = calcExpectedPct(resetIso, periodMs);
+    var projected = (expected !== null && expected > 2 && pct > 0)
+      ? (pct / expected) * 100 : null;
+    return { expected: expected, projected: projected,
+             ticks: tfWindowTicks(resetMs, periodMs) };
+  }
+
+  // The one gauge card renderer every limit shares (Claude, per-model rows,
+  // reported providers, and the enterprise monthly card's markup twin).
+  function buildGauge(label, pct, resetLabel, expectedPct, opts) {
+    opts = opts || {};
+    var clamp = Math.min(pct, 100);
+    // fillColor pins a fixed identity color (per-model rows) instead of
+    // the pace-reactive palette; the over-expected overflow segment
+    // below stays var(--red) either way.
+    var color = opts.fillColor || barColor(pct, expectedPct);
+    var innerHtml = '';
+
+    // Boundary ticks (tfWindowTicks output, via windowPace): a labeled
+    // boundary draws as a dayline with its caption under the track, an
+    // unlabeled one as the fainter bare tick: one ruler, so a monthly
+    // window's 30 midnights don't fight its handful of Monday captions.
+    var hasTickLabels = false;
+    if(opts.ticks) {
+      for(var i = 0; i < opts.ticks.length; i++) {
+        var tk = opts.ticks[i];
+        if(!tk || typeof tk.pct !== 'number') continue;
+        if(tk.label) {
+          hasTickLabels = true;
+          innerHtml += '<div class="rate-gauge-dayline" style="left:' + tk.pct.toFixed(2) + '%">'
+            + '<span class="rate-gauge-dayline-label">' + tk.label + '</span>'
+            + '</div>';
+        } else {
+          innerHtml += '<div class="rate-gauge-tick" style="left:' + tk.pct.toFixed(2) + '%"></div>';
+        }
+      }
+    }
+
+    if(expectedPct !== null && expectedPct >= 0 && expectedPct <= 100) {
+      innerHtml += '<div class="rate-gauge-marker" style="left:' + expectedPct.toFixed(1) + '%">'
+        + '<span class="rate-gauge-marker-label">expected</span>'
+        + '</div>';
+    }
+
+    var projHtml = '';
+    if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
+      var projRound = Math.round(opts.projectedPct);
+      var projClass = projRound > 100 ? 'proj-warn' : '';
+      // '(window avg)' distinguishes this whole-window linear projection
+      // from the D3 sub-window burn note (trendNoteHtml) below it.
+      projHtml = '<div class="rate-gauge-projection">'
+        + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
+        + ' (window avg)'
+        + '</div>';
+    }
+
+    var statsHtml2 = '';
+    if(opts.stats && opts.stats.length) {
+      statsHtml2 = '<div class="rate-gauge-stats">';
+      for(var si = 0; si < opts.stats.length; si++) {
+        var st = opts.stats[si];
+        var valStyle = st.color ? ' style="color:' + st.color + '"' : '';
+        statsHtml2 += '<div class="rate-gauge-stat">'
+          + '<div class="rate-gauge-stat-value"' + valStyle + '>' + st.value + '</div>'
+          + '<div class="rate-gauge-stat-label">' + st.label + '</div>'
+          + '</div>';
+      }
+      statsHtml2 += '</div>';
+    }
+
+    var fillHtml = '';
+    // expectedPct > 2, matching barColor's deadband: minutes after a
+    // reset EVERYTHING is "over pace", so the split fill would paint the
+    // whole bar red over noise (a 12%-used bar at 0.2% expected).
+    if(expectedPct !== null && expectedPct > 2 && expectedPct <= 100 && clamp > 0) {
+      if(clamp > expectedPct) {
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
+          + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
+      } else {
+        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
+          + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
+      }
+    } else {
+      fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
+    }
+
+    var chartBtnHtml2 = '';
+    if(opts.chartBtn) {
+      chartBtnHtml2 = '<button class="rate-gauge-chart-btn" id="oauthChartTrigger" title="View usage pace chart">'
+        + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+        + '</button>';
+    }
+
+    var noteHtml = opts.note
+      ? '<div class="rate-gauge-projection">' + opts.note + '</div>' : '';
+
+    // D3/C4: sub-window burn/ETA/pace verdict + in-window reset annotation.
+    // buildTrendNote returns null for every guarded miss (no oauth.trend,
+    // no entry for this bucket, no fields yet); omitting this div entirely
+    // reproduces today's markup byte-for-byte.
+    var trendNoteHtml = opts.trendNote
+      ? '<div class="rate-gauge-projection">' + opts.trendNote + '</div>' : '';
+
+    return '<div class="rate-gauge"'
+      + (opts.rootStyle ? ' style="' + opts.rootStyle + '"' : '') + '>'
+      + '<div class="rate-gauge-head">'
+      + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
+      + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
+      + '</div>'
+      + '<div class="rate-gauge-track" style="' + (hasTickLabels ? 'margin-bottom:10px' : '') + '">'
+      + fillHtml
+      + innerHtml
+      + '</div>'
+      + '<div class="rate-gauge-foot">'
+      + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
+      + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct)) + '% remaining</span>'
+      + '</div>'
+      + noteHtml
+      + trendNoteHtml
+      + projHtml
+      + statsHtml2
+      + '</div>';
+  }
+
 
   // An 'expected' marker label parked near 0%/100% slides under the gauge
   // title / reset text and overprints. Measure after insertion, drop any label
@@ -5317,35 +5527,21 @@ function initRateLimits(){
       if(windows.length) {
         content += '<div class="provider-limits-grid">';
         for(var wi = 0; wi < windows.length; wi++) {
-          var window = windows[wi] || {};
-          var pct = typeof window.pct === 'number' && isFinite(window.pct) ? window.pct : 0;
-          var clamp = Math.max(0, Math.min(pct, 100));
-          var expected = null, projected = null;
-          if(window.resets_at && typeof window.window_seconds === 'number') {
-            var resetMs = new Date(window.resets_at).getTime();
-            var periodMs = window.window_seconds * 1000;
-            if(!isNaN(resetMs) && resetMs > Date.now() && periodMs > 0) {
-              expected = Math.max(0, Math.min(100,
-                (periodMs - (resetMs - Date.now())) / periodMs * 100));
-              if(expected > 2 && pct > 0) projected = pct / expected * 100;
-            }
-          }
-          var projection = projected === null ? ''
-            : '<div class="rate-gauge-projection provider-limit-projection">Projected by reset: <strong class="'
-              + (projected > 100 ? 'proj-warn' : '') + '">' + Math.round(projected)
-              + '%</strong> (window avg)</div>';
-          var reset = window.resets_at ? 'resets ' + new Date(window.resets_at).toLocaleString([], {
-            weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
-          var color = barColor(pct, expected);
-          content += '<div class="rate-gauge"><div class="rate-gauge-head">'
-            + '<span class="rate-gauge-label">' + esc(window.label || window.key || 'Limit') + '</span>'
-            + (reset ? '<span class="rate-gauge-reset">' + esc(reset) + '</span>' : '')
-            + '</div><div class="rate-gauge-track"><div class="rate-gauge-fill" style="width:'
-            + clamp.toFixed(1) + '%;background:' + color + '"></div></div>'
-            + '<div class="rate-gauge-foot"><span class="rate-gauge-pct" style="color:'
-            + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
-            + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct))
-            + '% remaining</span></div>' + projection + '</div>';
+          var win = windows[wi] || {};
+          var pct = typeof win.pct === 'number' && isFinite(win.pct) ? win.pct : 0;
+          // Same treatment as the Claude gauges: expected-pace marker, split
+          // fill, "Projected by reset" and boundary ticks (hours for the
+          // 5-hour limits, days for weekly / monthly), all read off
+          // resets_at + window_seconds. A window reporting neither degrades
+          // to the bare bar with no projection.
+          var periodMs = typeof win.window_seconds === 'number' && win.window_seconds > 0
+            ? win.window_seconds * 1000 : null;
+          var pace = windowPace(win.resets_at, periodMs, pct);
+          var resetMs = win.resets_at ? new Date(win.resets_at).getTime() : NaN;
+          var reset = isNaN(resetMs) ? '' : 'resets ' + new Date(resetMs).toLocaleString([], {
+            weekday: 'short', hour: 'numeric', minute: '2-digit' });
+          content += buildGauge(esc(win.label || win.key || 'Limit'), pct, esc(reset),
+            pace.expected, { projectedPct: pace.projected, ticks: pace.ticks });
         }
         content += '</div>';
       }
@@ -5406,9 +5602,7 @@ function initRateLimits(){
     oauthPanel.style.minHeight = '';     // real content replaces the placeholder
 
     var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    var DAY_MS  = 24 * 60 * 60 * 1000;
     var FIVE_HR_MS = 5 * 60 * 60 * 1000;
-    var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
     // D3/C4/D5: oauth.trend[bucketKey] (D2 server block) is OPTIONAL — absent
     // until limit_readings has samples. nowSeconds anchors both the C4
@@ -5468,18 +5662,6 @@ function initRateLimits(){
       if(days > 0) return days + 'd ' + hours + 'h ago';
       if(hours > 0) return hours + 'h ' + mins + 'm ago';
       return mins + 'm ago';
-    }
-
-    function calcExpectedPct(resetIso, periodMs) {
-      if(!resetIso) return null;
-      try {
-        var resetTime = new Date(resetIso).getTime();
-        var now = Date.now();
-        var elapsed = periodMs - (resetTime - now);
-        if(elapsed < 0) elapsed = 0;
-        if(elapsed > periodMs) elapsed = periodMs;
-        return (elapsed / periodMs) * 100;
-      } catch(e) { return null; }
     }
 
     // Dollar-budget stats shared by every limit gauge: the implied window
@@ -5566,152 +5748,16 @@ function initRateLimits(){
       return parts.length ? parts.join(' · ') : null;
     }
 
-    function buildGauge(label, pct, resetLabel, expectedPct, opts) {
-      opts = opts || {};
-      var clamp = Math.min(pct, 100);
-      // fillColor pins a fixed identity color (per-model rows) instead of
-      // the pace-reactive palette; the over-expected overflow segment
-      // below stays var(--red) either way.
-      var color = opts.fillColor || barColor(pct, expectedPct);
-      var innerHtml = '';
-
-      if(opts.dayLines) {
-        for(var i = 0; i < opts.dayLines.length; i++) {
-          var dl = opts.dayLines[i];
-          innerHtml += '<div class="rate-gauge-dayline" style="left:' + dl.pct.toFixed(2) + '%">'
-            + '<span class="rate-gauge-dayline-label">' + dl.label + '</span>'
-            + '</div>';
-        }
-      }
-
-      if(expectedPct !== null && expectedPct >= 0 && expectedPct <= 100) {
-        innerHtml += '<div class="rate-gauge-marker" style="left:' + expectedPct.toFixed(1) + '%">'
-          + '<span class="rate-gauge-marker-label">expected</span>'
-          + '</div>';
-      }
-
-      var projHtml = '';
-      if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
-        var projRound = Math.round(opts.projectedPct);
-        var projClass = projRound > 100 ? 'proj-warn' : '';
-        // '(window avg)' distinguishes this whole-window linear projection
-        // from the D3 sub-window burn note (trendNoteHtml) below it.
-        projHtml = '<div class="rate-gauge-projection">'
-          + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
-          + ' (window avg)'
-          + '</div>';
-      }
-
-      var statsHtml2 = '';
-      if(opts.stats && opts.stats.length) {
-        statsHtml2 = '<div class="rate-gauge-stats">';
-        for(var si = 0; si < opts.stats.length; si++) {
-          var st = opts.stats[si];
-          var valStyle = st.color ? ' style="color:' + st.color + '"' : '';
-          statsHtml2 += '<div class="rate-gauge-stat">'
-            + '<div class="rate-gauge-stat-value"' + valStyle + '>' + st.value + '</div>'
-            + '<div class="rate-gauge-stat-label">' + st.label + '</div>'
-            + '</div>';
-        }
-        statsHtml2 += '</div>';
-      }
-
-      var fillHtml = '';
-      // expectedPct > 2, matching barColor's deadband: minutes after a
-      // reset EVERYTHING is "over pace", so the split fill would paint the
-      // whole bar red over noise (a 12%-used bar at 0.2% expected).
-      if(expectedPct !== null && expectedPct > 2 && expectedPct <= 100 && clamp > 0) {
-        if(clamp > expectedPct) {
-          fillHtml = '<div class="rate-gauge-fill" style="width:' + expectedPct.toFixed(1) + '%;background:' + color + '"></div>'
-            + '<div class="rate-gauge-fill" style="left:' + expectedPct.toFixed(1) + '%;width:' + (clamp - expectedPct).toFixed(1) + '%;background:var(--red);opacity:0.55"></div>';
-        } else {
-          fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>'
-            + '<div class="rate-gauge-fill" style="left:' + clamp + '%;width:' + (expectedPct - clamp).toFixed(1) + '%;background:var(--blue);opacity:0.18"></div>';
-        }
-      } else {
-        fillHtml = '<div class="rate-gauge-fill" style="width:' + clamp + '%;background:' + color + '"></div>';
-      }
-
-      var chartBtnHtml2 = '';
-      if(opts.chartBtn) {
-        chartBtnHtml2 = '<button class="rate-gauge-chart-btn" id="oauthChartTrigger" title="View usage pace chart">'
-          + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
-          + '</button>';
-      }
-
-      var noteHtml = opts.note
-        ? '<div class="rate-gauge-projection">' + opts.note + '</div>' : '';
-
-      // D3/C4: sub-window burn/ETA/pace verdict + in-window reset annotation.
-      // buildTrendNote returns null for every guarded miss (no oauth.trend,
-      // no entry for this bucket, no fields yet) — omitting this div entirely
-      // reproduces today's markup byte-for-byte.
-      var trendNoteHtml = opts.trendNote
-        ? '<div class="rate-gauge-projection">' + opts.trendNote + '</div>' : '';
-
-      return '<div class="rate-gauge"'
-        + (opts.rootStyle ? ' style="' + opts.rootStyle + '"' : '') + '>'
-        + '<div class="rate-gauge-head">'
-        + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
-        + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
-        + '</div>'
-        + '<div class="rate-gauge-track" style="' + (opts.dayLines ? 'margin-bottom:10px' : '') + '">'
-        + fillHtml
-        + innerHtml
-        + '</div>'
-        + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(pct)) + '% remaining</span>'
-        + '</div>'
-        + noteHtml
-        + trendNoteHtml
-        + projHtml
-        + statsHtml2
-        + '</div>';
-    }
-
     var wPct = oauth.weekly_pct || 0;
     var hPct = oauth.five_hour_pct || 0;
-    var wExpected = calcExpectedPct(oauth.weekly_resets_at, WEEK_MS);
-    var hExpected = calcExpectedPct(oauth.five_hour_resets_at, FIVE_HR_MS);
-
-    // D6: a stale snapshot (resets_at already in the past — the poller lags
-    // behind the actual 5h boundary during idle periods) must not pin an
-    // 'expected' marker at 100% against old utilization. Null it so
-    // buildGauge skips the marker/split-fill and barColor falls back to its
-    // absolute-pct bands (both already treat a null expectedPct that way).
-    if(hExpected !== null) {
-      var hResetMs = oauth.five_hour_resets_at ? new Date(oauth.five_hour_resets_at).getTime() : NaN;
-      if(!isNaN(hResetMs) && hResetMs <= Date.now()) hExpected = null;
-    }
-
-    // Build day boundary lines at actual midnight within the weekly window
-    var weeklyDayLines = [];
-    if(oauth.weekly_resets_at) {
-      try {
-        var resetTime = new Date(oauth.weekly_resets_at).getTime();
-        var weekStart = resetTime - WEEK_MS;
-        var cstOff = tfChicagoOffsetMin(weekStart);
-        var startLocal = new Date(weekStart + cstOff * 60000);
-        var firstMidnight = new Date(Date.UTC(
-          startLocal.getUTCFullYear(), startLocal.getUTCMonth(), startLocal.getUTCDate()
-        ));
-        var firstBoundaryUTC = firstMidnight.getTime() - cstOff * 60000;
-        if(firstBoundaryUTC <= weekStart) firstBoundaryUTC += DAY_MS;
-        for(var bt = firstBoundaryUTC; bt < resetTime; bt += DAY_MS) {
-          var pctLine = ((bt - weekStart) / WEEK_MS) * 100;
-          if(pctLine > 0.5 && pctLine < 99.5) {
-            var cstDate = new Date(bt + cstOff * 60000);
-            weeklyDayLines.push({ pct: pctLine, label: DAY_NAMES[cstDate.getUTCDay()] });
-          }
-        }
-      } catch(e) {}
-    }
-
-    var weeklyProjected = null;
-    if(wExpected > 2 && wPct > 0) {
-      weeklyProjected = (wPct / wExpected) * 100;
-    }
+    // Marker position, whole-window projection and boundary ticks for both
+    // Claude gauges come from the shared windowPace read (D6 stale-reset
+    // guard included): day lines across the weekly window, hour lines
+    // across the 5-hour one.
+    var weeklyPace = windowPace(oauth.weekly_resets_at, WEEK_MS, wPct);
+    var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);
+    var wExpected = weeklyPace.expected;
+    var hExpected = fiveHourPace.expected;
 
     // Weekly stats: cost + active time from wb (these stay in wb, not oauth)
     var weekCost = wb.week_cost || 0;
@@ -5813,15 +5859,11 @@ function initRateLimits(){
     // the gauge degrades to exactly today's rendering.
     var fhWindow = oauth.five_hour_window || null;
     var fiveHourStats = budgetStats(fhWindow ? fhWindow.cost : null, hPct);
-    var fiveHourProjected = null;
-    if(hExpected !== null && hExpected > 2 && hPct > 0) {
-      fiveHourProjected = (hPct / hExpected) * 100;
-    }
 
     var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
     gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
-      dayLines: weeklyDayLines,
-      projectedPct: weeklyProjected,
+      ticks: weeklyPace.ticks,
+      projectedPct: weeklyPace.projected,
       stats: weeklyStats,
       note: weeklyNote,
       trendNote: weeklyTrendNote,
@@ -5829,7 +5871,8 @@ function initRateLimits(){
     });
     gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected, {
       trendNote: fiveHourTrendNote,
-      projectedPct: fiveHourProjected,
+      ticks: fiveHourPace.ticks,
+      projectedPct: fiveHourPace.projected,
       stats: fiveHourStats
     });
     gaugeHtml += '</div>';
@@ -5869,21 +5912,14 @@ function initRateLimits(){
       // windows (kind weekly_scoped). sb.window_cost comes model-filtered
       // from the server; absent (older server / stale resets_at) →
       // budgetStats returns [] and the row degrades to the bare bar.
-      var sbExpected = calcExpectedPct(sb.resets_at, WEEK_MS);
-      // D6 analogue: a resets_at already in the past means the stored pct
-      // describes an ENDED window — no marker, no projection against it.
-      if(sbExpected !== null) {
-        var sbResetMs = sb.resets_at ? new Date(sb.resets_at).getTime() : NaN;
-        if(!isNaN(sbResetMs) && sbResetMs <= Date.now()) sbExpected = null;
-      }
-      var sbProjected = null;
-      if(sbExpected !== null && sbExpected > 2 && sbPct > 0) {
-        sbProjected = (sbPct / sbExpected) * 100;
-      }
+      // Shared windowPace read (marker, projection, day ticks; D6 guard
+      // included); scoped:* limits are always 7-day windows.
+      var sbPace = windowPace(sb.resets_at, WEEK_MS, sbPct);
       modelRowsHtml += buildGauge(
-        esc(sb.label) + ' · 7-Day', sbPct, fmtReset(sb.resets_at), sbExpected, {
+        esc(sb.label) + ' · 7-Day', sbPct, fmtReset(sb.resets_at), sbPace.expected, {
           fillColor: sbColor,
-          projectedPct: sbProjected,
+          projectedPct: sbPace.projected,
+          ticks: sbPace.ticks,
           stats: budgetStats(sb.window_cost, sbPct),
           rootStyle: 'border-top:var(--border)'
         });

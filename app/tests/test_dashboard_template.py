@@ -347,9 +347,11 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
         self.assertIn("if (!windows.length", self.tpl)
 
     def test_reported_provider_gauges_preserve_percent_and_projection(self):
-        self.assertIn("window.pct", self.tpl)
-        self.assertIn("window.window_seconds", self.tpl)
-        self.assertIn("provider-limit-projection", self.tpl)
+        self.assertIn("win.pct", self.tpl)
+        self.assertIn("win.window_seconds", self.tpl)
+        # Provider windows get the same marker / projection / boundary-tick
+        # treatment as the Claude gauges through the shared windowPace read.
+        self.assertIn("windowPace(win.resets_at, periodMs, pct)", self.tpl)
         self.assertIn("API-equivalent", self.tpl)
 
 
@@ -488,7 +490,7 @@ class TrendGaugeNoteTest(unittest.TestCase):
         """buildTrendNote returns null on every guarded miss, so a payload
         with no oauth.trend renders the gauge exactly as before."""
         start = self.tpl.index("function buildTrendNote(")
-        end = self.tpl.index("function buildGauge(")
+        end = self.tpl.index("var wPct = oauth.weekly_pct || 0;")
         block = self.tpl[start:end]
         self.assertIn("if(!trendEntry) return null;", block)
 
@@ -504,7 +506,7 @@ class TrendGaugeNoteTest(unittest.TestCase):
         self.assertGreater(fmt_ago_pos, fmt_rel_pos,
                             "fmtAgo should sit near/after fmtRelative")
         start = self.tpl.index("function buildTrendNote(")
-        end = self.tpl.index("function buildGauge(")
+        end = self.tpl.index("var wPct = oauth.weekly_pct || 0;")
         block = self.tpl[start:end]
         self.assertIn("fmtAgo(rv.at_epoch)", block)
         self.assertIn("'reset ' + agoTxt", block)
@@ -521,17 +523,19 @@ class FiveHourExpiredGaugeTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tpl = TEMPLATE.read_text()
 
-    def test_expired_five_hour_reset_nulls_expected(self):
-        self.assertIn("hResetMs <= Date.now()) hExpected = null;", self.tpl)
+    def test_expired_reset_nulls_expected_in_shared_helper(self):
+        """The guard now lives once in windowPace (shared by every gauge)."""
+        start = self.tpl.index("function windowPace(")
+        end = self.tpl.index("function buildGauge(")
+        block = self.tpl[start:end]
+        self.assertIn("if(isNaN(resetMs) || resetMs <= Date.now()) return none;",
+                      block)
 
-    def test_guard_sits_right_after_hexpected_is_computed(self):
-        pos_h = self.tpl.index(
-            "var hExpected = calcExpectedPct(oauth.five_hour_resets_at, FIVE_HR_MS);")
-        pos_guard = self.tpl.index("hResetMs <= Date.now()")
-        pos_daylines = self.tpl.index("var weeklyDayLines = [];")
-        self.assertGreater(pos_guard, pos_h)
-        self.assertGreater(pos_daylines, pos_guard,
-                            "D6 guard should run before the rest of gauge math")
+    def test_five_hour_gauge_reads_expected_from_window_pace(self):
+        self.assertIn(
+            "var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);",
+            self.tpl)
+        self.assertIn("var hExpected = fiveHourPace.expected;", self.tpl)
 
 
 class BudgetLeftWindowFixTest(unittest.TestCase):
@@ -813,11 +817,11 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
         block = self.tpl[start:end]
         self.assertIn("budgetStats(fhWindow ? fhWindow.cost : null, hPct)",
                       block)
-        self.assertIn("fiveHourProjected = (hPct / hExpected) * 100", block)
-        # Both are wired into the 5-Hour buildGauge call.
+        # Projection comes from the shared windowPace read; both it and the
+        # stats are wired into the 5-Hour buildGauge call.
         call = self.tpl.index("buildGauge('5-Hour Window'")
         call_block = self.tpl[call:call + 300]
-        self.assertIn("projectedPct: fiveHourProjected", call_block)
+        self.assertIn("projectedPct: fiveHourPace.projected", call_block)
         self.assertIn("stats: fiveHourStats", call_block)
 
     def test_scoped_rows_use_build_gauge_with_identity_color(self):
@@ -826,10 +830,10 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
         block = self.tpl[start:end]
         self.assertIn("fillColor: sbColor", block)
         self.assertIn("budgetStats(sb.window_cost, sbPct)", block)
-        self.assertIn("calcExpectedPct(sb.resets_at, WEEK_MS)", block)
-        # D6 analogue: stale resets_at nulls the marker/projection.
-        self.assertIn("if(!isNaN(sbResetMs) && sbResetMs <= Date.now()) sbExpected = null;",
-                      block)
+        # windowPace carries the D6 stale-reset guard for the row's marker
+        # and projection, plus the weekly day ticks.
+        self.assertIn("windowPace(sb.resets_at, WEEK_MS, sbPct)", block)
+        self.assertIn("sbPace.expected", block)
         # The hand-rolled bare-bar markup is gone from the scoped loop.
         self.assertNotIn("'<div class=\"rate-gauge-track\">'", block)
 
