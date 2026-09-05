@@ -734,8 +734,7 @@ class DashboardServerRenderTest(unittest.TestCase):
 
 class SpendHistorySectionTest(unittest.TestCase):
     """New 'Spend History' section: two Chart.js cards (limit windows +
-    monthly spend) fed by a single boot-time fetch of /api/spend-history,
-    with no polling and no error banner on failure (secondary analytics)."""
+    monthly spend) fed by the shared lifecycle, including reconnect refresh."""
 
     @classmethod
     def setUpClass(cls):
@@ -785,8 +784,8 @@ class SpendHistorySectionTest(unittest.TestCase):
             'id="spendHistorySection" style="border-bottom:var(--border);display:none"',
             self.tpl)
         self.assertIn("document.getElementById('spendHistorySection').style.display = 'block';", self.tpl)
-        catch_pos = self.tpl.index(".catch(function(){ /* secondary analytics")
-        self.assertNotIn("spendHistorySection", self.tpl[catch_pos:catch_pos + 120])
+        self.assertIn("tfRefresh.add('history', {", self.tpl)
+        self.assertIn("_spendHistoryRendered = false; maybeRenderSpendHistory();", self.tpl)
 
 
 class BudgetProjectionGaugesTest(unittest.TestCase):
@@ -897,45 +896,43 @@ class MarkerLabelOverlapTest(unittest.TestCase):
     # ── EventSource live refresh, poll as fallback (Task 3) ───────────────
     def test_eventsource_stream_is_primary(self):
         """SSE drives live updates; endpoint is the same-origin stream."""
-        self.assertIn("new EventSource('/api/stats/stream')", self.tpl)
-        self.assertIn("function startStream()", self.tpl)
+        lifecycle = (TEMPLATE.parent.parent / 'static/dashboard-refresh.js').read_text()
+        self.assertIn("new win.EventSource('/api/stats/stream')", lifecycle)
+        self.assertIn("function startStream()", lifecycle)
 
     def test_eventsource_capability_guard(self):
         """No EventSource support falls back to polling, never throws."""
-        self.assertIn("typeof EventSource === 'undefined'", self.tpl)
+        lifecycle = (TEMPLATE.parent.parent / 'static/dashboard-refresh.js').read_text()
+        self.assertIn("typeof win.EventSource === 'undefined'", lifecycle)
 
     def test_stop_stream_closes_and_clears_retry_timer(self):
         """stopStream must release both the instance and the reconnect timer
         so repeated onerror can't stack timers or leak connections."""
-        self.assertIn("function stopStream()", self.tpl)
-        self.assertIn("const STREAM_RETRY_MS = 60000", self.tpl)
-        idx = self.tpl.index("function stopStream()")
-        block = self.tpl[idx:idx + 400]
+        lifecycle = (TEMPLATE.parent.parent / 'static/dashboard-refresh.js').read_text()
+        self.assertIn("retry = later(startStream, 60000)", lifecycle)
+        idx = lifecycle.index("function stopStream()")
+        block = lifecycle[idx:idx + 400]
         self.assertIn(".close()", block)
-        self.assertIn("clearTimeout", block)
+        self.assertIn("cancel(retry)", block)
 
     def test_visibilitychange_wires_stream(self):
         """Tab hide/show must manage the stream, not just the poll."""
-        self.assertIn("stopStream()", self.tpl)
-        idx = self.tpl.index("visibilitychange")
-        block = self.tpl[idx:idx + 400]
-        self.assertIn("stopStream", block)
-        self.assertIn("startStream", block)
+        lifecycle = (TEMPLATE.parent.parent / 'static/dashboard-refresh.js').read_text()
+        self.assertIn("doc.addEventListener('visibilitychange', resume)", lifecycle)
+        self.assertIn("win.addEventListener('online', resume)", lifecycle)
+        self.assertIn("win.addEventListener('offline', resume)", lifecycle)
 
     def test_polling_retained_as_fallback(self):
         """The 30s version poll must remain as the SSE fallback."""
-        self.assertIn("function startPolling()", self.tpl)
-        self.assertIn("const POLL_INTERVAL = 30000", self.tpl)
+        self.assertIn("tfRefresh.add('version', {\n  interval:30000", self.tpl)
 
     def test_fetch_and_apply_guards_hidden_tab(self):
         """fetchAndApply must bail on a hidden tab like checkForUpdate does —
         the SSE onmessage handler calls it without a document.hidden guard
         (latent today: hidden → stopStream, but a race could still fire it)."""
-        start = self.tpl.index("function fetchAndApply(")
-        end = self.tpl.index("function checkForUpdate(")
-        block = self.tpl[start:end]
-        self.assertIn("document.hidden", block,
-                      "fetchAndApply must guard against a hidden tab")
+        lifecycle = (TEMPLATE.parent.parent / 'static/dashboard-refresh.js').read_text()
+        self.assertIn("!doc.hidden && win.navigator.onLine !== false", lifecycle)
+        self.assertIn("if(running !== token || !options.active()) return", lifecycle)
 
 
 if __name__ == "__main__":

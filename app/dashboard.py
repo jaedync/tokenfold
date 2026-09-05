@@ -67,7 +67,7 @@ def build_install_command(base_url, key):
 
 
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
-async def dashboard(request: Request, scope: Optional[str] = None):
+def dashboard(request: Request, scope: Optional[str] = None):
     # Soft-fail: a bookmarked bad/forbidden ?scope= shouldn't 403 the whole page;
     # it just serves the allowed scope. API routes do hard-fail (400/403).
     # Scope precedence: lock > ?scope= > tf_scope cookie > default. The cookie

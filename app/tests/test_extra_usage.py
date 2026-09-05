@@ -205,6 +205,8 @@ class IngestRecordsMeterTest(TempDBTestCase):
     }
 
     def test_ignored_push_lands_meter_row(self):
+        from app.aggregator import get_cache_version
+        version = get_cache_version()
         r = self.client().post(
             "/api/usage",
             json={"machine": "Z000012-Mantle-VM-Dev01",
@@ -216,6 +218,7 @@ class IngestRecordsMeterTest(TempDBTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["machine"], "Z000012-Mantle-VM-Dev01")
         self.assertEqual(rows[0]["used_cents"], 21794.0)
+        self.assertGreater(get_cache_version(), version, 'enterprise meter must refresh the live hero')
 
 
 if __name__ == "__main__":

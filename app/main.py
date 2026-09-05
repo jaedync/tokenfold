@@ -86,6 +86,11 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.path == "/" or (request.url.path.startswith("/api/") and
+                                    "text/event-stream" not in response.headers.get("content-type", "")):
+        # Authenticated snapshots must not be replayed by browser/proxy caches
+        # after a scope change, wake-up, or reconnect.
+        response.headers["Cache-Control"] = "private, no-store"
     return response
 
 

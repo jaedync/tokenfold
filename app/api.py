@@ -139,7 +139,7 @@ async def stats_version():
 
 
 @router.get("/api/stats", dependencies=[Depends(require_dashboard_auth)])
-async def stats(scope: Optional[str] = Query(default=None)):
+def stats(scope: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     data = build_dashboard_data(effective)
     return JSONResponse(content=data)

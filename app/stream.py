@@ -85,7 +85,10 @@ async def stats_stream(request: Request):
         _version_events(request),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
+            # Compress ordinary HTML/JSON at the proxy, never buffer tiny SSE
+            # frames waiting for a compression block to fill.
+            "Content-Encoding": "identity",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
