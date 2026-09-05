@@ -159,6 +159,10 @@ class TimelineModelsTest(TimelineTestCase):
         self._ins("claude-opus-4-8", CARAFE, _at(0, 11), count=3)
         self.assertEqual(self._body()["models"], ["Fable 5", "Opus 4.8"])
         self._ins("claude-opus-4-8", OPUS, _at(0, 12), count=20)
+        # The HTTP observatory is a bounded 30s snapshot, shared across tabs.
+        # Expire it after this direct fixture write (which bypasses ingestion).
+        from app.served_models import _timeline_cache
+        _timeline_cache._entries.clear()
         self.assertEqual(self._body()["models"], ["Opus 4.8", "Fable 5"])
 
     def test_hidden_counts_as_non_self(self):

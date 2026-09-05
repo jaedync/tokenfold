@@ -151,7 +151,8 @@ class StreamHeadersTest(TempDBTestCase):
 
         resp = asyncio.run(run())
         self.assertEqual(resp.media_type, "text/event-stream")
-        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache, no-transform")
+        self.assertEqual(resp.headers.get("content-encoding"), "identity")
         self.assertEqual(resp.headers.get("x-accel-buffering"), "no")
 
 

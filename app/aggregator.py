@@ -21,7 +21,7 @@ from .extra_usage import build_meter_payload
 from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
-from .db import checkpoint_wal, get_conn
+from .db import checkpoint_wal, get_conn, read_conn
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
     REPORTED_COST_SUM_SQL, display_model, display_model_for_row, effective_geo,
@@ -46,6 +46,12 @@ TZ = ZoneInfo(TZ_NAME)
 _cache_lock = threading.Lock()
 _cached_data: dict[str, dict] = {}
 _cache_version: int = 0
+# Keep last-known snapshots available while one producer builds the next
+# generation. Readers never stamp old data with a new revision.
+_previous_data: dict[str, dict] = {}
+_cached_at: dict[str, float] = {}
+_build_lock = threading.RLock()
+CACHE_TTL_S = 60
 
 # Scope-aware pre-warm bookkeeping. Invalidation clears _cached_data for ALL
 # scopes, but the drain-loop worker used to rebuild ONLY DEFAULT_SCOPE — so a
@@ -269,6 +275,7 @@ def trigger_eager_rebuild():
     with _cache_lock:
         _cache_gen += 1
         _cache_version_bump()
+        _previous_data.update(_cached_data)
         _cached_data.clear()  # invalidate all scopes immediately
         if _rebuilding:
             return  # the running worker's drain loop will pick up this gen
@@ -293,7 +300,20 @@ def trigger_eager_rebuild():
                 with _cache_lock:
                     scopes = _warm_scope_set()
                 try:
-                    built = {s: _build_dashboard_data_inner(s) for s in scopes}
+                    with _build_lock:
+                        # A request may have filled a cold scope while this
+                        # worker waited; share that build rather than scan twice.
+                        with _cache_lock:
+                            ready = dict(_cached_data)
+                            revision = _cache_version
+                        built = {}
+                        for s in scopes:
+                            if s in ready:
+                                built[s] = ready[s]
+                            else:
+                                built[s] = _build_dashboard_data_inner(s)
+                                if 'version' in built[s]:
+                                    built[s]['version'] = revision
                 except Exception:
                     # Dropping the generation is deliberate (next invalidation
                     # retries) — hiding the failure is not.
@@ -312,11 +332,19 @@ def trigger_eager_rebuild():
                         # No invalidation landed while building — store every
                         # warm scope, release the worker slot, and stop.
                         _cached_data.update(built)
+                        _cached_at.update({s: _time.monotonic() for s in built})
                         _rebuilding = False
                         cleared = True
                         return
+                    # Continuous ingest may outpace a full build. Publish this
+                    # intermediate, honestly stamped snapshot for stale readers
+                    # while draining, so visible progress cannot starve forever.
+                    for scope, data in built.items():
+                        previous = _previous_data.get(scope, {})
+                        if data.get('version', 0) >= previous.get('version', 0):
+                            _previous_data[scope] = data
                     # A newer invalidation arrived mid-build; drain it with one
-                    # more build rather than writing this now-stale result. Stay
+                    # more build rather than marking this result current. Stay
                     # _rebuilding so no second worker spawns.
                     current_gen = _cache_gen
         finally:
@@ -565,19 +593,30 @@ def build_dashboard_data(scope: str = DEFAULT_SCOPE) -> dict:
     _mark_scope_requested(scope)
     with _cache_lock:
         cached = _cached_data.get(scope)
-        if cached is not None:
+        expired = cached is not None and _time.monotonic() - _cached_at.get(scope, _time.monotonic()) >= CACHE_TTL_S
+        if cached is not None and not expired:
             return cached
-        gen_at_start = _cache_gen
-    # Build outside the lock to avoid blocking concurrent readers.
-    data = _build_dashboard_data_inner(scope)
-    with _cache_lock:
-        # Only store if no invalidation landed while we were building: a slow
-        # request-thread build that straddled an invalidation would otherwise
-        # clobber the cache with pre-invalidation data. Return the built data to
-        # the caller either way — it is correct as of when the build started.
-        if _cache_gen == gen_at_start:
-            _cached_data[scope] = data
-    return data
+        if _rebuilding and scope in _previous_data:
+            return _previous_data[scope]
+    if expired:
+        trigger_eager_rebuild()
+        return cached
+    # Serialize cold producers, never the event loop. The HTTP routes using
+    # this function are synchronous FastAPI handlers (thread-pool dispatched).
+    with _build_lock:
+        with _cache_lock:
+            if scope in _cached_data:
+                return _cached_data[scope]
+            gen_at_start = _cache_gen
+            revision = _cache_version
+        data = _build_dashboard_data_inner(scope)
+        if 'version' in data:
+            data['version'] = revision
+        with _cache_lock:
+            if _cache_gen == gen_at_start:
+                _cached_data[scope] = data
+                _cached_at[scope] = _time.monotonic()
+        return data
 
 
 def _geo_assumed(scope: str) -> bool:
@@ -587,13 +626,13 @@ def _geo_assumed(scope: str) -> bool:
     return scope == "enterprise" and _config.ENTERPRISE_ASSUME_GEO == "us"
 
 
-def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE) -> dict:
+def _empty_dashboard(cutoff_date: str, scope: str = DEFAULT_SCOPE, conn=None) -> dict:
     """Return the dashboard structure with no data (used when no summaries exist)."""
     now = datetime.now(TZ)
     # Built once and shared with month_hero_block: two build_meter_payload
     # calls could straddle a fresh capture and hand the hero a different
     # reading than the meter panel renders.
-    _meter = build_meter_payload(get_conn(), scope)
+    _meter = build_meter_payload(conn if conn is not None else get_conn(), scope)
     return {
         "cards": {
             "sessions": 0, "human_prompts": 0, "total_tokens": 0,
@@ -982,9 +1021,13 @@ def _served_model_chips_safe(conn, pred: str, cutoff_date: str) -> dict:
 
 
 def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
+    with read_conn() as conn:
+        return _build_dashboard_data_from_conn(scope, conn)
+
+
+def _build_dashboard_data_from_conn(scope, conn) -> dict:
     """Read daily_summary rows and produce the full dashboard JSON blob for the given scope."""
     load_pricing()
-    conn = get_conn()
     cutoff_date = (datetime.now(TZ) - timedelta(days=RECENCY_DAYS)).strftime("%Y-%m-%d")
     pred = scope_predicate(scope)
 
@@ -994,7 +1037,7 @@ def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     ).fetchall()
 
     if not rows:
-        return _empty_dashboard(cutoff_date, scope)
+        return _empty_dashboard(cutoff_date, scope, conn)
 
     # (org values are not served; server-side predicate uses org as filter only)
 

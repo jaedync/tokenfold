@@ -63,7 +63,10 @@ class SigHeaderBackfillTest(TempDBTestCase):
 
     def test_unset_row_is_filled_and_counted(self):
         self._ins("u1")
+        from app.aggregator import get_cache_version
+        version = get_cache_version()
         r = self._post({"u1": _triple(KETTLE)})
+        self.assertGreater(get_cache_version(), version, 'signature-only repair must refresh live chips')
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["updated_sig_headers"], 1)
         row = self._sig("u1")

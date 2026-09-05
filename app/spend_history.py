@@ -38,7 +38,9 @@ from .api import _iso_to_epoch
 from .auth import require_dashboard_auth
 from .config import scope_predicate
 from .cost_windows import compute_window_cost, compute_window_cost_by_model
-from .db import get_conn
+from . import db
+from .db import get_conn, read_conn
+from .read_cache import ReadCache
 # Thresholds single-sourced from limit_readings so a future tuning pass
 # changes burn-segmentation and window-segmentation together.
 from .limit_readings import (RESET_DROP_PTS, RESET_JUMP_S,
@@ -46,6 +48,7 @@ from .limit_readings import (RESET_DROP_PTS, RESET_JUMP_S,
 from .usage_buckets import normalize_usage_buckets
 
 router = APIRouter()
+_history_cache = ReadCache()
 
 WINDOW_S = 7 * 86400
 MERGE_S = 3600       # boundaries closer than this are one real-world event
@@ -301,7 +304,7 @@ def monthly_costs(conn, scope, now=None):
 
 @router.get("/api/spend-history",
             dependencies=[Depends(require_dashboard_auth)])
-async def spend_history(scope: Optional[str] = Query(default=None)):
+def spend_history(scope: Optional[str] = Query(default=None)):
     """Look-back spend: months always (scope-filtered); 'windows' ONLY for
     personal scope on a non-enterprise-locked instance (personal Max limit
     data — mirrors the rate-limits oauth-key gating; enterprise callers
@@ -315,7 +318,13 @@ async def spend_history(scope: Optional[str] = Query(default=None)):
     except cfg.ScopeLocked:
         raise HTTPException(status_code=404, detail="not found")
 
-    conn = get_conn()
+    def build():
+        with read_conn() as conn:
+            return _spend_history(conn, effective, cfg.LOCKED_SCOPE)
+    return _history_cache.get((db.DB_PATH, effective, cfg.LOCKED_SCOPE), build)
+
+
+def _spend_history(conn, effective, locked_scope):
     now = time.time()
     # Same narrow-blast-radius treatment as windows below (review H1): a
     # surprise in month math (e.g. platform-specific fromtimestamp range
@@ -326,7 +335,7 @@ async def spend_history(scope: Optional[str] = Query(default=None)):
     except Exception as e:
         log("monthly_costs failed: %s", e)
 
-    if effective == "personal" and cfg.LOCKED_SCOPE != "enterprise":
+    if effective == "personal" and locked_scope != "enterprise":
         # Narrow blast radius (api.py Fix 6 pattern): a segmentation bug
         # must only drop 'windows', never the months chart.
         try:

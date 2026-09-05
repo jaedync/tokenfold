@@ -23,10 +23,13 @@ from zoneinfo import ZoneInfo
 
 from .auth import require_dashboard_auth
 from .config import TZ_NAME
-from .db import get_conn
+from . import db
+from .db import get_conn, read_conn
+from .read_cache import ReadCache
 from .pricing import display_model
 
 router = APIRouter()
+_timeline_cache = ReadCache()
 TZ = ZoneInfo(TZ_NAME)
 
 DAYS_DEFAULT = 30
@@ -497,7 +500,7 @@ async def served_models(days: int = Query(default=DAYS_DEFAULT),
 
 @router.get("/api/served-models/timeline",
             dependencies=[Depends(require_dashboard_auth)])
-async def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
+def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
                                  scope: Optional[str] = Query(default=None)):
     """When each model was served by something other than itself.
 
@@ -508,4 +511,7 @@ async def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
     """
     pred = _personal_predicate(scope)
     days = max(1, min(DAYS_MAX, days))  # clamp, never error
-    return served_model_timeline(get_conn(), pred, days)
+    def build():
+        with read_conn() as conn:
+            return served_model_timeline(conn, pred, days)
+    return _timeline_cache.get((db.DB_PATH, pred, days), build)

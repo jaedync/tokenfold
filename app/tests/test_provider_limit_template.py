@@ -103,11 +103,13 @@ assert.equal(mergeLimitBudget(old,{providers:{}},true).providers.codex.windows.l
 
     def test_poll_failure_timeout_and_old_generation_cannot_overwrite_gauges(self):
         poll = self.template.split("    var rlUrl = '/api/rate-limits?scope='", 1)[1]
-        poll = "var rlUrl = '/api/rate-limits?scope='" + poll.split("    pollLimits();", 1)[0]
+        poll = "var rlUrl = '/api/rate-limits?scope='" + poll.split("\n}\n\n/* ---- Single global", 1)[0]
         self.node("const assert = require('assert');\n" + self.helper() + """
 const document = {hidden:false}, window = {tfLimitSnapshot:null}, TF_SCOPE='personal';
-let pending=[], rendered=[], errors=0, throwNext=false;
-function tfFetchLimits(url) { return new Promise((resolve,reject)=>pending.push({url,resolve,reject})); }
+let rendered=[], errors=0, throwNext=false, requested=[];
+const feeds={};
+const tfRefresh={add:(name,config)=>feeds[name]=config,request:name=>requested.push(name)};
+const TokenfoldRefresh={fetchJSON:()=>Promise.resolve(null)};
 function renderAllRateLimits(data) {
   if(throwNext) { throwNext=false; throw new Error('render regression'); }
   rendered.push(data);
@@ -119,26 +121,20 @@ const sample = (at,cost) => ({weekly_budget:{providers:{codex:{updated_at_epoch:
 const flush = () => new Promise(resolve=>setImmediate(resolve));
 """ + poll + """
 (async()=>{
-  pollLimits(); assert.equal(pending.length,2);
-  pollLimits(); assert.equal(pending.length,2); // no overlapping timer polls
-  pending[0].resolve(sample(1)); await flush(); assert.equal(rendered.length,1);
-  pending[1].reject(new Error('timeout')); await flush();
-  assert.equal(rendered.length,1); assert.equal(errors,0); // retain good quota
-  pollLimits(); assert.equal(pending.length,4);
-  pollLimits(true); assert.equal(pending.length,6); // budget edit supersedes old request
-  pending[5].resolve(sample(3,30)); await flush();
-  pending[4].resolve(sample(3)); await flush(); // late cheap response must not strip dollars
-  pending[2].resolve(sample(2)); pending[3].resolve(sample(2,20)); await flush();
+  pollLimits(); assert.deepEqual(requested,['limitSnapshots','limits']);
+  feeds.limitSnapshots.apply(sample(1)); assert.equal(rendered.length,1);
+  feeds.limits.apply(sample(3,30));
+  feeds.limitSnapshots.apply(sample(3)); // late cheap response retains enrichment
+  feeds.limitSnapshots.apply(sample(2)); feeds.limits.apply(sample(2,20));
   assert.equal(rendered.at(-1).providers.codex.updated_at_epoch,3);
   assert.equal(rendered.at(-1).providers.codex.windows[0].window_cost,30);
-  pollLimits(); assert.equal(pending.length,8);
-  pending[6].reject(new Error('network')); pending[7].reject(new Error('network'));
-  await flush(); assert.equal(rendered.at(-1).providers.codex.windows[0].window_cost,30);
-  pollLimits(); throwNext=true;
-  pending[8].resolve(sample(4)); await flush();
-  assert.equal(errors,1); // render errors are visible even with previous good data
+  throwNext=true;
+  assert.throws(()=>feeds.limitSnapshots.apply(sample(4)),/render regression/);
+  assert.equal(errors,1);
   assert.equal(limitsState.providers.codex.updated_at_epoch,3);
-  pending[9].resolve(sample(4,40)); await flush();
+  feeds.limits.apply(sample(4,40));
   assert.equal(limitsState.providers.codex.windows[0].window_cost,40);
+  assert.equal(feeds.limits.interval,60000);
+  assert.equal(feeds.limitSnapshots.interval,15000);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """)

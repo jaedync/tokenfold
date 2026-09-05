@@ -3263,6 +3263,7 @@ th[data-info]:focus::after { opacity: 1; }
 
 <div id="hmTip"></div>
 
+<script src="/static/dashboard-refresh.js?v=1"></script>
 <script type="application/json" id="tf-data">{{ data_json|safe }}</script>
 <script>
 /* ============================================================
@@ -3433,7 +3434,52 @@ const D = (function () {
     return {};
   }
 })();
-const MODEL_ORDER = D.model_order || [];
+const MODEL_ORDER = (D.model_order || []).slice();
+var knownVersion = D.version || 0, wantedVersion = knownVersion;
+var knownGeneration = D.generation_time;
+var tfRefresh = TokenfoldRefresh.createLifecycle({
+  document:document, window:window,
+  onVersion:function(version){
+    if(typeof version !== 'number' || version === knownVersion) return;
+    wantedVersion = version;
+    tfRefresh.request('stats');
+  },
+  onState:function(state, feeds){
+    var el = document.getElementById('refreshIndicator');
+    if(!el) return;
+    el.setAttribute('role', 'status');
+    el.textContent = state === 'offline' ? 'OFFLINE · SHOWING LAST DATA'
+      : state === 'stale' ? 'UPDATE DELAYED · RETRYING ' + feeds.join(', ').toUpperCase() : 'DATA UPDATED';
+    el.classList.toggle('visible', state !== 'ready');
+  }
+});
+tfRefresh.add('stats', {
+  interval:60000, minInterval:3000,
+  load:function(signal){ return TokenfoldRefresh.fetchJSON('/api/stats?scope='+encodeURIComponent(TF_SCOPE), signal); },
+  apply:function(data){
+    // A dirty server can legitimately serve the same previous snapshot while
+    // rebuilding. Don't redraw every chart again while waiting for publication.
+    if(data.version !== knownVersion || data.generation_time !== knownGeneration) applyDashboardData(data);
+    // A stale-while-rebuild response carries its original revision. Continue
+    // draining until the observed change is actually on screen, not just read.
+    knownVersion = data.version;
+    knownGeneration = data.generation_time;
+    if(knownVersion !== wantedVersion) tfRefresh.request('version');
+  }
+});
+tfRefresh.add('version', {
+  interval:30000,
+  load:function(signal){ return TokenfoldRefresh.fetchJSON('/api/stats/version', signal); },
+  apply:function(data){
+    if(!data || typeof data.version !== 'number') throw new Error('bad version');
+    wantedVersion = data.version;
+    if(wantedVersion !== knownVersion) tfRefresh.request('stats');
+  }
+});
+tfRefresh.add('clock', {
+  interval:30000, load:function(){ return null; },
+  apply:function(){ updateStatus(); renderSessions(); }
+});
 function modelSort(a,b){
   const ai=MODEL_ORDER.indexOf(a), bi=MODEL_ORDER.indexOf(b);
   return (ai<0?999:ai)-(bi<0?999:bi);
@@ -3609,6 +3655,7 @@ function animateCardValue(el, targetValue, formatFn, duration, fractional) {
 /* ---- Live Status Indicator ---- */
 function updateStatus(){
   if(document.hidden) return;
+  renderHeader();
   var ts = D.last_active_ts;
   var sq = document.getElementById('statusSq');
   var tx = document.getElementById('statusText');
@@ -3628,17 +3675,17 @@ function updateStatus(){
   }
 }
 updateStatus();
-setInterval(updateStatus, 30000);
+// The shared visible/online clock owns subsequent relative-time repaints.
 
-const mb = D.model_breakdown;
-const outPriceMap = D.output_pricing;
+let mb = D.model_breakdown;
+let outPriceMap = D.output_pricing;
 
-/* ---- Pricing per MTok table (static) ---- */
+/* ---- Pricing follows the same snapshot as model usage. ---- */
+function renderPricing(){
 const mPricing = D.model_pricing || {};
 const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
-(function(){
   const body = document.getElementById('pricingBody');
-  if (!body || !pricingModels.length) return;
+  if (!body) return;
   function fP(v){ return fC(v); }
   var _rows = [];
   pricingModels.forEach(name => {
@@ -3654,12 +3701,20 @@ const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
       +'</tr>');
   });
   body.innerHTML = _rows.join('');
-})();
+  afterTableRender(body);
+}
+renderPricing();
 
 /* ---- Benchmarks (static) — chart built at boot, after deferred Chart.js ---- */
 function renderBenchmarks(){
-if(document.getElementById('cBench')) return; // already built (boot retries)
-const bench = D.benchmarks;
+const bench = D.benchmarks || {};
+const host = document.getElementById('benchWrap');
+if(!host) return;
+const key = JSON.stringify(bench);
+if(host._renderKey === key && document.getElementById('cBench')) return;
+const old = document.getElementById('cBench');
+if(old){ if(hasChart() && Chart.getChart(old)) Chart.getChart(old).destroy(); old.remove(); }
+if(hasChart()) host._renderKey = key;
 const benchModels = Object.keys(bench).filter(m=>Object.keys(bench[m]).length>0);
 benchModels.sort((a,b)=>modelSort(a,b));
 if(benchModels.length && hasChart()){
@@ -3897,6 +3952,7 @@ function rebuildDailyTable(){
 
 /* ---- Environmental info modal + comparisons chart (wired ONCE) ---- */
 var _envTotalW = 0;
+var refreshEnvModal = function(){};
 var _envCycleTimer = null;
 (function initEnvModal(){
     var bar = document.getElementById('envBar');
@@ -3913,11 +3969,13 @@ var _envCycleTimer = null;
     close.onclick = function(){ modal.classList.remove('visible'); if(infoBtn) infoBtn.setAttribute('aria-expanded','false'); };
     modal.onclick = function(e){ if(e.target===modal){ modal.classList.remove('visible'); if(infoBtn) infoBtn.setAttribute('aria-expanded','false'); } };
     // Escape-to-close handled by the single global keydown handler.
+    refreshEnvModal = function(){ if(modal.classList.contains('visible')) buildComparisons(); };
     function buildComparisons(){
       // rebuilt on every open — _envTotalW changes with live refreshes
       var w = _envTotalW;
       var el = document.getElementById('envComparisons');
-      if(!el||w<=0) return;
+      if(!el) return;
+      if(w<=0){ el.textContent = 'No usage in this period'; return; }
       // Municipal water comparisons in mL (USGS, EPA)
       var items = [
         {label:'Your Claude usage', ml:w, color:'var(--red)', you:true},
@@ -4051,10 +4109,16 @@ function tfWindowTicks(resetMs, periodMs) {
    /api/served-models/timeline (per window: today = 1 day, 14d = 14, all =
    400), fetched on demand and cached per window until the next data push.
    Secondary observatory: any failure leaves the panel hidden, no banner. */
-var _servedTL = { cache: {}, inflight: {}, colors: {}, palette: ['#e63329', '#1a4b8c', '#9a7a00', '#2e7d4f', '#7b3fa0', '#c2410c'] };
+var _servedTL = { generation: 0, cache: {}, inflight: {}, controllers: {}, colors: {}, palette: ['#e63329', '#1a4b8c', '#9a7a00', '#2e7d4f', '#7b3fa0', '#c2410c'] };
 var SERVED_SELF_COLOR = '#b8b4ac';
 function servedDaysForMode(mode){ return mode === 'today' ? 1 : mode === '14d' ? 14 : 400; }
-function servedTimelineInvalidate(){ _servedTL.cache = {}; }
+function servedTimelineInvalidate(){
+  _servedTL.generation++;
+  Object.values(_servedTL.controllers).forEach(function(controller){ controller.abort(); });
+  _servedTL.controllers = {};
+  _servedTL.cache = {};
+  _servedTL.inflight = {};
+}
 /* Stable colour per foreign slug, first come first served across windows,
    so a slug never changes colour when the period toggle moves. */
 function servedColor(state){
@@ -4074,14 +4138,32 @@ function servedFillClass(state){ return state === 'hidden' ? ' served-hidden-fil
 function servedStateLabel(state, model){ return state === 'self' ? (model || 'self') + ' (self)' : (model ? model + ' → ' : '') + state; }
 function servedChipText(v){ return typeof v === 'string' ? v : (v && v.text) || ''; }
 function servedChipTitle(v){ return typeof v === 'string' ? 'Share of this model\'s signed thinking blocks that a different model actually served' : (v && v.title) || ''; }
-function servedFetch(days){
+function servedFetch(days, signal){
+  // This observatory is deliberately personal-only (the API returns 404 for
+  // enterprise). Never probe a forbidden endpoint from a logged-in work tab.
+  if(TF_SCOPE !== 'personal' || !tfRefresh.active()) return Promise.resolve(null);
   if(_servedTL.cache[days]) return Promise.resolve(_servedTL.cache[days]);
   if(_servedTL.inflight[days]) return _servedTL.inflight[days];
   var url = '/api/served-models/timeline?days=' + days + '&scope=' + encodeURIComponent(TF_SCOPE);
-  var p = fetch(url)
-    .then(function(r){ if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
-    .then(function(data){ _servedTL.cache[days] = data; delete _servedTL.inflight[days]; return data; })
-    .catch(function(){ delete _servedTL.inflight[days]; return null; });
+  var generation = _servedTL.generation;
+  var controller = new AbortController();
+  _servedTL.controllers[days] = controller;
+  var abort = function(){ controller.abort(); };
+  if(signal) signal.addEventListener('abort', abort, {once:true});
+  var timeout = setTimeout(abort, 30000);
+  var p = TokenfoldRefresh.fetchJSON(url, controller.signal)
+    .then(function(data){
+      if(generation !== _servedTL.generation) return null;
+      _servedTL.cache[days] = data; delete _servedTL.inflight[days]; return data;
+    })
+    .catch(function(error){
+      if(generation === _servedTL.generation) delete _servedTL.inflight[days];
+      throw error;
+    }).finally(function(){
+      clearTimeout(timeout);
+      if(signal) signal.removeEventListener('abort', abort);
+      if(_servedTL.controllers[days] === controller) delete _servedTL.controllers[days];
+    });
   _servedTL.inflight[days] = p;
   return p;
 }
@@ -4102,17 +4184,22 @@ function servedFmtRange(t0, t1, bin){
 function renderServedTimeline(mode){
   var section = document.getElementById('servedSection');
   if(!section) return;
-  var days = servedDaysForMode(mode);
+  if(TF_SCOPE !== 'personal'){ section.style.display = 'none'; return; }
+  var days = servedDaysForMode(mode), generation = _servedTL.generation;
   servedFetch(days).then(function(data){
+    if(generation !== _servedTL.generation || !tfRefresh.active()) return;
     // the mode may have moved while we waited: only paint the current one
     if((lsGet('dashMode') || '14d') !== mode) return;
     if(!data || !(data.models || []).length){ section.style.display = 'none'; return; }
     section.style.display = 'block';
     renderServedStrips(data);
     renderServedLedger(data);
-  });
-  // sessions bars join on the widest window, fetched once and reused
-  servedFetch(400).then(function(){ if(typeof renderSessions === 'function'){ var b = document.getElementById('sessionsBody'); if(b) b._renderKey = null; renderSessions(); } });
+  }).catch(function(){ tfRefresh.request('timeline'); });
+  // Sessions join on the widest window, shared with the lifecycle feed.
+  servedFetch(400).then(function(){
+    if(generation !== _servedTL.generation || !tfRefresh.active()) return;
+    var b = document.getElementById('sessionsBody'); if(b) b._renderKey = null; renderSessions();
+  }).catch(function(){ tfRefresh.request('timeline'); });
 }
 /* Percent per [state, blocks] pair. Non-self states get a floor (a 5-block
    reroute inside a 1000-block day must still be visible in the cell): the
@@ -5608,6 +5695,12 @@ function initRateLimits(){
       var monthCost = typeof provider.month_cost === 'number' ? provider.month_cost : 0;
       if (!windows.length && monthCost <= 0) continue;
       var content = '';
+      var sampleAge = typeof provider.updated_at_epoch === 'number'
+        ? Math.max(0, Date.now()/1000 - provider.updated_at_epoch) : null;
+      var sampleNote = sampleAge === null ? 'Quota observation time unavailable.'
+        : sampleAge < 60 ? 'Quota reported just now.'
+        : sampleAge < 3600 ? 'Quota last reported ' + Math.floor(sampleAge/60) + 'm ago.'
+        : 'Quota last reported ' + Math.floor(sampleAge/3600) + 'h ago.';
       if(windows.length) {
         content += '<div class="provider-limits-grid">';
         for(var wi = 0; wi < windows.length; wi++) {
@@ -5632,7 +5725,7 @@ function initRateLimits(){
           content += buildGauge(esc(win.label || win.key || 'Limit'), pct, esc(reset),
             pace.expected, { projectedPct: pace.projected, ticks: pace.ticks,
               stats: providerStats,
-              note: providerStats.length ? 'Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : null });
+              note: sampleNote + (providerStats.length ? ' Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : '') });
         }
         content += '</div>';
       }
@@ -6053,13 +6146,19 @@ function initRateLimits(){
      HTML so its listener must re-attach, but the overlay/close chrome is wired
      once in initRateLimits and the chart instance persists across polls. */
   (function(){
-    if(!wb || !wb.hourly_costs) return;
+    if(!wb || !wb.hourly_costs){
+      if(usageChart){ usageChart.destroy(); usageChart = null; }
+      return;
+    }
 
     var overlay = document.getElementById('usageChartOverlay');
     var trigger = document.getElementById('usageChartTrigger') || document.getElementById('oauthChartTrigger');
     if(!overlay || !trigger) return;
 
-    // New data invalidates the cached chart — rebuild on next open (or now if open)
+    // Preserve the user's visible hour range when a live sample redraws the
+    // open modal. Rolling data changes, but polling must not reset their zoom.
+    var zoom = usageChart && usageChart.options.scales.x;
+    zoom = zoom ? {min:zoom.min, max:zoom.max} : null;
     if(usageChart){ usageChart.destroy(); usageChart = null; }
 
     function buildChart() {
@@ -6533,6 +6632,11 @@ function initRateLimits(){
         },
         plugins: [chartPlugins]
       });
+      if(zoom && zoom.min != null && zoom.max != null){
+        usageChart.options.scales.x.min = zoom.min;
+        usageChart.options.scales.x.max = zoom.max;
+        usageChart.update('none');
+      }
 
       // (a) NEW right-hand 0-100 utilization axis — only added when the D4
       // overlay datasets exist, so a series-absent response keeps the exact
@@ -6743,42 +6847,40 @@ function initRateLimits(){
     // Pass current scope so the server can gate oauth fields to personal scope.
     var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
     var snapshotUrl = '/api/rate-limit-snapshots?scope=' + encodeURIComponent(TF_SCOPE);
-    var limitsState = null, pollInFlight = false, pollGeneration = 0;
-    function pollLimits(force){
-      if(document.hidden || (pollInFlight && !force)) return;
-      pollInFlight = true;
-      var generation = ++pollGeneration, enriched = false;
-      function accept(data, snapshotOnly) {
-        if(!data || generation !== pollGeneration || (snapshotOnly && enriched)) return;
-        var nextState = mergeLimitBudget(limitsState, data.weekly_budget, snapshotOnly);
-        try {
-          renderAllRateLimits(nextState);
-        } catch(error) {
-          console.error('Usage limits rendering failed', error);
-          showLimitsError();
-          return;
-        }
-        // Commit only a successfully rendered state. A render failure must not
-        // make the loading/error handler think a gauge is already on screen.
-        limitsState = nextState;
-        if(!snapshotOnly) enriched = true;
-      }
-      var firstSnapshot = window.tfLimitSnapshot;
-      window.tfLimitSnapshot = null;
-      var snapshot = (firstSnapshot || tfFetchLimits(snapshotUrl))
-        .then(function(data) { accept(data, true); })
-        .catch(function() { if(!limitsState) showLimitsError(); });
-      var detail = tfFetchLimits(rlUrl)
-        .then(function(data) { accept(data, false); })
-        .catch(function() { if(!limitsState) showLimitsError(); });
-      Promise.all([snapshot, detail]).finally(function() {
-        if(generation === pollGeneration) pollInFlight = false;
-      });
+    var limitsState = null, snapshotIdentity = null, snapshotPaintMinute = -1;
+    function acceptLimits(data, snapshotOnly) {
+      if(!data || !data.weekly_budget) throw new Error('bad limits payload');
+      var nextState = mergeLimitBudget(limitsState, data.weekly_budget, snapshotOnly);
+      try { renderAllRateLimits(nextState); }
+      catch(error) { showLimitsError(); throw error; }
+      limitsState = nextState;
     }
-    pollLimits();
-    // Single 60s poll — created once at boot (initRateLimits is no longer
-    // inside renderMode, which used to spawn one extra poller per render).
-    setInterval(pollLimits, 60000);
+    tfRefresh.add('limitSnapshots', {
+      interval:15000, minInterval:5000,
+      load:function(signal){
+        var firstSnapshot = window.tfLimitSnapshot;
+        window.tfLimitSnapshot = null;
+        return firstSnapshot || TokenfoldRefresh.fetchJSON(snapshotUrl, signal);
+      },
+      apply:function(data){
+        var identity = JSON.stringify(data && data.weekly_budget);
+        var minute = Math.floor(Date.now()/60000);
+        if(identity === snapshotIdentity && minute === snapshotPaintMinute) return;
+        acceptLimits(data, true);
+        if(snapshotIdentity !== null && snapshotIdentity !== identity) tfRefresh.request('limits');
+        snapshotIdentity = identity; snapshotPaintMinute = minute;
+      },
+      onState:function(state){ if(state === 'stale') showLimitsError(); }
+    });
+    tfRefresh.add('limits', {
+      interval:60000, minInterval:15000,
+      load:function(signal){ return TokenfoldRefresh.fetchJSON(rlUrl, signal); },
+      apply:function(data){ acceptLimits(data, false); },
+      onState:function(state){ if(state === 'stale') showLimitsError(); }
+    });
+    function pollLimits(){
+      tfRefresh.request('limitSnapshots', true); tfRefresh.request('limits', true);
+    }
 }
 
 /* ---- Single global keydown handler (was 1 listener per render) ----
@@ -6961,7 +7063,7 @@ function toggleSess(i){
   if(sid){ if(open)_openSessions.add(sid); else _openSessions.delete(sid); }
 }
 renderSessions();
-setInterval(renderSessions, 30000);
+// Relative ages are refreshed by the shared lifecycle clock.
 
 /* ---- Anthropic billing meter (enterprise) ----
    D.meter is the extra_usage block captured automatically from enterprise
@@ -7051,133 +7153,35 @@ renderBillingMeter();
   }
 })();
 
-/* ---- Auto-Refresh: SSE live stream, version poll as fallback ---- */
-// The server-sent event stream (/api/stats/stream) is the PRIMARY update
-// signal — it pushes a {version} the instant an ingest bumps the cache, so
-// the dashboard repaints within ~300ms instead of waiting up to 30s. The
-// version poll below is demoted to a FALLBACK: it runs only when SSE is
-// unavailable (no EventSource support, proxy strips streaming, endpoint 500).
-// Either path funnels through fetchAndApply(), the single render entry point,
-// so there is exactly one repaint code path regardless of trigger.
-(function(){
-  let knownVersion = D.version || 0;
-  let isFetching = false;
-  let pollTimer = null;
-  const POLL_INTERVAL = 30000;
-  let stream = null;
-  let streamRetryTimer = null;
-  const STREAM_RETRY_MS = 60000;
-
-  function showRefreshIndicator(text){
-    const el=document.getElementById('refreshIndicator');
-    if(!el)return;
-    el.textContent = text || 'DATA UPDATED';
-    el.classList.add('visible');
-    setTimeout(()=>el.classList.remove('visible'), 2500);
-    // also pulse the status square — it's where the eye already rests (P3-36)
-    const sq=document.getElementById('statusSq');
-    if(sq){ sq.classList.remove('status-sq--pulse'); void sq.offsetWidth; sq.classList.add('status-sq--pulse'); }
-  }
-
-  function fetchAndApply(){
-    // Don't refetch/repaint a hidden tab — an SSE frame can still arrive in the
-    // gap before the hide handler's stopStream() lands (onmessage has no guard
-    // of its own, unlike checkForUpdate). On show, checkForUpdate() repaints.
-    if(isFetching||document.hidden)return;
-    isFetching=true;
-    // Pin the refetch to THIS page's scope. A bare /api/stats falls back to the
-    // server's default scope and would repaint an enterprise view with personal
-    // data (scope bleed) on every live update.
-    fetch('/api/stats?scope='+encodeURIComponent(TF_SCOPE)).then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); }).then(data=>{
-      if(!data || !Array.isArray(data.model_breakdown) || !data.daily){ throw new Error('bad payload shape'); }
-      knownVersion=data.version||0;
-      // Update D in-place (const can't be reassigned)
-      Object.keys(data).forEach(k=>{D[k]=data[k];});
-      // Update derived globals
-      mb.length=0;
-      data.model_breakdown.forEach(m=>mb.push(m));
-      Object.keys(outPriceMap).forEach(k=>delete outPriceMap[k]);
-      Object.assign(outPriceMap, data.output_pricing||{});
-      MODEL_ORDER.length=0;
-      (data.model_order||[]).forEach(m=>MODEL_ORDER.push(m));
-      // Re-render
-      const mode=lsGet('dashMode')||'14d';
-      servedTimelineInvalidate();
-      renderMode(mode);
-      renderHeatmap();
-      renderHourly();
-      renderSessions();
-      renderBillingMeter();
-      // Update footer timestamp — target the label span only; rewriting all of
-      // .footer-right would destroy the ingest-key reveal button next to it.
-      const genLabel=document.getElementById('genTimeLabel');
-      if(genLabel&&data.generation_time)genLabel.textContent='Generated '+data.generation_time;
-      updateStatus();
-      showRefreshIndicator();
-    }).catch(()=>{
-      // Quiet inline error state — never silently swallow (house rules)
-      showRefreshIndicator('UPDATE FAILED \u00b7 RETRYING');
-    }).finally(()=>{isFetching=false;});
-  }
-
-  function checkForUpdate(){
-    if(isFetching||document.hidden)return;
-    fetch('/api/stats/version').then(r=>r.json()).then(data=>{
-      if(data.version!==knownVersion)fetchAndApply();
-    }).catch(()=>{});
-  }
-
-  function startPolling(){
-    stopPolling();
-    pollTimer=setInterval(checkForUpdate, POLL_INTERVAL);
-  }
-  function stopPolling(){
-    if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
-  }
-
-  function startStream(){
-    // Any pending reconnect is now superseded — this call re-establishes.
-    if(streamRetryTimer){clearTimeout(streamRetryTimer);streamRetryTimer=null;}
-    // No EventSource (old browser / disabled) → run purely on the poll.
-    if(typeof EventSource === 'undefined'){startPolling();return;}
-    stopStream();
-    stream=new EventSource('/api/stats/stream');
-    stream.onopen=function(){
-      // Stream is live and will drive updates; the poll would double-drive.
-      stopPolling();
-    };
-    stream.onmessage=function(e){
-      // Keepalive comments never reach onmessage, but guard the parse anyway:
-      // a malformed payload must be ignored, never throw and kill the handler.
-      try{
-        var v=JSON.parse(e.data).version;
-        if(v!==knownVersion)fetchAndApply();
-      }catch(err){/* ignore malformed frame */}
-    };
-    stream.onerror=function(){
-      // Stream dropped (network blip, proxy timeout, endpoint down). Fall back
-      // to polling immediately so updates keep flowing, and schedule a SINGLE
-      // reconnect. stopStream() clears any prior timer, so repeated onerror
-      // can't stack timers or leak EventSource instances.
-      stopStream();
-      startPolling();
-      streamRetryTimer=setTimeout(startStream, STREAM_RETRY_MS);
-    };
-  }
-  function stopStream(){
-    if(stream){stream.close();stream=null;}
-    if(streamRetryTimer){clearTimeout(streamRetryTimer);streamRetryTimer=null;}
-  }
-
-  document.addEventListener('visibilitychange',function(){
-    if(document.hidden){stopStream();stopPolling();}
-    else{checkForUpdate();startStream();}
-  });
-
-  // Prefer the live stream; startStream() falls back to startPolling() itself
-  // when EventSource is unavailable, and onerror falls back at runtime.
-  startStream();
-})();
+/* ---- One authoritative snapshot render; lifecycle owns transport/retry. ---- */
+function renderHeader(){
+  var range = document.querySelector('.date-range-text');
+  if(range) range.textContent = D.data_range || '';
+  var host = document.querySelector('.machine-pills');
+  if(!host) return;
+  var html = (D.machines || []).map(function(machine){
+    var active = Date.now()/1000 - ((D.machine_last_active || {})[machine] || 0) < 900;
+    return '<span class="machine-pill' + (active ? ' machine-pill--active' : '') + '">' + esc(machine) + '</span>';
+  }).join('') || '<span class="machine-pill" style="color:var(--gray-dim)">no machines</span>';
+  if(host._renderKey !== html){ host.innerHTML = html; host._renderKey = html; }
+}
+function applyDashboardData(data){
+  if(!data || !Array.isArray(data.model_breakdown) || !Array.isArray(data.daily)
+      || !data.today || !data.cards || typeof data.version !== 'number') throw new Error('bad stats payload');
+  // Replace, don't overlay: absence in an authoritative payload removes data.
+  Object.keys(D).forEach(function(key){ delete D[key]; });
+  Object.assign(D, data);
+  mb = D.model_breakdown;
+  outPriceMap = D.output_pricing || {};
+  MODEL_ORDER.length = 0;
+  (D.model_order || []).forEach(function(model){ MODEL_ORDER.push(model); });
+  renderMode(lsGet('dashMode') || '14d');
+  renderHeatmap(); renderHourly(); renderSessions(); renderBillingMeter();
+  renderPricing(); renderBenchmarks(); refreshEnvModal();
+  var genLabel = document.getElementById('genTimeLabel');
+  if(genLabel) genLabel.textContent = 'Generated ' + (D.generation_time || '');
+  updateStatus();
+}
 
 /* ---- Responsive: re-render charts on breakpoint cross + reflow all on resize ---- */
 (function(){
@@ -7267,13 +7271,8 @@ renderBillingMeter();
 })();
 
 /* ---- Spend History (windows + monthly cost, secondary analytics) ----
-   Fetched once at boot — this data moves slowly, so unlike /api/rate-limits
-   there is no poller. Chart.js is deferred, so both the fetch callback and a
-   DOMContentLoaded listener attempt the render; maybeRenderSpendHistory() is
-   idempotent (guarded by _spendHistoryRendered) so whichever fires last (or
-   both) just no-ops past the first successful paint. On fetch failure the
-   section stays hidden — it's secondary analytics, no error banner (that's
-   reserved for primary data per the house error rules). */
+   The shared lifecycle refreshes this bounded read once a minute and on
+   resume. Chart.js may arrive later; each new payload resets the render key. */
 var _spendHistoryData = null;
 var _spendHistoryRendered = false;
 
@@ -7452,6 +7451,10 @@ function maybeRenderSpendHistory(){
   if(_spendHistoryRendered || !hasChart() || !_spendHistoryData) return;
   var data = _spendHistoryData;
   var shownAny = false;
+  document.getElementById('spendHistoryWindowsCard').hidden = !(data.windows && data.windows.length);
+  document.getElementById('spendHistoryMonthlyCard').hidden = !(data.months && data.months.length);
+  if(!data.windows || !data.windows.length) dropChart('spendWindows');
+  if(!data.months || !data.months.length) dropChart('spendMonthly');
   if(data.windows && data.windows.length){
     renderSpendWindowsChart(data.windows);
     document.getElementById('spendHistoryWindowsCard').hidden = false;
@@ -7464,18 +7467,43 @@ function maybeRenderSpendHistory(){
   }
   if(shownAny){
     document.getElementById('spendHistorySection').style.display = 'block';
-    _spendHistoryRendered = true;
+  } else {
+    document.getElementById('spendHistorySection').style.display = 'none';
   }
+  _spendHistoryRendered = true;
 }
 
-(function initSpendHistory(){
-  var spendHistoryUrl = '/api/spend-history?scope=' + encodeURIComponent(TF_SCOPE);
-  fetch(spendHistoryUrl)
-    .then(function(r){ if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
-    .then(function(data){ _spendHistoryData = data; maybeRenderSpendHistory(); })
-    .catch(function(){ /* secondary analytics — stay hidden, no error banner */ });
-})();
+var spendHistoryUrl = '/api/spend-history?scope=' + encodeURIComponent(TF_SCOPE);
+tfRefresh.add('history', {
+  interval:60000, minInterval:1000,
+  load:function(signal){ return TokenfoldRefresh.fetchJSON(spendHistoryUrl, signal); },
+  apply:function(data){
+    if(!data || !Array.isArray(data.months)) throw new Error('bad history payload');
+    _spendHistoryData = data; _spendHistoryRendered = false; maybeRenderSpendHistory();
+  }
+});
 document.addEventListener('DOMContentLoaded', maybeRenderSpendHistory);
+if(TF_SCOPE === 'personal') tfRefresh.add('timeline', {
+  interval:60000, minInterval:15000,
+  load:function(signal){
+    servedTimelineInvalidate();
+    return Promise.all([servedFetch(servedDaysForMode(lsGet('dashMode') || '14d'), signal), servedFetch(400, signal)]);
+  },
+  apply:function(){
+    var mode = lsGet('dashMode') || '14d';
+    var data = _servedTL.cache[servedDaysForMode(mode)];
+    if(!data){ tfRefresh.request('timeline'); return; }
+    var section = document.getElementById('servedSection');
+    section.style.display = (data.models || []).length ? 'block' : 'none';
+    if((data.models || []).length){ renderServedStrips(data); renderServedLedger(data); }
+    var body = document.getElementById('sessionsBody'); if(body) body._renderKey = null;
+    renderSessions();
+  }
+});
+document.addEventListener('visibilitychange', function(){ if(document.hidden) servedTimelineInvalidate(); });
+window.addEventListener('offline', servedTimelineInvalidate);
+window.addEventListener('pagehide', servedTimelineInvalidate);
+tfRefresh.start();
 </script>
 </body>
 </html>

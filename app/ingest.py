@@ -813,7 +813,7 @@ def backfill(req: BackfillRequest):
     if days_to_roll:
         from .summarizer import summarize_days
         summarize_days(sorted(days_to_roll))
-    if days_to_roll or updated_titles:
+    if days_to_roll or updated_titles or updated_sig_headers:
         from .aggregator import trigger_eager_rebuild
         trigger_eager_rebuild()
 
@@ -881,6 +881,8 @@ async def store_usage(request: Request):
                 )
             from .extra_usage import record_meter_reading
             record_meter_reading(conn, machine, extra, time.time())
+            from .aggregator import trigger_eager_rebuild
+            trigger_eager_rebuild()
         return {"status": "ignored_no_limits", "updated_at": None,
                 "captured_extra_usage": captured}
 
@@ -903,7 +905,9 @@ async def store_usage(request: Request):
         from .limit_readings import record_limit_readings
         record_limit_readings(conn, usage, time.time(), "client")
 
-    # Rate limit data is now served from /api/rate-limits directly,
-    # no need to rebuild the full dashboard cache for usage updates.
+    # The monthly hero/billing meter also depends on this observation, not
+    # only the separately polled quota gauges.
+    from .aggregator import trigger_eager_rebuild
+    trigger_eager_rebuild()
 
     return {"status": "ok", "updated_at": now}
