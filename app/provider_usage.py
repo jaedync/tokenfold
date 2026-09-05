@@ -6,6 +6,7 @@ same Tokenfold, so without that key an enterprise Codex account on a work box
 overwrote the personal Codex snapshot (2026-09-02 incident).
 """
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -91,7 +92,7 @@ def store_provider_usage(machine, account_class, limits, now=None):
 
 
 def _minute_iso(epoch):
-    if not isinstance(epoch, (int, float)):
+    if not _finite(epoch) or not 0 <= epoch <= 10**11:
         return None
     minute = int(epoch // 60) * 60
     return datetime.fromtimestamp(minute, timezone.utc).isoformat().replace(
@@ -127,40 +128,97 @@ def _month_reported_costs(conn, now, scope):
     }
 
 
-def _fresh_windows(snapshot):
-    return [
-        {
-            "key": window.get("key"),
-            "label": window.get("label"),
-            "pct": window.get("pct"),
-            "resets_at": _minute_iso(window.get("resets_at_epoch")),
-            "window_seconds": window.get("window_seconds"),
+def _finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _codex_window_label(window):
+    """Codex primary is a slot, not a duration (Pro Lite uses a weekly primary)."""
+    seconds = window.get("window_seconds")
+    if _finite(seconds) and seconds > 0:
+        for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+            if seconds % size == 0:
+                return f"{int(seconds // size)}-{unit} limit"
+        return f"{int(seconds)}-second limit"
+    return {"primary": "Primary limit", "secondary": "Secondary limit"}.get(
+        window.get("key"), "Usage limit")
+
+
+def _window_reported_cost(conn, scope, provider, start, end):
+    """Reported API-equivalent spend only; never reprice missing provider costs."""
+    pred = sys.modules["app.config"].scope_predicate(scope)
+    providers = _PROVIDER_EVENT_IDS[provider]
+    slots = ",".join("?" for _ in providers)
+    row = conn.execute(
+        "SELECT SUM(CASE WHEN total IS NOT NULL THEN total ELSE "
+        "COALESCE(inp,0)+COALESCE(outp,0)+COALESCE(cr,0)+COALESCE(cw,0) END) cost "
+        "FROM (SELECT provider, request_id, MAX(reported_cost_total) total, "
+        "MAX(reported_cost_input) inp, MAX(reported_cost_output) outp, "
+        "MAX(reported_cost_cache_read) cr, MAX(reported_cost_cache_write) cw "
+        "FROM events WHERE type='assistant' AND source_client='pi-agent' "
+        f"AND provider IN ({slots}) AND {pred} AND request_id IS NOT NULL "
+        "AND ts_epoch>=? AND ts_epoch<? GROUP BY provider, request_id)",
+        (*providers, start, end),
+    ).fetchone()
+    return row["cost"]
+
+
+def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
+    result = []
+    observed = snapshot.get("observed_at_epoch")
+    for raw in snapshot.get("windows", []):
+        if not isinstance(raw, dict):
+            continue
+        reset, duration, pct = (raw.get(k) for k in (
+            "resets_at_epoch", "window_seconds", "pct"))
+        window = {
+            "key": raw.get("key"),
+            "label": _codex_window_label(raw) if provider == "codex" else raw.get("label"),
+            "pct": pct,
+            "resets_at": _minute_iso(reset),
+            "window_seconds": duration,
         }
-        for window in snapshot.get("windows", [])
-        if isinstance(window, dict)
-    ]
+        # Match spend to the exact sample, not now: transcript ingestion may
+        # continue for hours after a quota snapshot. Expired/future windows
+        # cannot explain that sample and must never yield a dollar projection.
+        if (include_costs and all(_finite(v) for v in (reset, duration, pct, observed))
+                and duration > 0 and 0 < pct <= 100 and reset > now
+                and reset - duration < observed <= now):
+            start = reset - duration
+            cost = _window_reported_cost(conn, scope, provider, start, observed)
+            if _finite(cost) and cost > 0:
+                window["window_cost"] = round(cost, 4)
+                window["window_start_epoch"] = int(start // 60) * 60
+                window["window_end_epoch"] = int(observed // 60) * 60
+                # Same 5% noise floor as the Anthropic gauges.
+                if pct >= 5:
+                    capacity = cost * 100 / pct
+                    window["estimated_capacity"] = round(capacity, 4)
+                    window["estimated_remaining"] = round(max(0, capacity - cost), 4)
+        result.append(window)
+    return result
 
 
-def provider_usage_block(scope, now=None):
+def provider_usage_block(scope, now=None, *, conn=None, include_costs=True):
     """Build one scope's provider block, omitting stale snapshots."""
     now = now if now is not None else time.time()
-    conn = get_conn()
+    conn = conn if conn is not None else get_conn()
     snapshots = _load_scopes(conn).get(scope, {})
-    costs = _month_reported_costs(conn, now, scope)
+    costs = _month_reported_costs(conn, now, scope) if include_costs else {}
     result = {}
 
     for provider in _PROVIDER_EVENT_IDS:
         snapshot = snapshots.get(provider) or {}
         observed = snapshot.get("observed_at_epoch")
-        fresh = isinstance(observed, (int, float)) and now - observed <= MAX_SNAPSHOT_AGE_S
-        windows = _fresh_windows(snapshot) if fresh else []
+        fresh = _finite(observed) and -MAX_CLOCK_SKEW_S <= now - observed <= MAX_SNAPSHOT_AGE_S
+        windows = _fresh_windows(snapshot, provider, now, conn, scope, include_costs) if fresh else []
         cost = costs.get(provider, 0)
         if not windows and cost <= 0:
             continue
         plan = snapshot.get("plan") if fresh else None
         result[provider] = {
             "windows": windows,
-            "month_cost": cost,
+            **({"month_cost": cost} if include_costs else {}),
             **({"updated_at_epoch": observed} if fresh else {}),
             **({"plan": plan} if isinstance(plan, str) else {}),
         }

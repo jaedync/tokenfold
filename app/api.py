@@ -10,13 +10,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .aggregator import build_dashboard_data, get_cache_version
 from .auth import require_dashboard_auth
 from .config import IDLE_THRESHOLD_S
 from .cost_windows import (ANTHROPIC_ONLY_SQL, compute_window_cost,
                           compute_window_cost_by_model)
-from .db import get_conn
+from .db import read_conn
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
@@ -144,8 +145,92 @@ async def stats(scope: Optional[str] = Query(default=None)):
     return JSONResponse(content=data)
 
 
+def _oauth_snapshot(usage, updated_at):
+    """Shared quota-only shape for first paint and enriched responses."""
+    extra = usage.get("extra_usage") or {}
+
+    # Normalize ONCE (limits[] primary, legacy dicts fallback):
+    # the main weekly/5h gauges AND the buckets list all read the
+    # merged view, so a limits[]-only payload (legacy dicts
+    # nulled, as prod already does per-model) still populates
+    # every gauge. resets_at leaves the normalizer RAW — scrub
+    # (fail-closed) at this boundary.
+    normalized = normalize_usage_buckets(usage)
+    by_key = {b["key"]: b for b in normalized}
+    seven_day = by_key.get("seven_day") or {}
+    five_hour = by_key.get("five_hour") or {}
+
+    buckets = [
+        {
+            "key": b["key"],
+            "label": b["label"],
+            "pct": b["utilization"],
+            "resets_at": _scrub_to_minute_or_none(b["resets_at"]),
+        }
+        for b in normalized
+    ]
+
+    oauth = {
+        "weekly_pct": seven_day.get("utilization", 0),
+        "weekly_resets_at":
+            _scrub_to_minute_or_none(seven_day.get("resets_at")) or "",
+        "five_hour_pct": five_hour.get("utilization", 0),
+        "five_hour_resets_at":
+            _scrub_to_minute_or_none(five_hour.get("resets_at")) or "",
+        "buckets": buckets,
+        "extra_usage": {
+            "enabled": extra.get("is_enabled", False),
+            "monthly_limit_cents": extra.get("monthly_limit", 0),
+            "used_cents": extra.get("used_credits", 0),
+            "pct": extra.get("utilization", 0),
+        } if extra else None,
+        "updated_at": updated_at,
+    }
+    if updated_at:
+        try:
+            oauth["updated_at_epoch"] = datetime.fromisoformat(
+                updated_at.replace("Z", "+00:00")
+            ).timestamp()
+        except (ValueError, TypeError):
+            pass
+
+    return oauth, by_key
+
+
+@router.get("/api/rate-limit-snapshots", dependencies=[Depends(require_dashboard_auth)])
+def rate_limit_snapshots(scope: Optional[str] = Query(default=None)):
+    """Quota-only first paint: meta reads, never transcript scans or network I/O."""
+    effective = _resolve_scope(scope)
+    from .provider_usage import provider_usage_block
+    import sys
+    with read_conn() as conn:
+        budget = {"providers": provider_usage_block(
+            effective, conn=conn, include_costs=False)}
+        if effective == "personal" and sys.modules["app.config"].LOCKED_SCOPE != "enterprise":
+            row = conn.execute("SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
+            if row:
+                try:
+                    stored = json.loads(row["value"])
+                    budget["oauth"], _ = _oauth_snapshot(
+                        stored.get("data", {}), stored.get("updated_at", ""))
+                except (ValueError, KeyError, TypeError):
+                    pass
+        return JSONResponse(content={"weekly_budget": budget})
+
+
 @router.get("/api/rate-limits", dependencies=[Depends(require_dashboard_auth)])
 async def rate_limits(scope: Optional[str] = Query(default=None)):
+    """Scope-filtered quota gauges enriched with window spend and pacing."""
+    effective = _resolve_scope(scope)
+    return await run_in_threadpool(_rate_limits_response, effective)
+
+
+def _rate_limits_response(scope):
+    with read_conn() as conn:
+        return _build_rate_limits(scope, conn)
+
+
+def _build_rate_limits(scope, conn):
     """Return scope-filtered weekly spend over a rolling 7-day window.
 
     Defaults to enterprise scope. Pass ?scope=personal for personal view.
@@ -175,7 +260,6 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     import sys
     pred = sys.modules["app.config"].scope_predicate(effective)
-    conn = get_conn()
     now = time.time()
     week_start_epoch = now - 7 * 24 * 3600
     window_end = now
@@ -286,52 +370,10 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
                 usage = stored.get("data", {})
                 updated_at = stored.get("updated_at", "")
 
-                extra = usage.get("extra_usage") or {}
-
-                # Normalize ONCE (limits[] primary, legacy dicts fallback):
-                # the main weekly/5h gauges AND the buckets list all read the
-                # merged view, so a limits[]-only payload (legacy dicts
-                # nulled, as prod already does per-model) still populates
-                # every gauge. resets_at leaves the normalizer RAW — scrub
-                # (fail-closed) at this boundary.
-                normalized = normalize_usage_buckets(usage)
-                by_key = {b["key"]: b for b in normalized}
+                oauth_block, by_key = _oauth_snapshot(usage, updated_at)
                 seven_day = by_key.get("seven_day") or {}
                 five_hour = by_key.get("five_hour") or {}
-
-                buckets = [
-                    {
-                        "key": b["key"],
-                        "label": b["label"],
-                        "pct": b["utilization"],
-                        "resets_at": _scrub_to_minute_or_none(b["resets_at"]),
-                    }
-                    for b in normalized
-                ]
-
-                oauth_block = {
-                    "weekly_pct": seven_day.get("utilization", 0),
-                    "weekly_resets_at":
-                        _scrub_to_minute_or_none(seven_day.get("resets_at")) or "",
-                    "five_hour_pct": five_hour.get("utilization", 0),
-                    "five_hour_resets_at":
-                        _scrub_to_minute_or_none(five_hour.get("resets_at")) or "",
-                    "buckets": buckets,
-                    "extra_usage": {
-                        "enabled": extra.get("is_enabled", False),
-                        "monthly_limit_cents": extra.get("monthly_limit", 0),
-                        "used_cents": extra.get("used_credits", 0),
-                        "pct": extra.get("utilization", 0),
-                    } if extra else None,
-                    "updated_at": updated_at,
-                }
-                if updated_at:
-                    try:
-                        oauth_block["updated_at_epoch"] = datetime.fromisoformat(
-                            updated_at.replace("Z", "+00:00")
-                        ).timestamp()
-                    except (ValueError, TypeError):
-                        pass
+                buckets = oauth_block["buckets"]
 
                 # Sub-window burn / ETA / pace / series per bucket (D2).
                 # Bucket-name-generic: every distinct bucket historized in the
@@ -463,7 +505,7 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
     # class has reported.
     try:
         from .provider_usage import provider_usage_block
-        providers = provider_usage_block(effective, now)
+        providers = provider_usage_block(effective, now, conn=conn)
         if providers:
             weekly_budget["providers"] = providers
     except Exception as e:

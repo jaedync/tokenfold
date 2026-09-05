@@ -70,9 +70,9 @@ class MonthlyBudgetTemplateSourceTest(unittest.TestCase):
         self.assertIn("function commitBudget(", self.tpl)
         idx = self.tpl.index("function commitBudget(")
         body = self.tpl[idx:idx + 700]
-        self.assertIn("pollLimits();", body)
+        self.assertIn("pollLimits(true);", body)
         # The shared poll itself feeds renderAllRateLimits.
-        self.assertIn("renderAllRateLimits(data.weekly_budget)", self.tpl)
+        self.assertIn("renderAllRateLimits(nextState)", self.tpl)
 
     def test_edit_supports_escape_cancel_and_clear(self):
         self.assertIn("wireMonthlyBudgetEdit", self.tpl)

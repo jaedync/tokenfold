@@ -35,6 +35,19 @@
 <!-- Self-hosted Chart.js (no CDN single-point-of-failure). `defer` keeps it
      off the critical path; the inline boot script guards `typeof Chart` so
      tables/heatmaps still render if this file ever fails to load. -->
+<!-- Start quota I/O before parsing the large dashboard payload or building charts.
+     The server-resolved scope includes cookie/locked-scope policy. -->
+<script>
+function tfFetchLimits(url) {
+  var controller = new AbortController();
+  var timeout = setTimeout(function() { controller.abort(); }, 30000);
+  return fetch(url, { signal: controller.signal })
+    .then(function(r) { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
+    .finally(function() { clearTimeout(timeout); });
+}
+window.tfLimitSnapshot = tfFetchLimits('/api/rate-limit-snapshots?scope=' + encodeURIComponent({{ scope|tojson }}))
+  .catch(function() { return null; });
+</script>
 <script defer src="/static/chart.umd.min.js"></script>
 <style>
 /* ============================================================
@@ -4968,6 +4981,48 @@ function renderMode(mode) {
 }
 
   /* ── Rate limits section secondary detail (async from /api/rate-limits) ── */
+// A quota sample and its derived dollars are one unit: retain enrichment only
+// for the SAME sample; never pair a new percent with an old window's spend.
+function mergeLimitBudget(previous, incoming, snapshotOnly) {
+  previous = previous || {};
+  // Only the cheap feed is partial; omissions in full detail are authoritative
+  // (for example a cleared monthly budget or an expired window estimate).
+  var result = Object.assign({}, snapshotOnly ? previous : {}, incoming);
+  function mergeSample(old, next) {
+    if(!old) return next;
+    var oldAt = old.updated_at_epoch || 0, nextAt = next.updated_at_epoch || 0;
+    if(oldAt > nextAt) return old;
+    if(oldAt !== nextAt || !snapshotOnly) return next;
+    var merged = Object.assign({}, old, next);
+    ['windows', 'buckets'].forEach(function(field) {
+      if(!next[field]) return;
+      merged[field] = next[field].map(function(win) {
+        var prior = (old[field] || []).find(function(w) {
+          return w.key === win.key && w.pct === win.pct && w.resets_at === win.resets_at
+            && w.window_seconds === win.window_seconds;
+        });
+        return Object.assign({}, prior || {}, win);
+      });
+    });
+    return merged;
+  }
+  result.providers = {};
+  Object.keys(incoming.providers || {}).forEach(function(key) {
+    result.providers[key] = mergeSample((previous.providers || {})[key], incoming.providers[key]);
+  });
+  if(snapshotOnly) {
+    // The cheap feed cannot discover cost-only providers (e.g. Zen).
+    Object.keys(previous.providers || {}).forEach(function(key) {
+      if(!result.providers[key] && previous.providers[key].month_cost > 0) {
+        result.providers[key] = { windows: [], month_cost: previous.providers[key].month_cost };
+      }
+    });
+  }
+  if(incoming.oauth) result.oauth = mergeSample(previous.oauth, incoming.oauth);
+  else delete result.oauth;
+  return result;
+}
+
 function initRateLimits(){
     var section = document.getElementById('rateLimitsSection');
     var pacePanel = document.getElementById('weekPacePanel');
@@ -5441,7 +5496,7 @@ function initRateLimits(){
       if(!res.ok) { mbStatus((res.body && res.body.detail) || 'save failed'); return; }
       // Re-fetch rate-limits so the card re-renders with fresh pacing math —
       // reuse the section's single pollLimits() fetch (no second poller URL).
-      pollLimits();
+      pollLimits(true);
     })
     .catch(function(){ mbStatus('save failed'); });
   }
@@ -5515,6 +5570,32 @@ function initRateLimits(){
       + '</div>' + content + '</section>';
   }
 
+    // Dollar-budget stats shared by every limit gauge: the implied window
+    // ceiling is one point of extrapolation (spend ÷ pct), so it's gated
+    // behind pct >= 5 — the API reports coarse percents, and dividing by a
+    // 1-2% reading turns quantization noise into a 2x budget swing. Below
+    // the gate only the 'spent' cell renders. All figures are estimates in
+    // API-equivalent dollars of THIS window's usage mix (cache-heavy vs
+    // fresh-token windows imply different ceilings), hence every '~'.
+    function budgetStats(cost, pct) {
+      var stats = [];
+      if(typeof cost !== 'number' || cost <= 0) return stats;
+      stats.push({ value: fC(cost), label: 'spent · this window' });
+      if(typeof pct === 'number' && pct >= 5) {
+        var budget = (cost / pct) * 100;
+        var remPct = Math.max(0, 100 - pct);
+        var remColor = remPct <= 15 ? 'var(--red)'
+          : remPct <= 35 ? 'var(--yellow-text)' : null;
+        stats.push({ value: '~' + fC(budget), label: 'est. window budget' });
+        stats.push({
+          value: '~' + fC(Math.max(0, budget - cost)),
+          label: Math.round(remPct) + '% budget left',
+          color: remColor
+        });
+      }
+      return stats;
+    }
+
   function buildReportedProviderGroups(providers) {
     var names = { 'codex': 'Codex', 'opencode-go': 'OpenCode Go',
       'opencode-zen': 'OpenCode Zen' };
@@ -5543,8 +5624,15 @@ function initRateLimits(){
           var resetMs = win.resets_at ? new Date(win.resets_at).getTime() : NaN;
           var reset = isNaN(resetMs) ? '' : 'resets ' + new Date(resetMs).toLocaleString([], {
             weekday: 'short', hour: 'numeric', minute: '2-digit' });
+          var current = resetMs > Date.now() && provider.updated_at_epoch <= Date.now() / 1000
+            && Date.now() / 1000 - provider.updated_at_epoch <= 86400;
+          var providerStats = current ? budgetStats(win.window_cost, pct) : [];
+          if(providerStats.length) providerStats[0].label = 'API-equivalent · this window';
+          if(providerStats.length > 1) providerStats[1].label = 'est. window capacity';
           content += buildGauge(esc(win.label || win.key || 'Limit'), pct, esc(reset),
-            pace.expected, { projectedPct: pace.projected, ticks: pace.ticks });
+            pace.expected, { projectedPct: pace.projected, ticks: pace.ticks,
+              stats: providerStats,
+              note: providerStats.length ? 'Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : null });
         }
         content += '</div>';
       }
@@ -5665,32 +5753,6 @@ function initRateLimits(){
       if(days > 0) return days + 'd ' + hours + 'h ago';
       if(hours > 0) return hours + 'h ' + mins + 'm ago';
       return mins + 'm ago';
-    }
-
-    // Dollar-budget stats shared by every limit gauge: the implied window
-    // ceiling is one point of extrapolation (spend ÷ pct), so it's gated
-    // behind pct >= 5 — the API reports coarse percents, and dividing by a
-    // 1-2% reading turns quantization noise into a 2x budget swing. Below
-    // the gate only the 'spent' cell renders. All figures are estimates in
-    // API-equivalent dollars of THIS window's usage mix (cache-heavy vs
-    // fresh-token windows imply different ceilings), hence every '~'.
-    function budgetStats(cost, pct) {
-      var stats = [];
-      if(typeof cost !== 'number' || cost <= 0) return stats;
-      stats.push({ value: fC(cost), label: 'spent · this window' });
-      if(typeof pct === 'number' && pct >= 5) {
-        var budget = (cost / pct) * 100;
-        var remPct = Math.max(0, 100 - pct);
-        var remColor = remPct <= 15 ? 'var(--red)'
-          : remPct <= 35 ? 'var(--yellow-text)' : null;
-        stats.push({ value: '~' + fC(budget), label: 'est. window budget' });
-        stats.push({
-          value: '~' + fC(Math.max(0, budget - cost)),
-          label: Math.round(remPct) + '% budget left',
-          color: remColor
-        });
-      }
-      return stats;
     }
 
     // D3/C4: sub-window burn rate + ETA + pace verdict + reset annotation for
@@ -6680,12 +6742,38 @@ function initRateLimits(){
     // Fetch rate limits from API (secondary detail only — month hero already shown).
     // Pass current scope so the server can gate oauth fields to personal scope.
     var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
-    function pollLimits(){
-      if(document.hidden) return;
-      fetch(rlUrl)
-        .then(function(r) { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
-        .then(function(data) { renderAllRateLimits(data.weekly_budget); })
-        .catch(function() { showLimitsError(); });
+    var snapshotUrl = '/api/rate-limit-snapshots?scope=' + encodeURIComponent(TF_SCOPE);
+    var limitsState = null, pollInFlight = false, pollGeneration = 0;
+    function pollLimits(force){
+      if(document.hidden || (pollInFlight && !force)) return;
+      pollInFlight = true;
+      var generation = ++pollGeneration, enriched = false;
+      function accept(data, snapshotOnly) {
+        if(!data || generation !== pollGeneration || (snapshotOnly && enriched)) return;
+        var nextState = mergeLimitBudget(limitsState, data.weekly_budget, snapshotOnly);
+        try {
+          renderAllRateLimits(nextState);
+        } catch(error) {
+          console.error('Usage limits rendering failed', error);
+          showLimitsError();
+          return;
+        }
+        // Commit only a successfully rendered state. A render failure must not
+        // make the loading/error handler think a gauge is already on screen.
+        limitsState = nextState;
+        if(!snapshotOnly) enriched = true;
+      }
+      var firstSnapshot = window.tfLimitSnapshot;
+      window.tfLimitSnapshot = null;
+      var snapshot = (firstSnapshot || tfFetchLimits(snapshotUrl))
+        .then(function(data) { accept(data, true); })
+        .catch(function() { if(!limitsState) showLimitsError(); });
+      var detail = tfFetchLimits(rlUrl)
+        .then(function(data) { accept(data, false); })
+        .catch(function() { if(!limitsState) showLimitsError(); });
+      Promise.all([snapshot, detail]).finally(function() {
+        if(generation === pollGeneration) pollInFlight = false;
+      });
     }
     pollLimits();
     // Single 60s poll — created once at boot (initRateLimits is no longer
@@ -6745,8 +6833,8 @@ function reserveLimitsSpace(){
 }
 function boot(){
   reserveLimitsSpace();
-  setMode(lsGet('dashMode') || '14d');
   initRateLimits();
+  setMode(lsGet('dashMode') || '14d');
   bootCharts(); // no-op under defer; covers an already-present Chart global
 }
 boot();
