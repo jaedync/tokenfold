@@ -373,6 +373,23 @@ def get_conn() -> sqlite3.Connection:
 
 
 @contextmanager
+def read_conn():
+    """Independent read-only connection for concurrent quota HTTP requests.
+
+    SQLite serializes statements on a connection; sharing the ingest connection
+    would leave even a tiny meta lookup waiting behind a long event aggregation.
+    Startup owns schema initialization, not these latency-sensitive readers.
+    """
+    conn = sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro",
+                           uri=True, timeout=5, cached_statements=0)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
 def write_txn(conn: sqlite3.Connection | None = None):
     """One write transaction at a time on the shared connection.
 
