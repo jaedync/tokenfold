@@ -72,7 +72,8 @@ class MonthlyBudgetTemplateSourceTest(unittest.TestCase):
         body = self.tpl[idx:idx + 700]
         self.assertIn("pollLimits(true);", body)
         # The shared poll itself feeds renderAllRateLimits.
-        self.assertIn("renderAllRateLimits(nextState)", self.tpl)
+        self.assertIn("paint(nextState, remembered.memory)", self.tpl)
+        self.assertIn("renderAllRateLimits(state, { memory: memory", self.tpl)
 
     def test_edit_supports_escape_cancel_and_clear(self):
         self.assertIn("wireMonthlyBudgetEdit", self.tpl)

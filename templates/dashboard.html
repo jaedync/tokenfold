@@ -820,6 +820,32 @@ button { -webkit-appearance: none; appearance: none; font: inherit; }
   color: var(--gray-dim);
 }
 
+/* Per-provider observation / detail / transport status. Always rendered as one
+   reserved single line (ellipsis, never wraps) so a pending or stale state
+   changes words, not layout. */
+.usage-limit-provider-status {
+  padding: 0 2rem 0.6rem;
+  background: var(--white);
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+  color: var(--gray-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-limit-provider-status--pending { color: var(--yellow-text); font-weight: 700; }
+.usage-limit-provider-status--stale,
+.usage-limit-provider-status--error { color: var(--red); font-weight: 700; }
+
+/* Detail cells carried from the previous coherent observation (dated in the
+   provider status) or reserved while the matching detail is pending. */
+.rate-gauge-stats[data-detail-state="previous"] .rate-gauge-stat-value,
+.rate-gauge-stats[data-detail-state="pending"] .rate-gauge-stat-value { color: var(--gray-dim); }
+
 .rate-limits-grid {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -3264,6 +3290,7 @@ th[data-info]:focus::after { opacity: 1; }
 <div id="hmTip"></div>
 
 <script src="/static/dashboard-refresh.js?v=1"></script>
+<script src="/static/dashboard-dom.js?v=1"></script>
 <script type="application/json" id="tf-data">{{ data_json|safe }}</script>
 <script>
 /* ============================================================
@@ -5079,7 +5106,13 @@ function mergeLimitBudget(previous, incoming, snapshotOnly) {
     if(!old) return next;
     var oldAt = old.updated_at_epoch || 0, nextAt = next.updated_at_epoch || 0;
     if(oldAt > nextAt) return old;
-    if(oldAt !== nextAt || !snapshotOnly) return next;
+    if(oldAt !== nextAt || !snapshotOnly) {
+      // A month total is integrated independently of any quota sample, so a
+      // newer bare snapshot keeps it; the sample's own dollars are still refused.
+      if(snapshotOnly && typeof old.month_cost === 'number' && next.month_cost === undefined)
+        return Object.assign({}, next, { month_cost: old.month_cost });
+      return next;
+    }
     var merged = Object.assign({}, old, next);
     ['windows', 'buckets'].forEach(function(field) {
       if(!next[field]) return;
@@ -5105,9 +5138,36 @@ function mergeLimitBudget(previous, incoming, snapshotOnly) {
       }
     });
   }
-  if(incoming.oauth) result.oauth = mergeSample(previous.oauth, incoming.oauth);
-  else delete result.oauth;
+  // Managed ownership is one-way, independent of timestamps and temporary
+  // omission. Legacy receipt clocks may be newer than Meridian observations.
+  result._claudeManaged = !!(previous._claudeManaged
+    || quotaSource(previous.oauth) === 'meridian-oauth'
+    || quotaSource(incoming.oauth) === 'meridian-oauth');
+  if(incoming.oauth) {
+    if(result._claudeManaged && quotaSource(incoming.oauth) !== 'meridian-oauth') {
+      if(quotaSource(previous.oauth) === 'meridian-oauth') result.oauth = previous.oauth;
+      else delete result.oauth;
+    } else result.oauth = sameQuotaSource(previous.oauth, incoming.oauth)
+      ? mergeSample(previous.oauth, incoming.oauth) : incoming.oauth;
+  } else delete result.oauth;
   return result;
+}
+// A sample's observation time (seconds), or null when it has none.
+function sampleAt(sample) {
+  return sample && typeof sample.updated_at_epoch === 'number' && isFinite(sample.updated_at_epoch)
+    ? sample.updated_at_epoch : null;
+}
+
+function quotaSource(sample) { return sample && sample.source || 'legacy'; }
+function sameQuotaSource(a, b) { return quotaSource(a) === quotaSource(b); }
+function pendingDetailEntry(previous) {
+  if(!previous) return null;
+  var cells = {};
+  Object.keys(previous.cells || {}).forEach(function(key) {
+    cells[key] = previous.cells[key].map(function() { return {value:'\u2026', label:'detail pending'}; });
+  });
+  // Keep only neutral slot structure, never the other account's observations.
+  return {at:null, sample:null, cells:cells};
 }
 
 function initRateLimits(){
@@ -5115,14 +5175,22 @@ function initRateLimits(){
     var pacePanel = document.getElementById('weekPacePanel');
     if(!section || !pacePanel) return;
 
-    // Staleness ticker id — lives OUTSIDE renderAllRateLimits so the 60s poll
-    // can clear the previous interval before creating a new one (no leak).
-    var staleIntervalId = null;
-    // Pace-chart instance persists across polls (one canvas, one chart).
+    // Pace-chart instance persists across polls (one canvas, one chart) and is
+    // updated in place through upsertChart; the draw plugin reads mutable
+    // state so a data refresh never has to destroy the open chart.
     var usageChart = null;
+    var paceDraw = { workBands: [], dayCostBars: [], dayCostBarsMax: 0, dayCostAvg: null,
+                     resetMarkers: [], nowExact: -1, totalHours: 168 };
+    var buildPaceChart = null;   // latest builder; the trigger click is delegated once below
+    var paceChartSource = null;  // the enriched state the open chart currently shows
 
-    function renderAllRateLimits(wb) {
+    // view: { memory, full, transport } — the last coherent detail per provider,
+    // the last enriched response (chart/month data) and quota feed health.
+    function renderAllRateLimits(wb, view) {
     if(!wb) return; // month hero still stands; just leave pace panel empty
+    view = view || {};
+    var memory = view.memory || { oauth: null, providers: {} };
+    var transport = view.transport || {};
 
     var grid = document.getElementById('rateLimitsGrid');
 
@@ -5140,22 +5208,28 @@ function initRateLimits(){
     } else {
       pacePanel.style.display = '';
       if (grid) grid.style.gridTemplateColumns = '';
-      var statsHtml = '<div class="rate-gauge-stats">'
-        + '<div class="rate-gauge-stat">'
-        + '<div class="rate-gauge-stat-value">' + fHM(weekActiveMin) + '</div>'
-        + '<div class="rate-gauge-stat-label">active · 7d</div>'
-        + '</div>'
-        + '</div>';
+      // Only the enriched response measures active time; a first snapshot
+      // must not paint a false "0m" cell.
+      var statsHtml = typeof wb.week_active_s === 'number'
+        ? '<div class="rate-gauge-stats" data-key="stats">'
+          + '<div class="rate-gauge-stat">'
+          + '<div class="rate-gauge-stat-value">' + fHM(weekActiveMin) + '</div>'
+          + '<div class="rate-gauge-stat-label">active · 7d</div>'
+          + '</div>'
+          + '</div>'
+        : '';
 
-      var chartBtnHtml = '<button class="rate-gauge-chart-btn" id="usageChartTrigger" title="View 7-day pace">'
-        + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
-        + '</button>';
+      var chartBtnHtml = typeof wb.week_active_s === 'number'
+        ? '<button class="rate-gauge-chart-btn" id="usageChartTrigger" data-key="chart" title="View 7-day pace">'
+          + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
+          + '</button>'
+        : '';
 
-      pacePanel.innerHTML = '<div class="rate-gauge-head">'
+      TokenfoldDom.patchHTML(pacePanel, '<div class="rate-gauge-head" data-key="head">'
         + '<span class="rate-gauge-label">7-Day Pace' + chartBtnHtml + '</span>'
         + '<span class="rate-gauge-reset">rolling 7 days</span>'
         + '</div>'
-        + statsHtml;
+        + statsHtml);
     }
 
   // Color based on pace (usage vs expected position in window). Shared by the
@@ -5224,6 +5298,10 @@ function initRateLimits(){
   // reported providers, and the enterprise monthly card's markup twin).
   function buildGauge(label, pct, resetLabel, expectedPct, opts) {
     opts = opts || {};
+    // A window that is stale, expired or has no valid observation time cannot
+    // carry pace inference: no expected marker, no projection.
+    var state = opts.state || 'current';
+    if(state !== 'current') { expectedPct = null; opts.projectedPct = null; }
     var clamp = Math.min(pct, 100);
     // fillColor pins a fixed identity color (per-model rows) instead of
     // the pace-reactive palette; the over-expected overflow segment
@@ -5271,7 +5349,9 @@ function initRateLimits(){
 
     var statsHtml2 = '';
     if(opts.stats && opts.stats.length) {
-      statsHtml2 = '<div class="rate-gauge-stats">';
+      statsHtml2 = '<div class="rate-gauge-stats" data-key="stats" data-detail-state="' + (opts.detailState || 'current') + '"'
+        + (opts.detailState === 'previous' ? ' title="Detail from the previous observation; a matching update is pending"' : '')
+        + (opts.detailState === 'pending' ? ' title="Detail for this observation is pending"' : '') + '>';
       for(var si = 0; si < opts.stats.length; si++) {
         var st = opts.stats[si];
         var valStyle = st.color ? ' style="color:' + st.color + '"' : '';
@@ -5301,7 +5381,7 @@ function initRateLimits(){
 
     var chartBtnHtml2 = '';
     if(opts.chartBtn) {
-      chartBtnHtml2 = '<button class="rate-gauge-chart-btn" id="oauthChartTrigger" title="View usage pace chart">'
+      chartBtnHtml2 = '<button class="rate-gauge-chart-btn" id="oauthChartTrigger" data-key="chart" title="View usage pace chart">'
         + '<svg viewBox="0 0 16 16"><polyline points="1,12 5,6 9,9 15,2"/></svg>'
         + '</button>';
     }
@@ -5316,19 +5396,27 @@ function initRateLimits(){
     var trendNoteHtml = opts.trendNote
       ? '<div class="rate-gauge-projection">' + opts.trendNote + '</div>' : '';
 
-    return '<div class="rate-gauge"'
+    // Only a current window describes remaining quota; the others say what
+    // the percentage actually is: a past reading or an ended window.
+    var remainingHtml = state === 'expired' ? 'window ended · not current'
+      : state === 'stale' ? 'as of ' + (opts.observedAgo || 'last observation') + ' · not current'
+      : state === 'invalid' || state === 'unverified' ? 'observation time unverified · not current'
+      : Math.max(0, 100 - Math.round(pct)) + '% remaining';
+
+    return '<div class="rate-gauge" data-window-state="' + state + '"'
+      + (opts.key ? ' data-key="' + esc(opts.key) + '"' : '')
       + (opts.rootStyle ? ' style="' + opts.rootStyle + '"' : '') + '>'
-      + '<div class="rate-gauge-head">'
+      + '<div class="rate-gauge-head" data-key="head">'
       + '<span class="rate-gauge-label">' + label + chartBtnHtml2 + '</span>'
       + (resetLabel ? '<span class="rate-gauge-reset">' + resetLabel + '</span>' : '')
       + '</div>'
-      + '<div class="rate-gauge-track" style="' + (hasTickLabels ? 'margin-bottom:10px' : '') + '">'
+      + '<div class="rate-gauge-track" data-key="track" style="' + (hasTickLabels ? 'margin-bottom:10px' : '') + '">'
       + fillHtml
       + innerHtml
       + '</div>'
-      + '<div class="rate-gauge-foot">'
+      + '<div class="rate-gauge-foot" data-key="foot">'
       + '<span class="rate-gauge-pct" style="color:' + textColorFor(color) + '">' + Math.round(pct) + '%</span>'
-      + '<span class="rate-gauge-remaining">' + Math.max(0, 100 - Math.round(pct)) + '% remaining</span>'
+      + '<span class="rate-gauge-remaining">' + remainingHtml + '</span>'
       + '</div>'
       + noteHtml
       + trendNoteHtml
@@ -5413,6 +5501,9 @@ function initRateLimits(){
     if(!mb && !enterpriseWritable) return '';
 
     if(!mb) {
+      // Only the enriched response can say whether a budget exists; a first
+      // snapshot must not flash "Set monthly budget…" over a budget that is set.
+      if(typeof wb.updated_at_epoch !== 'number') return '';
       // Empty-state affordance (enterprise, no budget yet). Click to set.
       return '<div class="rate-gauge" style="border-top:var(--border)">'
         + '<div class="rate-gauge-head">'
@@ -5644,17 +5735,124 @@ function initRateLimits(){
     };
   }
 
-  function providerGroup(providerKey, providerName, content, plan) {
+  function providerGroup(providerKey, providerName, content, plan, status) {
     // plan is the provider's own label ("plus", "enterprise"); a personal
     // view showing "enterprise" is the tell for a misclassified fleet box.
     var label = 'Usage limits' + (plan ? ' \u00b7 ' + esc(String(plan)) : '');
+    status = status || { text: '', cls: '' };
     return '<section class="usage-limit-provider" data-provider="' + esc(providerKey) + '"'
-      + ' aria-label="' + esc(providerName) + ' usage limits">'
-      + '<div class="usage-limit-provider-head">'
+      + ' data-key="' + esc(providerKey) + '" aria-label="' + esc(providerName) + ' usage limits">'
+      + '<div class="usage-limit-provider-head" data-key="head">'
       + '<span class="usage-limit-provider-mark" aria-hidden="true"></span>'
       + '<h3 class="usage-limit-provider-name">' + esc(providerName) + '</h3>'
       + '<span class="usage-limit-provider-label">' + label + '</span>'
-      + '</div>' + content + '</section>';
+      + '</div>'
+      + '<div class="usage-limit-provider-status' + (status.cls ? ' usage-limit-provider-status--' + status.cls : '')
+      + '" data-key="status" role="status">' + esc(status.text) + '</div>'
+      + content + '</section>';
+  }
+
+  /* ── Observation freshness shared by every provider gauge ──
+     Provider observation time is the sample's own timestamp, never the time a
+     GET succeeded. Inference (capacity, remaining, pace) is valid only within
+     STALE_S of a valid observation whose window has not ended. */
+  var STALE_S = 3600, CLOCK_SKEW_S = 300;
+  function observationState(epoch, nowSeconds) {
+    if(typeof epoch !== 'number' || !isFinite(epoch)) return { valid: false, reason: 'unavailable', age: null, fresh: false };
+    // A future timestamp is never a verified current observation. Small
+    // viewer/reporter skew is tolerated for display (labeled, age 0) but
+    // still yields no inference; beyond the skew bound it is not an observation.
+    if(epoch - nowSeconds > CLOCK_SKEW_S) return { valid: false, reason: 'future', age: null, fresh: false };
+    if(epoch > nowSeconds) return { valid: true, age: 0, fresh: false, skew: true };
+    var age = nowSeconds - epoch;
+    return { valid: true, age: age, fresh: age <= STALE_S, skew: false };
+  }
+  function windowState(resetIso, observation, nowMs) {
+    if(!observation.valid) return 'invalid';
+    var resetMs = resetIso ? new Date(resetIso).getTime() : NaN;
+    if(!isNaN(resetMs) && resetMs <= nowMs) return 'expired';
+    if(observation.skew) return 'unverified';
+    return observation.fresh ? 'current' : 'stale';
+  }
+  function fmtAge(age) {
+    if(typeof age !== 'number') return '';
+    if(age < 60) return 'just now';
+    var totalMin = Math.floor(age / 60);
+    var days = Math.floor(totalMin / 1440), hours = Math.floor((totalMin % 1440) / 60), mins = totalMin % 60;
+    if(days > 0) return days + 'd' + (hours > 0 ? ' ' + hours + 'h' : '') + ' ago';
+    if(hours > 0) return hours + 'h' + (mins > 0 ? ' ' + mins + 'm' : '') + ' ago';
+    return mins + 'm ago';
+  }
+  function fmtClock(epochSeconds) {
+    try { return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    catch(e) { return ''; }
+  }
+  // One status line per provider: observation age (+source), then the state
+  // of its detail and of the quota transport. Never derived from HTTP success.
+  function providerStatus(observation, opts) {
+    opts = opts || {};
+    var parts = [], cls = '';
+    if(opts.noObservation) parts.push('month spend only · no quota observation');
+    else if(!observation.valid) {
+      parts.push(observation.reason === 'future' ? '\u26a0 observation time ahead of this clock' : '\u26a0 observation time unavailable');
+      cls = 'stale';
+    } else if(observation.skew) {
+      parts.push('\u26a0 observed just now · reporter clock ahead, not verified' + (opts.source ? ' via ' + opts.source : ''));
+      cls = 'stale';
+    } else {
+      parts.push((observation.fresh ? '' : '\u26a0 stale · ') + 'observed ' + fmtAge(observation.age)
+        + (opts.source ? ' via ' + opts.source : ''));
+      if(!observation.fresh) cls = 'stale';
+    }
+    if(opts.detail === 'pending' || opts.detail === 'delayed') {
+      parts.push('detail ' + opts.detail + (opts.detail === 'delayed' ? ', retrying' : '')
+        + (typeof opts.previousAt === 'number' ? ' · showing ' + fmtClock(opts.previousAt) + ' detail' : ''));
+      if(!cls) cls = 'pending';
+    }
+    if(opts.transport === 'stale') { parts.push('quota refresh failing · showing last observation'); cls = 'error'; }
+    return { text: parts.join(' · '), cls: cls };
+  }
+  /* ── Detail provenance ──
+     memory entries ({at, sample, cells}) hold the last coherent enriched
+     observation per provider. A newer bare sample renders its own gauges
+     while its stats slots keep the previous observation's cells verbatim
+     (explicitly dated in the status) or reserved '…' slots when the window
+     itself changed. Nothing is ever recomputed across two observations. */
+  function detailFor(latest, entry) {
+    var latestAt = sampleAt(latest);
+    if(latestAt === null || (entry && entry.at !== null && entry.at >= latestAt)) return { state: 'current', entry: entry || null };
+    return { state: 'previous', entry: entry || null };
+  }
+  function retainedFresh(entry, latest) {
+    return !!(entry && entry.sample && sameQuotaSource(entry.sample, latest)
+      && observationState(entry.at, Date.now() / 1000).fresh);
+  }
+  function previousCells(entry, key, windowId, latest, state) {
+    if(!entry || !entry.cells) return { cells: [], state: 'pending' };
+    var matching = entry.cells[windowId], slots = matching;
+    var sameSource = !!(entry.sample && sameQuotaSource(entry.sample, latest));
+    if(matching && state === 'current' && retainedFresh(entry, latest))
+      return { cells: matching, state: 'previous' };
+    if(!slots) Object.keys(entry.cells).forEach(function(id) {
+      if(id.indexOf(key + '|') === 0 && entry.cells[id].length) slots = entry.cells[id];
+    });
+    // Unknown estimates keep neutral slots. Only measured readings from the
+    // same source/window may survive staleness, explicitly dated by the status.
+    var keepMeasured = matching && sameSource && (state === 'current' || state === 'stale');
+    return { cells: (slots || []).map(function(cell) {
+      return keepMeasured && cell.measured ? cell : {value:'\u2026', label:'detail pending'};
+    }), state: 'pending' };
+  }
+  function recordCells(entry, latest, windowId, cells) {
+    if(entry && entry.at !== null && entry.at === sampleAt(latest)) entry.cells[windowId] = cells;
+  }
+  // Optional backend fields align a derived window to its observation; a
+  // window derived for a different observation is not this sample's detail.
+  function alignedWindow(win, sample) {
+    if(!win) return null;
+    var at = sampleAt(sample);
+    if(typeof win.observed_at_epoch === 'number' && at !== null && Math.abs(win.observed_at_epoch - at) > 60) return null;
+    return win;
   }
 
     // Dollar-budget stats shared by every limit gauge: the implied window
@@ -5667,7 +5865,7 @@ function initRateLimits(){
     function budgetStats(cost, pct) {
       var stats = [];
       if(typeof cost !== 'number' || cost <= 0) return stats;
-      stats.push({ value: fC(cost), label: 'spent · this window' });
+      stats.push({ value: fC(cost), label: 'spent · this window', measured: true });
       if(typeof pct === 'number' && pct >= 5) {
         var budget = (cost / pct) * 100;
         var remPct = Math.max(0, 100 - pct);
@@ -5683,7 +5881,28 @@ function initRateLimits(){
       return stats;
     }
 
-  function buildReportedProviderGroups(providers) {
+  // Provider window dollars: measured spend at the quota sample, plus the
+  // implied capacity (server-aligned when it sends one) only for a current window.
+  function providerWindowStats(win, pct, state) {
+    if(state === 'expired' || state === 'invalid') return [];
+    var stats = budgetStats(win.window_cost, pct);
+    if(!stats.length) return stats;
+    stats[0].label = 'API-equivalent \u00b7 this window';
+    if(state !== 'current') return [stats[0]];
+    if(stats.length > 1) {
+      stats[1].label = 'est. window capacity';
+      if(typeof win.estimated_capacity === 'number' && typeof win.estimated_remaining === 'number') {
+        stats[1].value = '~' + fC(win.estimated_capacity);
+        stats[2].value = '~' + fC(win.estimated_remaining);
+      }
+    }
+    return stats;
+  }
+
+  function buildReportedProviderGroups(providers, view) {
+    view = view || {};
+    var memory = view.memory || { providers: {} };
+    var nowSeconds = Date.now() / 1000, nowMs = Date.now();
     var names = { 'codex': 'Codex', 'opencode-go': 'OpenCode Go',
       'opencode-zen': 'OpenCode Zen' };
     var order = ['codex', 'opencode-go', 'opencode-zen'];
@@ -5695,17 +5914,16 @@ function initRateLimits(){
       var monthCost = typeof provider.month_cost === 'number' ? provider.month_cost : 0;
       if (!windows.length && monthCost <= 0) continue;
       var content = '';
-      var sampleAge = typeof provider.updated_at_epoch === 'number'
-        ? Math.max(0, Date.now()/1000 - provider.updated_at_epoch) : null;
-      var sampleNote = sampleAge === null ? 'Quota observation time unavailable.'
-        : sampleAge < 60 ? 'Quota reported just now.'
-        : sampleAge < 3600 ? 'Quota last reported ' + Math.floor(sampleAge/60) + 'm ago.'
-        : 'Quota last reported ' + Math.floor(sampleAge/3600) + 'h ago.';
+      var observation = observationState(provider.updated_at_epoch, nowSeconds);
+      var entry = (memory.providers || {})[key] || null;
+      var detail = detailFor(provider, entry);
+      var pendingDetail = windows.length && detail.state !== 'current';
       if(windows.length) {
-        content += '<div class="provider-limits-grid">';
+        content += '<div class="provider-limits-grid" data-key="windows">';
         for(var wi = 0; wi < windows.length; wi++) {
           var win = windows[wi] || {};
           var pct = typeof win.pct === 'number' && isFinite(win.pct) ? win.pct : 0;
+          var state = windowState(win.resets_at, observation, nowMs);
           // Same treatment as the Claude gauges: expected-pace marker, split
           // fill, "Projected by reset" and boundary ticks (hours for the
           // 5-hour limits, days for weekly / monthly), all read off
@@ -5717,24 +5935,34 @@ function initRateLimits(){
           var resetMs = win.resets_at ? new Date(win.resets_at).getTime() : NaN;
           var reset = isNaN(resetMs) ? '' : 'resets ' + new Date(resetMs).toLocaleString([], {
             weekday: 'short', hour: 'numeric', minute: '2-digit' });
-          var current = resetMs > Date.now() && provider.updated_at_epoch <= Date.now() / 1000
-            && Date.now() / 1000 - provider.updated_at_epoch <= 86400;
-          var providerStats = current ? budgetStats(win.window_cost, pct) : [];
-          if(providerStats.length) providerStats[0].label = 'API-equivalent · this window';
-          if(providerStats.length > 1) providerStats[1].label = 'est. window capacity';
+          var windowId = (win.key || '') + '|' + (win.resets_at || '') + '|' + (win.window_seconds || '');
+          var providerStats, detailState = 'current';
+          if(detail.state === 'current') {
+            providerStats = providerWindowStats(win, pct, state);
+            recordCells(entry, provider, windowId, providerStats);
+          } else {
+            var previous = previousCells(entry, win.key || '', windowId, provider, state);
+            providerStats = previous.cells; detailState = previous.state;
+          }
           content += buildGauge(esc(win.label || win.key || 'Limit'), pct, esc(reset),
-            pace.expected, { projectedPct: pace.projected, ticks: pace.ticks,
-              stats: providerStats,
-              note: sampleNote + (providerStats.length ? ' Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : '') });
+            pace.expected, { key: win.key || ('window' + wi), state: state, observedAgo: fmtAge(observation.age),
+              projectedPct: pace.projected, ticks: pace.ticks,
+              stats: providerStats, detailState: detailState,
+              note: providerStats.length > 1 ? 'Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : null });
         }
         content += '</div>';
       }
       if(monthCost > 0) {
-        content += '<div class="rate-gauge-stats" style="border-top:var(--border);padding:1rem 2rem">'
+        content += '<div class="rate-gauge-stats" data-key="month" style="border-top:var(--border);padding:1rem 2rem">'
           + '<div class="rate-gauge-stat"><div class="rate-gauge-stat-value">' + fC(monthCost)
-          + '</div><div class="rate-gauge-stat-label">API-equivalent · month</div></div></div>';
+          + '</div><div class="rate-gauge-stat-label">API-equivalent \u00b7 month</div></div></div>';
       }
-      html += providerGroup(key, names[key], content, provider.plan);
+      var status = providerStatus(observation, {
+        noObservation: !windows.length,
+        detail: pendingDetail ? (view.transport && view.transport.limits === 'stale' ? 'delayed' : 'pending') : null,
+        previousAt: pendingDetail && entry ? entry.at : null,
+        transport: view.transport && view.transport.snapshots });
+      html += providerGroup(key, names[key], content, provider.plan, status);
     }
     return html;
   }
@@ -5754,7 +5982,7 @@ function initRateLimits(){
     // the same gauge DOM/CSS/helpers as the oauth gauges. When enterprise has
     // NO budget set, mbHtml is a one-line "Set monthly budget…" affordance.
     var mbHtml = buildMonthlyBudgetSection(wb);
-    var reportedGroups = buildReportedProviderGroups(wb.providers || {});
+    var reportedGroups = buildReportedProviderGroups(wb.providers || {}, view);
 
     if(!oauth) {
       if(mbHtml || reportedGroups) {
@@ -5768,15 +5996,15 @@ function initRateLimits(){
         // stylesheet's display:none can't win — same reason as the oauth path.
         oauthPanel.style.display = 'block';
         oauthPanel.style.minHeight = '';
-        oauthPanel.innerHTML = mbHtml + reportedGroups;
+        TokenfoldDom.patchHTML(oauthPanel, mbHtml + reportedGroups);
         wireMonthlyBudgetEdit(oauthPanel);
         runMonthlyMarkerOverlapPass();
         armMarkerResizeOnce();
       } else {
         oauthPanel.style.display = 'none';
         oauthPanel.style.minHeight = '';   // release the reserved loading space
+        oauthPanel.innerHTML = '';
       }
-      if(staleIntervalId !== null) { clearInterval(staleIntervalId); staleIntervalId = null; }
       return;
     }
 
@@ -5792,8 +6020,18 @@ function initRateLimits(){
     // until limit_readings has samples. nowSeconds anchors both the C4
     // reset-in-current-window check and the D5 recent-reset suppression to
     // one consistent instant per render.
-    var trend = oauth.trend || {};
     var nowSeconds = Date.now() / 1000;
+    var observation = observationState(oauth.updated_at_epoch, nowSeconds);
+    var entry = memory.oauth || null;
+    var detail = detailFor(oauth, entry);
+    // Trend history belongs to the enriched response: a newer bare sample keeps
+    // the previous observation's notes on screen instead of dropping lines.
+    var trend = (detail.state === 'current' ? oauth.trend : entry && entry.sample && entry.sample.trend) || {};
+    function resetLabelFor(iso, state) {
+      if(state !== 'expired' || !iso) return fmtReset(iso);
+      var endedAge = nowSeconds - new Date(iso).getTime() / 1000;
+      return isFinite(endedAge) ? 'ended ' + fmtAge(endedAge) : 'window ended';
+    }
 
     // barColor + textColorFor are defined once in renderAllRateLimits scope
     // (shared with the enterprise monthly card) and reached here via closure.
@@ -5908,21 +6146,41 @@ function initRateLimits(){
 
     var wPct = oauth.weekly_pct || 0;
     var hPct = oauth.five_hour_pct || 0;
+    var weeklyState = windowState(oauth.weekly_resets_at, observation, Date.now());
+    var fiveHourState = windowState(oauth.five_hour_resets_at, observation, Date.now());
     // Marker position, whole-window projection and boundary ticks for both
     // Claude gauges come from the shared windowPace read (D6 stale-reset
     // guard included): day lines across the weekly window, hour lines
-    // across the 5-hour one.
+    // across the 5-hour one. Pace inference exists only for a current window.
     var weeklyPace = windowPace(oauth.weekly_resets_at, WEEK_MS, wPct);
     var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);
-    var wExpected = weeklyPace.expected;
-    var hExpected = fiveHourPace.expected;
+    var wExpected = weeklyState === 'current' ? weeklyPace.expected : null;
+    var hExpected = fiveHourState === 'current' ? fiveHourPace.expected : null;
 
-    // Weekly stats: cost + active time from wb (these stay in wb, not oauth)
-    var weekCost = wb.week_cost || 0;
-    var weekActiveMin = Math.round((wb.week_active_s || 0) / 60);
+    // Measured rolling-7d spend/active time from wb (enriched response only;
+    // undefined before it arrives, never a fabricated zero).
+    var weekCost = typeof wb.week_cost === 'number' ? wb.week_cost : null;
+    var weekActiveMin = typeof wb.week_active_s === 'number' ? Math.round(wb.week_active_s / 60) : null;
 
-
-    var weeklyStats = [];
+    var weeklyId = 'weekly|' + (oauth.weekly_resets_at || '');
+    var fiveHourId = 'five_hour|' + (oauth.five_hour_resets_at || '');
+    var weeklyStats = [], fiveHourStats = [], weeklyNote = null;
+    var weeklyDetailState = 'current', fiveHourDetailState = 'current';
+    var limitWindow = null, lwActiveMin = 0;
+    if(detail.state !== 'current') {
+      // Newer sample, detail pending: keep the previous observation's cells
+      // verbatim (dated in the status line) or reserve their slots.
+      var prevWeekly = previousCells(entry, 'weekly', weeklyId, oauth, weeklyState);
+      weeklyStats = prevWeekly.cells; weeklyDetailState = prevWeekly.state;
+      if(weeklyState !== 'current' || !retainedFresh(entry, oauth)) {
+        // Rolling spend is independently measured, not displaced by an old
+        // quota window or used as a numerator for quota capacity.
+        if(weekCost !== null) weeklyStats.push({value:fC(weekCost), label:'measured · rolling 7d', measured:true});
+        if(weekActiveMin !== null) weeklyStats.push({value:fHM(weekActiveMin), label:'active · rolling 7d', measured:true});
+      }
+      var prevFive = previousCells(entry, 'five_hour', fiveHourId, oauth, fiveHourState);
+      fiveHourStats = prevFive.cells; fiveHourDetailState = prevFive.state;
+    } else {
     if(wExpected !== null && wExpected > 2) {
       var diffPct = wPct - wExpected;
       var diffH = Math.abs(diffPct / 100 * 7 * 24);
@@ -5941,11 +6199,11 @@ function initRateLimits(){
     // absent (unparseable resets_at), where its label stays honest.
     // lwActiveMin is rounded up front so the budget-left gate below compares
     // the SAME rounded quantity it renders (Fix 7).
-    var limitWindow = oauth.limit_window || null;
-    var lwActiveMin = limitWindow ? Math.round((limitWindow.active_s || 0) / 60) : 0;
+    limitWindow = weeklyState === 'current' ? alignedWindow(oauth.limit_window, oauth) : null;
+    lwActiveMin = limitWindow ? Math.round((limitWindow.active_s || 0) / 60) : 0;
     if(limitWindow) {
-      weeklyStats.push({ value: fC(limitWindow.cost || 0), label: 'spent · this window' });
-      weeklyStats.push({ value: fHM(lwActiveMin), label: 'active · this window' });
+      weeklyStats.push({ value: fC(limitWindow.cost || 0), label: 'spent · this window', measured: true });
+      weeklyStats.push({ value: fHM(lwActiveMin), label: 'active · this window', measured: true });
       // Implied window ceiling (spend ÷ pct) — same math and same >= 5%
       // noise gate as budgetStats; kept inline here because weekly's
       // spent/active/budget-left cells predate the shared helper and
@@ -5957,8 +6215,9 @@ function initRateLimits(){
         });
       }
     } else {
-      weeklyStats.push({ value: fC(weekCost), label: 'spent · rolling 7d' });
-      weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
+      // Current measured spend, explicitly rolling: never a window estimate.
+      if(weekCost !== null) weeklyStats.push({ value: fC(weekCost), label: 'measured · rolling 7d' });
+      if(weekActiveMin !== null) weeklyStats.push({ value: fHM(weekActiveMin), label: 'active · rolling 7d' });
     }
 
     // D5: budget-left estimate MUST divide one consistent window's cost/
@@ -5998,40 +6257,53 @@ function initRateLimits(){
     // Only relevant on the F2 fallback path: window-anchored stats reset
     // WITH the window, so there is nothing to explain away when
     // limit_window is present.
-    var weeklyNote = null;
     if (!limitWindow && wPct < 1 && (weekCost > 0 || weekActiveMin > 0)) {
       weeklyNote = 'window just reset \u2014 the rolling-7d stats below carry over';
     }
+
+    // 5-Hour dollar stats: measured spend at this sample; the implied budget
+    // only while the window is current. Expired windows carry no dollars.
+    var fhWindow = fiveHourState === 'expired' || fiveHourState === 'invalid'
+      ? null : alignedWindow(oauth.five_hour_window, oauth);
+    fiveHourStats = fhWindow ? budgetStats(fhWindow.cost, hPct) : [];
+    if(fiveHourState !== 'current') fiveHourStats = fiveHourStats.slice(0, 1);
+    recordCells(entry, oauth, weeklyId, weeklyStats);
+    recordCells(entry, oauth, fiveHourId, fiveHourStats);
+    } // end current-detail stats
 
     // D3/C4: sub-window burn/ETA/pace verdict + in-window reset note, per
     // gauge. Weekly reads the 6h burn against the 7d window; 5-Hour reads the
     // 1h burn against the 5h window (D2's bucket_trend picks the "relevant"
     // burn the same way server-side; this just labels which one it is).
-    var weeklyTrendNote = buildTrendNote(trend.seven_day, 'burn_6h_pct_per_hr', '(6h)', 7 * 86400);
-    var fiveHourTrendNote = buildTrendNote(trend.five_hour, 'burn_1h_pct_per_hr', '(1h)', 5 * 3600);
+    // Burn/ETA/pace verdicts are inference too: current windows only.
+    var trendSample = detail.state === 'current' ? oauth : entry && entry.sample;
+    var trendFresh = detail.state === 'current' || retainedFresh(entry, oauth);
+    var weeklyTrendNote = weeklyState === 'current' && trendFresh && trendSample
+      && trendSample.weekly_resets_at === oauth.weekly_resets_at
+      ? buildTrendNote(trend.seven_day, 'burn_6h_pct_per_hr', '(6h)', 7 * 86400) : null;
+    var fiveHourTrendNote = fiveHourState === 'current' && trendFresh && trendSample
+      && trendSample.five_hour_resets_at === oauth.five_hour_resets_at
+      ? buildTrendNote(trend.five_hour, 'burn_1h_pct_per_hr', '(1h)', 5 * 3600) : null;
+    var observedAgo = fmtAge(observation.age);
 
-    // 5-Hour dollar stats + on-pace projection — mirrors the weekly gauge.
-    // oauth.five_hour_window is absent on stale blobs (server skips when
-    // resets_at already passed, the same staleness D6 nulls hExpected for)
-    // and on older servers; budgetStats returns [] for a missing cost, so
-    // the gauge degrades to exactly today's rendering.
-    var fhWindow = oauth.five_hour_window || null;
-    var fiveHourStats = budgetStats(fhWindow ? fhWindow.cost : null, hPct);
-
-    var gaugeHtml = '<div class="rate-limits-grid" style="border-top:var(--border);margin-top:0">';
-    gaugeHtml += buildGauge('Weekly Limit', wPct, fmtReset(oauth.weekly_resets_at), wExpected, {
+    var gaugeHtml = '<div class="rate-limits-grid" data-key="main" style="border-top:var(--border);margin-top:0">';
+    gaugeHtml += buildGauge('Weekly Limit', wPct, resetLabelFor(oauth.weekly_resets_at, weeklyState), wExpected, {
+      key: 'weekly', state: weeklyState, observedAgo: observedAgo,
       ticks: weeklyPace.ticks,
       projectedPct: weeklyPace.projected,
       stats: weeklyStats,
+      detailState: weeklyDetailState,
       note: weeklyNote,
       trendNote: weeklyTrendNote,
       chartBtn: true
     });
-    gaugeHtml += buildGauge('5-Hour Window', hPct, fmtReset(oauth.five_hour_resets_at), hExpected, {
+    gaugeHtml += buildGauge('5-Hour Window', hPct, resetLabelFor(oauth.five_hour_resets_at, fiveHourState), hExpected, {
+      key: 'five_hour', state: fiveHourState, observedAgo: observedAgo,
       trendNote: fiveHourTrendNote,
       ticks: fiveHourPace.ticks,
       projectedPct: fiveHourPace.projected,
-      stats: fiveHourStats
+      stats: fiveHourStats,
+      detailState: fiveHourDetailState
     });
     gaugeHtml += '</div>';
 
@@ -6072,13 +6344,29 @@ function initRateLimits(){
       // budgetStats returns [] and the row degrades to the bare bar.
       // Shared windowPace read (marker, projection, day ticks; D6 guard
       // included); scoped:* limits are always 7-day windows.
+      var sbState = windowState(sb.resets_at, observation, Date.now());
       var sbPace = windowPace(sb.resets_at, WEEK_MS, sbPct);
+      var sbId = sb.key + '|' + (sb.resets_at || '');
+      var sbStats = [], sbDetailState = 'current';
+      if(detail.state === 'current') {
+        // window_end_epoch (optional) must belong to this observation.
+        var sbAligned = sbState === 'expired' || sbState === 'invalid' ? false
+          : !(typeof sb.window_end_epoch === 'number' && Math.abs(sb.window_end_epoch - oauth.updated_at_epoch) > 60);
+        sbStats = sbAligned ? budgetStats(sb.window_cost, sbPct) : [];
+        if(sbState !== 'current') sbStats = sbStats.slice(0, 1);
+        recordCells(entry, oauth, sbId, sbStats);
+      } else {
+        var prevSb = previousCells(entry, sb.key, sbId, oauth, sbState);
+        sbStats = prevSb.cells; sbDetailState = prevSb.state;
+      }
       modelRowsHtml += buildGauge(
-        esc(sb.label) + ' · 7-Day', sbPct, fmtReset(sb.resets_at), sbPace.expected, {
+        esc(sb.label) + ' · 7-Day', sbPct, resetLabelFor(sb.resets_at, sbState), sbState === 'current' ? sbPace.expected : null, {
+          key: sb.key, state: sbState, observedAgo: observedAgo,
           fillColor: sbColor,
           projectedPct: sbPace.projected,
           ticks: sbPace.ticks,
-          stats: budgetStats(sb.window_cost, sbPct),
+          stats: sbStats,
+          detailState: sbDetailState,
           rootStyle: 'border-top:var(--border)'
         });
     }
@@ -6087,97 +6375,82 @@ function initRateLimits(){
     var extraHtml = '';
     if(oauth.extra_usage && oauth.extra_usage.enabled) {
       var eu = oauth.extra_usage;
-      var euPct = eu.pct || 0;
-      var euLimit = eu.monthly_limit_cents ? ('$' + (eu.monthly_limit_cents / 100).toFixed(2)) : '—';
-      var euUsed  = eu.used_cents ? ('$' + (eu.used_cents / 100).toFixed(2)) : '$0.00';
-      extraHtml = '<div class="rate-gauge" style="border-top:var(--border)">'
+      var euPct = typeof eu.pct === 'number' && isFinite(eu.pct) && eu.pct >= 0 ? eu.pct : null;
+      function extraMoney(cents) {
+        return typeof cents === 'number' && isFinite(cents) && cents >= 0
+          ? '$' + (cents / 100).toFixed(2) : 'not reported';
+      }
+      var euLimit = extraMoney(eu.monthly_limit_cents), euUsed = extraMoney(eu.used_cents);
+      var euRemaining = euPct === null ? 'usage not reported'
+        : !observation.valid || observation.skew ? 'observation unverified · not current'
+        : !observation.fresh ? 'as of ' + fmtAge(observation.age) + ' · not current'
+        : Math.max(0, 100 - Math.round(euPct)) + '% remaining';
+      extraHtml = '<div class="rate-gauge" data-key="extra" style="border-top:var(--border)">'
         + '<div class="rate-gauge-head">'
         + '<span class="rate-gauge-label">Extra Usage</span>'
         + '<span class="rate-gauge-reset">limit ' + euLimit + ' / mo · used ' + euUsed + '</span>'
         + '</div>'
         + '<div class="rate-gauge-track">'
-        + '<div class="rate-gauge-fill" style="width:' + Math.min(euPct, 100).toFixed(1) + '%;background:var(--yellow)"></div>'
+        + (euPct === null ? '' : '<div class="rate-gauge-fill" style="width:' + Math.min(euPct, 100).toFixed(1) + '%;background:var(--yellow)"></div>')
         + '</div>'
         + '<div class="rate-gauge-foot">'
-        + '<span class="rate-gauge-pct" style="color:var(--yellow-text)">' + Math.round(euPct) + '%</span>'
-        + '<span class="rate-gauge-remaining">' + (100 - Math.round(euPct)) + '% remaining</span>'
+        + '<span class="rate-gauge-pct" style="color:var(--yellow-text)">' + (euPct === null ? 'not reported' : Math.round(euPct) + '%') + '</span>'
+        + '<span class="rate-gauge-remaining">' + euRemaining + '</span>'
         + '</div></div>';
     }
 
-    oauthPanel.innerHTML = providerGroup(
-      'claude', 'Claude', gaugeHtml + modelRowsHtml + extraHtml) + reportedGroups;
+    // Observation status lives on the Claude provider itself (name + source),
+    // never on the section header: the month hero and other providers have
+    // their own clocks. The header keeps its static "month to date" label.
+    var claudeStatus = providerStatus(observation, {
+      source: typeof oauth.source === 'string' ? oauth.source : null,
+      detail: detail.state !== 'current' ? (transport.limits === 'stale' ? 'delayed' : 'pending') : null,
+      previousAt: detail.state !== 'current' && entry ? entry.at : null,
+      transport: transport.snapshots });
+    TokenfoldDom.patchHTML(oauthPanel, providerGroup(
+      'claude', 'Claude', gaugeHtml + modelRowsHtml + extraHtml, null, claudeStatus) + reportedGroups);
 
     // Marker-overlap pass + resize arming are hoisted to renderAllRateLimits
     // scope (shared with the enterprise monthly card, same #oauthGaugesPanel).
     runMarkerOverlapPass();
     armMarkerResizeOnce();
-
-    // Staleness indicator — tied to oauth.updated_at_epoch.
-    // renderAllRateLimits is re-run by the 60s poll, so clear the previous
-    // ticker before creating a new one (otherwise one interval leaks per poll,
-    // with stale closures fighting over #rateLimitsUpdated).
-    (function(){
-      var updatedEl = document.getElementById('rateLimitsUpdated');
-      if(!updatedEl || !oauth.updated_at_epoch) return;
-      var STALE_S = 3600;
-      function updateStale() {
-        if(document.hidden) return;
-        var ageSec = (Date.now() / 1000) - oauth.updated_at_epoch;
-        var text;
-        if(ageSec < 60) text = 'updated just now';
-        else if(ageSec < 3600) text = 'updated ' + Math.floor(ageSec / 60) + 'm ago';
-        else if(ageSec < 86400) {
-          var hh = Math.floor(ageSec / 3600);
-          var mm = Math.floor((ageSec % 3600) / 60);
-          text = 'updated ' + hh + 'h' + (mm > 0 ? ' ' + mm + 'm' : '') + ' ago';
-        } else text = 'updated ' + Math.floor(ageSec / 86400) + 'd ago';
-        var stale = ageSec > STALE_S;
-        updatedEl.textContent = stale ? '⚠ ' + text : text;
-        updatedEl.classList.toggle('rate-limits-updated--stale', stale);
-      }
-      updateStale();
-      if(staleIntervalId !== null) clearInterval(staleIntervalId);
-      staleIntervalId = setInterval(updateStale, 30000);
-    })();
   })();
 
   /* ── Weekly usage pace chart (modal popup) ──
-     Re-runs on every 60s poll: the TRIGGER button is recreated with the panel
-     HTML so its listener must re-attach, but the overlay/close chrome is wired
-     once in initRateLimits and the chart instance persists across polls. */
+     Chart data comes from the last enriched response (view.full), so a bare
+     newer snapshot never redraws it. The chart is updated in place through
+     upsertChart: an open modal keeps its instance and zoom. The trigger
+     click is delegated once in initRateLimits (the button node persists). */
   (function(){
-    if(!wb || !wb.hourly_costs){
-      if(usageChart){ usageChart.destroy(); usageChart = null; }
+    var source = view.full && view.full.hourly_costs ? view.full : (wb.hourly_costs ? wb : null);
+    if(!source){
+      dropChart('usagePace'); usageChart = null; paceChartSource = null; buildPaceChart = null;
       return;
     }
-
     var overlay = document.getElementById('usageChartOverlay');
-    var trigger = document.getElementById('usageChartTrigger') || document.getElementById('oauthChartTrigger');
-    if(!overlay || !trigger) return;
-
-    // Preserve the user's visible hour range when a live sample redraws the
-    // open modal. Rolling data changes, but polling must not reset their zoom.
-    var zoom = usageChart && usageChart.options.scales.x;
-    zoom = zoom ? {min:zoom.min, max:zoom.max} : null;
-    if(usageChart){ usageChart.destroy(); usageChart = null; }
+    if(!overlay) return;
 
     function buildChart() {
-      if(usageChart) return; // already built
       if(!hasChart()) return;
 
       var canvas = document.getElementById('usageChartCanvas');
       if(!canvas) return;
 
+      // Preserve the user's visible hour range when a live sample redraws the
+      // open modal. Rolling data changes, but polling must not reset their zoom.
+      var zoom = usageChart && usageChart.options && usageChart.options.scales && usageChart.options.scales.x;
+      zoom = zoom ? {min:zoom.min, max:zoom.max} : null;
+
       // Rolling window: server anchor is updated_at_epoch (≈ now), window is 7d back
-      var weekStartEpoch = (wb.updated_at_epoch || (Date.now() / 1000)) - 7 * 24 * 3600;
+      var weekStartEpoch = (source.updated_at_epoch || (Date.now() / 1000)) - 7 * 24 * 3600;
       var nowExact = (Date.now() / 1000 - weekStartEpoch) / 3600;
       var nowH = Math.floor(nowExact);
       var totalHours = 168; // 7 * 24
 
       // Build sparse map from hourly_costs
       var costByHour = {};
-      for(var i = 0; i < wb.hourly_costs.length; i++) {
-        costByHour[wb.hourly_costs[i].h] = wb.hourly_costs[i].c;
+      for(var i = 0; i < source.hourly_costs.length; i++) {
+        costByHour[source.hourly_costs[i].h] = source.hourly_costs[i].c;
       }
 
       // Build cumulative cost arrays — raw $ (no synthetic budget %)
@@ -6247,9 +6520,9 @@ function initRateLimits(){
       // Only when the server has historized utilization for the weekly
       // (seven_day) bucket — an older/fresh install with no limit_readings
       // yet must render this chart byte-identical to today's cost-only view.
-      var trend = wb.oauth && wb.oauth.trend;
+      var trend = source.oauth && source.oauth.trend;
       var weeklySeries = trend && trend.seven_day && trend.seven_day.series;
-      var limitWindow = wb.oauth && wb.oauth.limit_window;
+      var limitWindow = source.oauth && source.oauth.limit_window;
       var extraDatasets = [];
       var resetMarkers = [];
 
@@ -6422,6 +6695,9 @@ function initRateLimits(){
         if(wSum > 0) dayCostAvg = wY / wSum;
       }
 
+      paceDraw.workBands = workBands; paceDraw.dayCostBars = dayCostBars;
+      paceDraw.dayCostBarsMax = dayCostBarsMax; paceDraw.dayCostAvg = dayCostAvg;
+      paceDraw.resetMarkers = resetMarkers; paceDraw.nowExact = nowExact; paceDraw.totalHours = totalHours;
       // Working hours background shading + "Now" line plugin
       var chartPlugins = {
         id: 'workHoursAndNow',
@@ -6440,9 +6716,9 @@ function initRateLimits(){
           ctx.rect(xAxis.left, yAxis.top, xAxis.right - xAxis.left, yAxis.bottom - yAxis.top);
           ctx.clip();
           ctx.fillStyle = 'rgba(26, 26, 26, 0.03)';
-          for(var i = 0; i < workBands.length; i++) {
-            var x1 = xAxis.getPixelForValue(workBands[i][0]);
-            var x2 = xAxis.getPixelForValue(workBands[i][1]);
+          for(var i = 0; i < paceDraw.workBands.length; i++) {
+            var x1 = xAxis.getPixelForValue(paceDraw.workBands[i][0]);
+            var x2 = xAxis.getPixelForValue(paceDraw.workBands[i][1]);
             ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
           }
           ctx.restore();
@@ -6450,8 +6726,8 @@ function initRateLimits(){
           // "$ per 1%" background bars — drawn here (before datasets) so the
           // cost/util lines paint over them. Heights self-normalized to the
           // tallest kept bar (~60% of plot height); each carries its own value
-          // label, so no third axis is needed. No-op when dayCostBars is empty.
-          if(dayCostBars.length && dayCostBarsMax > 0) {
+          // label, so no third axis is needed. No-op when paceDraw.dayCostBars is empty.
+          if(paceDraw.dayCostBars.length && paceDraw.dayCostBarsMax > 0) {
             ctx.save();
             // Same plot-area clip as above — keeps bars/labels inside the chart
             // when the x-axis is zoomed so off-range bars don't paint on the axes.
@@ -6461,11 +6737,11 @@ function initRateLimits(){
             var plotH = yAxis.bottom - yAxis.top;
             ctx.font = '600 9px "DM Sans", sans-serif';
             ctx.textAlign = 'center';
-            for(var dcb = 0; dcb < dayCostBars.length; dcb++) {
-              var bar = dayCostBars[dcb];
+            for(var dcb = 0; dcb < paceDraw.dayCostBars.length; dcb++) {
+              var bar = paceDraw.dayCostBars[dcb];
               var bx1 = xAxis.getPixelForValue(bar.s);
               var bx2 = xAxis.getPixelForValue(bar.e);
-              var barH = (bar.v / dayCostBarsMax) * plotH * 0.6;
+              var barH = (bar.v / paceDraw.dayCostBarsMax) * plotH * 0.6;
               var byTop = yAxis.bottom - barH;
               ctx.fillStyle = 'rgba(107, 104, 96, 0.13)';
               ctx.fillRect(bx1, byTop, bx2 - bx1, barH);
@@ -6492,8 +6768,8 @@ function initRateLimits(){
             // Highest-confidence total average: one solid horizontal line at
             // the inverse-variance weighted mean $/%, spanning the full plot
             // width (drawn over the bars, behind the cost/util data lines).
-            if(dayCostAvg !== null) {
-              var avgY = yAxis.bottom - (dayCostAvg / dayCostBarsMax) * plotH * 0.6;
+            if(paceDraw.dayCostAvg !== null) {
+              var avgY = yAxis.bottom - (paceDraw.dayCostAvg / paceDraw.dayCostBarsMax) * plotH * 0.6;
               ctx.save();
               ctx.strokeStyle = 'rgba(74, 69, 63, 0.9)';
               ctx.lineWidth = 2;
@@ -6504,7 +6780,7 @@ function initRateLimits(){
               ctx.fillStyle = 'rgba(74, 69, 63, 0.9)';
               ctx.font = '600 8px "DM Sans", sans-serif';
               ctx.textAlign = 'right';
-              ctx.fillText('avg $' + dayCostAvg.toFixed(2) + '/%', xAxis.right - 4, avgY - 4);
+              ctx.fillText('avg $' + paceDraw.dayCostAvg.toFixed(2) + '/%', xAxis.right - 4, avgY - 4);
               ctx.restore();
             }
             ctx.restore();
@@ -6520,9 +6796,9 @@ function initRateLimits(){
           // getPixelForValue pattern as the NOW line below; a [2,3] dot pattern
           // (vs NOW's [4,3] dash) and the 'reset' label keep the two red lines
           // distinct. Labeled at the TOP to avoid the crowded axis ticks at the
-          // bottom. No-op when resetMarkers is empty (guarded above).
-          for(var rmk = 0; rmk < resetMarkers.length; rmk++) {
-            var rx = xAxis.getPixelForValue(resetMarkers[rmk]);
+          // bottom. No-op when paceDraw.resetMarkers is empty (guarded above).
+          for(var rmk = 0; rmk < paceDraw.resetMarkers.length; rmk++) {
+            var rx = xAxis.getPixelForValue(paceDraw.resetMarkers[rmk]);
             // Skip markers scrolled outside the visible range when zoomed (the
             // 'reset' label lives above the plot, so we range-check rather than clip).
             if(rx < xAxis.left - 0.5 || rx > xAxis.right + 0.5) continue;
@@ -6543,8 +6819,8 @@ function initRateLimits(){
             ctx.restore();
           }
 
-          if(nowExact < 0 || nowExact > totalHours) return;
-          var x = xAxis.getPixelForValue(nowExact);
+          if(paceDraw.nowExact < 0 || paceDraw.nowExact > paceDraw.totalHours) return;
+          var x = xAxis.getPixelForValue(paceDraw.nowExact);
           if(x < xAxis.left - 0.5 || x > xAxis.right + 0.5) return; // scrolled off when zoomed
           ctx.save();
           ctx.beginPath();
@@ -6580,7 +6856,7 @@ function initRateLimits(){
         }
       ].concat(extraDatasets);
 
-      usageChart = new Chart(canvas, {
+      var cfg = {
         type: 'line',
         data: {
           labels: labels,
@@ -6631,12 +6907,19 @@ function initRateLimits(){
           scales: buildChartScales()
         },
         plugins: [chartPlugins]
-      });
+      };
       if(zoom && zoom.min != null && zoom.max != null){
-        usageChart.options.scales.x.min = zoom.min;
-        usageChart.options.scales.x.max = zoom.max;
-        usageChart.update('none');
+        cfg.options.scales.x.min = zoom.min;
+        cfg.options.scales.x.max = zoom.max;
       }
+      // Dataset/axis arrival or removal is normal for quota history. Keep
+      // this local to the pace chart, leaving other chart policies unchanged.
+      if(usageChart && usageChart.canvas === canvas && usageChart.config.type === cfg.type) {
+        usageChart.data = cfg.data;
+        usageChart.options = cfg.options;
+        usageChart.update('none');
+      } else usageChart = upsertChart('usagePace', canvas, cfg);
+      paceChartSource = source;
 
       // (a) NEW right-hand 0-100 utilization axis — only added when the D4
       // overlay datasets exist, so a series-absent response keeps the exact
@@ -6697,15 +6980,9 @@ function initRateLimits(){
       }
     }
 
-    trigger.addEventListener('click', function(e) {
-      e.stopPropagation();
-      overlay.classList.add('visible');
-      // Defer chart build so canvas has dimensions
-      setTimeout(buildChart, 50);
-    });
-
-    // If new data arrived while the modal is open, rebuild immediately
-    if(overlay.classList.contains('visible')) setTimeout(buildChart, 50);
+    buildPaceChart = buildChart;
+    // New enriched data while the modal is open: update the live chart in place.
+    if(overlay.classList.contains('visible') && paceChartSource !== source) buildChart();
   })();
 
     } // end renderAllRateLimits
@@ -6717,6 +6994,15 @@ function initRateLimits(){
       var closeBtn = document.getElementById('usageChartClose');
       if(!overlay) return;
       if(closeBtn) closeBtn.addEventListener('click', function(){ overlay.classList.remove('visible'); });
+      // One delegated listener: the trigger button now survives repaints, so a
+      // per-render listener would stack.
+      section.addEventListener('click', function(e){
+        var trigger = e.target && e.target.closest ? e.target.closest('#oauthChartTrigger, #usageChartTrigger') : null;
+        if(!trigger || !buildPaceChart) return;
+        e.stopPropagation();
+        overlay.classList.add('visible');
+        setTimeout(function(){ if(buildPaceChart) buildPaceChart(); }, 50); // defer so the canvas has dimensions
+      });
       overlay.addEventListener('click', function(e) {
         if(e.target === overlay) overlay.classList.remove('visible');
       });
@@ -6847,39 +7133,118 @@ function initRateLimits(){
     // Pass current scope so the server can gate oauth fields to personal scope.
     var rlUrl = '/api/rate-limits?scope=' + encodeURIComponent(TF_SCOPE);
     var snapshotUrl = '/api/rate-limit-snapshots?scope=' + encodeURIComponent(TF_SCOPE);
-    var limitsState = null, snapshotIdentity = null, snapshotPaintMinute = -1;
+    // Three things are tracked separately: the latest metadata (limitsState,
+    // merged with the accounting rule that a new sample refuses old dollars),
+    // the last coherent enriched observation per provider (limitDetailMemory,
+    // what the stats slots may keep showing, explicitly dated) and the last
+    // enriched response for chart/month data (lastFullState).
+    var limitsState = null, lastFullState = null, snapshotIdentity = null, snapshotPaintMinute = -1;
+    var limitDetailMemory = { oauth: null, providers: {} };
+    var limitTransport = { snapshots: 'ready', limits: 'ready' };
+    function rememberDetail(memory, incoming, merged) {
+      var next = { oauth: null, providers: {} }, obsolete = false;
+      function entry(prev, sample, latest) {
+        var at = sampleAt(sample), latestAt = sampleAt(latest);
+        // A late old-source response cannot restore another account's detail.
+        if(!latest || !sameQuotaSource(sample, latest)) { obsolete = true; return prev || null; }
+        if(at !== null && latestAt !== null && at < latestAt) { obsolete = true; return prev || null; }
+        return { at: at, sample: sample,
+          cells: prev && prev.at === at && sameQuotaSource(prev.sample, sample) ? prev.cells : {} };
+      }
+      if(incoming.oauth) next.oauth = entry(memory.oauth, incoming.oauth, merged.oauth);
+      Object.keys(incoming.providers || {}).forEach(function(key) {
+        next.providers[key] = entry(memory.providers[key], incoming.providers[key], (merged.providers || {})[key]);
+      });
+      return { memory: next, obsolete: obsolete };
+    }
+    function chartSource(state, memory) {
+      // The pace chart shows enriched data only; its Claude overlay follows the
+      // last coherent observation, never a bare newer sample.
+      var sample = memory.oauth && memory.oauth.sample;
+      return Object.assign({}, state, { oauth: state.oauth && sample && sameQuotaSource(sample, state.oauth) ? sample : state.oauth });
+    }
+    function paint(state, memory) {
+      renderAllRateLimits(state, { memory: memory, full: lastFullState, transport: limitTransport });
+    }
     function acceptLimits(data, snapshotOnly) {
       if(!data || !data.weekly_budget) throw new Error('bad limits payload');
       var nextState = mergeLimitBudget(limitsState, data.weekly_budget, snapshotOnly);
-      try { renderAllRateLimits(nextState); }
-      catch(error) { showLimitsError(); throw error; }
-      limitsState = nextState;
+      var sourceChanged = !sameQuotaSource(limitsState && limitsState.oauth, nextState.oauth);
+      var nextMemory = sourceChanged ? Object.assign({}, limitDetailMemory,
+        {oauth:pendingDetailEntry(limitDetailMemory.oauth)}) : limitDetailMemory;
+      var remembered = snapshotOnly ? { memory: nextMemory, obsolete: false }
+        : rememberDetail(nextMemory, data.weekly_budget, nextState);
+      var previousFull = lastFullState;
+      if(sourceChanged && lastFullState) lastFullState = Object.assign({}, lastFullState, {oauth:null});
+      if(!snapshotOnly) lastFullState = chartSource(nextState, remembered.memory);
+      try { paint(nextState, remembered.memory); }
+      catch(error) { lastFullState = previousFull; showLimitsError(); throw error; }
+      limitsState = nextState; limitDetailMemory = remembered.memory;
+      // Enrichment arrived for a superseded sample: ask again (minInterval-bounded).
+      if(remembered.obsolete) tfRefresh.request('limits');
+    }
+    function setTransport(feed, state) {
+      var value = state === 'stale' ? 'stale' : 'ready';
+      if(limitTransport[feed] === value) return;
+      limitTransport[feed] = value;
+      if(!limitsState) return;
+      try { paint(limitsState, limitDetailMemory); }
+      catch(error) { console.error('Tokenfold: quota status repaint failed', error); }
     }
     tfRefresh.add('limitSnapshots', {
       interval:15000, minInterval:5000,
       load:function(signal){
         var firstSnapshot = window.tfLimitSnapshot;
         window.tfLimitSnapshot = null;
-        return firstSnapshot || TokenfoldRefresh.fetchJSON(snapshotUrl, signal);
+        if(!firstSnapshot) return TokenfoldRefresh.fetchJSON(snapshotUrl, signal);
+        // The head-started fetch resolves null on failure: retry here instead
+        // of applying null and flashing an error over the placeholder.
+        return firstSnapshot.then(function(data){ return data || TokenfoldRefresh.fetchJSON(snapshotUrl, signal); });
       },
       apply:function(data){
         var identity = JSON.stringify(data && data.weekly_budget);
         var minute = Math.floor(Date.now()/60000);
         if(identity === snapshotIdentity && minute === snapshotPaintMinute) return;
         acceptLimits(data, true);
-        if(snapshotIdentity !== null && snapshotIdentity !== identity) tfRefresh.request('limits');
+        // A changed sample fetches its own detail now, not after the 15s floor.
+        if(snapshotIdentity !== null && snapshotIdentity !== identity) tfRefresh.request('limits', true);
         snapshotIdentity = identity; snapshotPaintMinute = minute;
       },
-      onState:function(state){ if(state === 'stale') showLimitsError(); }
+      onState:function(state){ if(state === 'stale') showLimitsError(); setTransport('snapshots', state); }
     });
     tfRefresh.add('limits', {
       interval:60000, minInterval:15000,
       load:function(signal){ return TokenfoldRefresh.fetchJSON(rlUrl, signal); },
       apply:function(data){ acceptLimits(data, false); },
-      onState:function(state){ if(state === 'stale') showLimitsError(); }
+      onState:function(state){ if(state === 'stale') showLimitsError(); setTransport('limits', state); }
     });
     function pollLimits(){
       tfRefresh.request('limitSnapshots', true); tfRefresh.request('limits', true);
+    }
+    // Observation age advances even when transport stays failed/offline.
+    // This clock only repaints cached data, never fetches or changes timestamps.
+    // One owner per boot, suspended when hidden/page-cached and restored on resume.
+    if(typeof window.setInterval === 'function') {
+      var presentationTimer = null, PRESENTATION_CLOCK_MS = 60000;
+      function paintClock() {
+        if(document.hidden || !limitsState) return;
+        try { paint(limitsState, limitDetailMemory); }
+        catch(error) { console.error('Tokenfold: quota clock repaint failed', error); }
+      }
+      function stopPresentationClock() {
+        if(presentationTimer !== null) window.clearInterval(presentationTimer);
+        presentationTimer = null;
+      }
+      function syncPresentationClock() {
+        stopPresentationClock();
+        if(document.hidden) return;
+        paintClock();
+        presentationTimer = window.setInterval(paintClock, PRESENTATION_CLOCK_MS);
+      }
+      document.addEventListener('visibilitychange', syncPresentationClock);
+      window.addEventListener('pageshow', syncPresentationClock);
+      window.addEventListener('pagehide', stopPresentationClock);
+      syncPresentationClock();
     }
 }
 

@@ -117,7 +117,7 @@ class RateLimitsClaudeWindowsExcludeOtherProvidersTest(TempDBTestCase):
                     "utilization": 50.0,
                 },
             },
-            "updated_at": "2026-09-02T12:00:00+00:00",
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",

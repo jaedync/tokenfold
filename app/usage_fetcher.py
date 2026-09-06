@@ -5,16 +5,15 @@ interval, and keeps the OAuth token refreshed so it never expires.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
-from .config import CLAUDE_CREDENTIALS_PATH, TZ_NAME
+from .config import CLAUDE_CREDENTIALS_PATH
 from .db import get_conn, write_txn
 from .version import get_claude_code_version
 
@@ -49,6 +48,37 @@ _cached_oauth: dict | None = None
 # Track consecutive refresh failures to detect permanently revoked tokens
 _consecutive_refresh_failures: int = 0
 _MAX_REFRESH_FAILURES = 5  # after this many, back off to hourly retries
+_refresh_retry_at: float = 0.0
+_refresh_identity: str | None = None
+_file_identity: str | None = None
+
+
+def _credential_identity(oauth):
+    # Identity only, never persisted or logged; include refresh-token rotation.
+    if not oauth:
+        return None
+    value = json.dumps([oauth.get("accessToken"), oauth.get("refreshToken")])
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _adopt_oauth(oauth):
+    global _cached_oauth, _refresh_identity, _refresh_retry_at
+    global _consecutive_refresh_failures, _backoff_until
+    identity = _credential_identity(oauth)
+    if identity != _refresh_identity:
+        _refresh_identity = identity
+        _consecutive_refresh_failures = 0
+        _refresh_retry_at = 0.0
+        _backoff_until = 0.0
+    _cached_oauth = dict(oauth)
+    return _cached_oauth
+
+
+def _refresh_failed():
+    global _consecutive_refresh_failures, _refresh_retry_at
+    _consecutive_refresh_failures += 1
+    if _consecutive_refresh_failures >= _MAX_REFRESH_FAILURES:
+        _refresh_retry_at = time.time() + TOKEN_CHECK_INTERVAL_S
 
 
 def _read_credentials_file() -> tuple[dict | None, dict | None]:
@@ -75,25 +105,20 @@ def _write_credentials_file(creds: dict):
 
 def _get_oauth() -> dict | None:
     """Get the best available OAuth credentials (memory > file)."""
-    global _cached_oauth
+    global _file_identity
     _, file_oauth = _read_credentials_file()
-
-    if _cached_oauth and file_oauth:
-        # Use whichever has the later expiry (file may be updated by host)
-        cached_exp = _cached_oauth.get("expiresAt", 0)
-        file_exp = file_oauth.get("expiresAt", 0)
-        if file_exp > cached_exp:
-            _cached_oauth = dict(file_oauth)  # defensive copy
-            log("Picked up fresher token from credentials file")
-        return _cached_oauth
-
+    file_identity = _credential_identity(file_oauth)
+    changed = (_file_identity is not None and file_identity is not None
+               and file_identity != _file_identity)
+    if file_identity is not None:
+        _file_identity = file_identity
+    # An actually changed mounted credential is an explicit rotation, even
+    # with an earlier expiry. An unchanged read-only file must not undo refresh.
+    if file_oauth and (changed or not _cached_oauth or
+                      file_oauth.get("expiresAt", 0) > _cached_oauth.get("expiresAt", 0)):
+        return _adopt_oauth(file_oauth)
     if _cached_oauth:
-        return _cached_oauth
-
-    if file_oauth:
-        _cached_oauth = dict(file_oauth)  # defensive copy
-        return _cached_oauth
-
+        return _adopt_oauth(_cached_oauth)
     return None
 
 
@@ -111,7 +136,7 @@ async def _refresh_token_if_needed(force: bool = False):
     Args:
         force: If True, refresh regardless of remaining time (e.g. after 401).
     """
-    global _cached_oauth, _consecutive_refresh_failures
+    global _cached_oauth, _consecutive_refresh_failures, _refresh_retry_at
     oauth = _get_oauth()
     if not oauth:
         return
@@ -130,10 +155,7 @@ async def _refresh_token_if_needed(force: bool = False):
 
     # If we've hit too many consecutive failures, the refresh token is likely
     # revoked — only retry once per hour to avoid spamming the token endpoint.
-    if _consecutive_refresh_failures >= _MAX_REFRESH_FAILURES:
-        log("Refresh token appears invalid (%d consecutive failures) "
-            "— manual re-auth required. Will retry hourly.",
-            _consecutive_refresh_failures)
+    if time.time() < _refresh_retry_at:
         return
 
     refresh_token = oauth.get("refreshToken")
@@ -163,7 +185,7 @@ async def _refresh_token_if_needed(force: bool = False):
         new_token = data.get("access_token")
         if not new_token:
             log("Token refresh response missing access_token")
-            _consecutive_refresh_failures += 1
+            _refresh_failed()
             return
 
         # Build a new dict atomically to avoid partial-update reads
@@ -175,9 +197,9 @@ async def _refresh_token_if_needed(force: bool = False):
         }
 
         # Single atomic assignment — no partial state visible to other coroutines
-        _cached_oauth = refreshed
-
-        _consecutive_refresh_failures = 0  # reset on success
+        _adopt_oauth(refreshed)
+        _consecutive_refresh_failures = 0
+        _refresh_retry_at = 0.0
 
         # Best-effort write back to file (may be read-only mount)
         full_creds, _ = _read_credentials_file()
@@ -194,7 +216,7 @@ async def _refresh_token_if_needed(force: bool = False):
         log("Token refreshed, valid for %.0f more minutes",
                  (refreshed["expiresAt"] - time.time() * 1000) / 1000 / 60)
     except httpx.HTTPStatusError as e:
-        _consecutive_refresh_failures += 1
+        _refresh_failed()
         status = e.response.status_code
         if status in (400, 401, 403):
             log("Token refresh failed: HTTP %s — refresh token may be "
@@ -203,7 +225,7 @@ async def _refresh_token_if_needed(force: bool = False):
         else:
             log("Token refresh failed: HTTP %s", status)
     except Exception as e:
-        _consecutive_refresh_failures += 1
+        _refresh_failed()
         log("Token refresh failed: %s", e)
 
 
@@ -211,10 +233,14 @@ async def _fetch_usage():
     """Fetch usage data from Anthropic API and store it."""
     global _backoff_until
 
+    from .claude_usage import managed_source_owns_usage
+    from .db import read_conn
+    with read_conn() as conn:
+        if managed_source_owns_usage(conn):
+            return
+    token = _get_access_token()
     if time.time() < _backoff_until:
         return  # still in backoff, skip silently
-
-    token = _get_access_token()
     if not token:
         log("No OAuth token available, skipping usage fetch")
         return
@@ -250,24 +276,9 @@ async def _fetch_usage():
 
     _backoff_until = 0.0  # clear backoff on success
 
-    # Unlike POST /api/usage (see ingest.store_usage's zero-usable-buckets
-    # guard), this write is deliberately unguarded: the poller's token comes
-    # from the mounted credentials.json, which is personal-Max by
-    # construction — the poller IS the healer that repairs a stomped
-    # snapshot. If that credential were ever swapped to an enterprise
-    # account, this write would need the same guard.
-    now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
-    conn = get_conn()
-    with write_txn(conn) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
-        )
-
-    # Historize per-bucket readings on EVERY poll (never raises into us) —
-    # the meta row above is snapshot-only; limit_readings is the history.
-    from .limit_readings import record_limit_readings
-    record_limit_readings(conn, usage, time.time(), "server")
+    from .claude_usage import store_snapshot
+    if store_snapshot(usage, time.time(), "server") is None:
+        return  # managed source took ownership while the network call ran
 
     from .aggregator import invalidate_cache
     invalidate_cache()

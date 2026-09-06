@@ -9,6 +9,8 @@ import json
 import math
 import sys
 import time
+
+from .quota_freshness import quota_window_valid
 from datetime import datetime, timezone
 
 from .db import get_conn, write_txn
@@ -183,7 +185,7 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
         # cannot explain that sample and must never yield a dollar projection.
         if (include_costs and all(_finite(v) for v in (reset, duration, pct, observed))
                 and duration > 0 and 0 < pct <= 100 and reset > now
-                and reset - duration < observed <= now):
+                and quota_window_valid(observed, now, reset, reset - duration)):
             start = reset - duration
             cost = _window_reported_cost(conn, scope, provider, start, observed)
             if _finite(cost) and cost > 0:

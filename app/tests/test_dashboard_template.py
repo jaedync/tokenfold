@@ -318,7 +318,7 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
 
     def test_provider_group_preserves_gauges_and_projection_cards(self):
         assignment = re.search(
-            r"oauthPanel\.innerHTML\s*=\s*providerGroup\([^;]+;",
+            r"TokenfoldDom\.patchHTML\(oauthPanel,\s*providerGroup\([^;]+;",
             self.tpl)
         self.assertIsNotNone(assignment, "OAuth gauges must render through the provider group")
         rendered = assignment.group(0)
@@ -331,12 +331,12 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
         self.assertIn("budgetStats", self.tpl)
 
     def test_provider_group_helper_is_generic_for_future_sources(self):
-        self.assertIn("function providerGroup(providerKey, providerName, content, plan)",
+        self.assertIn("function providerGroup(providerKey, providerName, content, plan, status)",
                       self.tpl)
         self.assertIn("data-provider=\"' + esc(providerKey) + '\"", self.tpl)
         # The provider's self-reported plan rides along as a label so a
         # misclassified fleet box is visible on the dashboard itself.
-        self.assertIn("providerGroup(key, names[key], content, provider.plan)", self.tpl)
+        self.assertIn("providerGroup(key, names[key], content, provider.plan, status)", self.tpl)
 
     def test_reported_provider_limits_render_without_fabricated_gauges(self):
         self.assertIn("wb.providers || {}", self.tpl)
@@ -391,7 +391,8 @@ class ScopedBucketGaugesTest(unittest.TestCase):
 
     def test_scoped_row_shows_reset_time(self):
         """NEW vs the old rows: per-bucket resets_at via fmtReset."""
-        self.assertIn("fmtReset(sb.resets_at)", self.tpl)
+        self.assertIn("resetLabelFor(sb.resets_at, sbState)", self.tpl)
+        self.assertIn("return fmtReset(iso)", self.tpl)
 
     def test_scoped_label_is_escaped(self):
         """display_name is external data — must flow through esc()."""
@@ -535,7 +536,7 @@ class FiveHourExpiredGaugeTest(unittest.TestCase):
         self.assertIn(
             "var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);",
             self.tpl)
-        self.assertIn("var hExpected = fiveHourPace.expected;", self.tpl)
+        self.assertIn("var hExpected = fiveHourState === 'current' ? fiveHourPace.expected : null;", self.tpl)
 
 
 class BudgetLeftWindowFixTest(unittest.TestCase):
@@ -560,8 +561,8 @@ class BudgetLeftWindowFixTest(unittest.TestCase):
         self.assertNotIn("weekActiveMin / wPct", self.tpl)
 
     def test_suppressed_when_limit_window_absent(self):
-        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
-        end = self.tpl.index("var weeklyNote = null;")
+        start = self.tpl.index("limitWindow = weeklyState === 'current' ? alignedWindow(oauth.limit_window, oauth) : null;")
+        end = self.tpl.index("// 5-Hour dollar stats:", start)
         block = self.tpl[start:end]
         self.assertIn("if(limitWindow && wExpected >= 2 && !recentWeeklyReset", block)
 
@@ -579,12 +580,12 @@ class BudgetLeftWindowFixTest(unittest.TestCase):
         stat had an empty value. Gate and render must use the SAME
         already-rounded lwActiveMin. (F2 hoisted both declarations above
         the stats rows, so the search window starts at the declaration.)"""
-        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
-        end = self.tpl.index("var weeklyNote = null;")
+        start = self.tpl.index("limitWindow = weeklyState === 'current' ? alignedWindow(oauth.limit_window, oauth) : null;")
+        end = self.tpl.index("// 5-Hour dollar stats:", start)
         block = self.tpl[start:end]
         # lwActiveMin is computed before the gate, not only inside the block.
         gate_pos = block.index("if(limitWindow && wExpected >= 2")
-        lw_active_min_pos = block.index("var lwActiveMin =")
+        lw_active_min_pos = block.index("lwActiveMin =")
         self.assertLess(lw_active_min_pos, gate_pos,
                          "lwActiveMin must be computed before the gate")
         self.assertIn("(limitWindow.cost > 0 || lwActiveMin > 0))", block)
@@ -607,14 +608,14 @@ class WindowAnchoredSpendRowsTest(unittest.TestCase):
         self.assertIn("'spent · this window'", self.tpl)
         self.assertIn("'active · this window'", self.tpl)
         # Fallback path (and only there) keeps the rolling labels.
-        self.assertIn("'spent · rolling 7d'", self.tpl)
+        self.assertIn("'measured · rolling 7d'", self.tpl)
         self.assertIn("'active · rolling 7d'", self.tpl)
         # Primary rows read limit_window fields, not wb.week_cost.
         self.assertIn("fC(limitWindow.cost || 0)", self.tpl)
 
     def test_rows_are_conditional_on_limit_window(self):
-        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
-        end = self.tpl.index("'spent · rolling 7d'")
+        start = self.tpl.index("limitWindow = weeklyState === 'current' ? alignedWindow(oauth.limit_window, oauth) : null;")
+        end = self.tpl.index("'measured · rolling 7d'", start)
         block = self.tpl[start:end]
         self.assertIn("if(limitWindow) {", block)
         self.assertIn("'spent · this window'", block)
@@ -638,7 +639,7 @@ class PaceChartTrendOverlayTest(unittest.TestCase):
         cls.tpl = TEMPLATE.read_text()
 
     def test_gated_on_weekly_series(self):
-        self.assertIn("var trend = wb.oauth && wb.oauth.trend;", self.tpl)
+        self.assertIn("var trend = source.oauth && source.oauth.trend;", self.tpl)
         self.assertIn(
             "var weeklySeries = trend && trend.seven_day && trend.seven_day.series;",
             self.tpl)
@@ -700,7 +701,7 @@ class PaceChartTrendOverlayTest(unittest.TestCase):
         end = self.tpl.index("ctx.fillText('NOW'")
         block = self.tpl[start:end]
         self.assertIn("resetMarkers", block)
-        self.assertIn("xAxis.getPixelForValue(resetMarkers[rmk])", block)
+        self.assertIn("xAxis.getPixelForValue(paceDraw.resetMarkers[rmk])", block)
         self.assertIn("ctx.fillText('reset', rx", block)
 
     def test_now_line_plugin_drawing_unchanged(self):
@@ -811,15 +812,15 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
         self.assertIn("'% budget left'", block)
 
     def test_five_hour_gauge_gets_stats_and_projection(self):
-        start = self.tpl.index("var fhWindow = oauth.five_hour_window || null;")
-        end = self.tpl.index("gaugeHtml += '</div>'")
+        start = self.tpl.index("var fhWindow = fiveHourState === 'expired' || fiveHourState === 'invalid'")
+        end = self.tpl.index("gaugeHtml += '</div>'", start)
         block = self.tpl[start:end]
-        self.assertIn("budgetStats(fhWindow ? fhWindow.cost : null, hPct)",
-                      block)
+        self.assertIn("alignedWindow(oauth.five_hour_window, oauth)", block)
+        self.assertIn("fhWindow ? budgetStats(fhWindow.cost, hPct) : []", block)
         # Projection comes from the shared windowPace read; both it and the
         # stats are wired into the 5-Hour buildGauge call.
         call = self.tpl.index("buildGauge('5-Hour Window'")
-        call_block = self.tpl[call:call + 300]
+        call_block = self.tpl[call:self.tpl.index("});", call)]
         self.assertIn("projectedPct: fiveHourPace.projected", call_block)
         self.assertIn("stats: fiveHourStats", call_block)
 
@@ -841,7 +842,7 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
                       self.tpl)
 
     def test_weekly_est_budget_cell_gated(self):
-        start = self.tpl.index("var limitWindow = oauth.limit_window || null;")
+        start = self.tpl.index("limitWindow = weeklyState === 'current' ? alignedWindow(oauth.limit_window, oauth) : null;")
         block = self.tpl[start:start + 1600]
         self.assertIn("if(limitWindow.cost > 0 && wPct >= 5)", block)
         self.assertIn("(limitWindow.cost / wPct) * 100", block)
@@ -860,7 +861,7 @@ class MarkerLabelOverlapTest(unittest.TestCase):
         # The pass body is hoisted (shared with the enterprise monthly card);
         # the oauth path CALLS it right after writing the panel HTML.
         render = self.tpl.index(
-            "oauthPanel.innerHTML = providerGroup(")
+            "TokenfoldDom.patchHTML(oauthPanel, providerGroup(")
         window = self.tpl[render:render + 400]
         self.assertIn("runMarkerOverlapPass();", window)
         # The pass body itself still measures + hides colliding labels.

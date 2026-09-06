@@ -82,8 +82,11 @@ def floor_reset_events(events):
             for e in events]
 
 
-def record_limit_readings(conn, usage_dict, fetched_epoch, source):
-    """Append one limit_readings row per normalized bucket. NEVER raises.
+def record_limit_readings(conn, usage_dict, fetched_epoch, source, *, strict=False):
+    """Append normalized history; legacy callers are best-effort by default.
+
+    Managed metadata ingestion uses strict=True so any partial history failure
+    reaches its outer transaction and rolls back snapshot/source ownership too.
 
     Every-poll writes, NO dedupe-on-change: a "still N% at time T" row is
     exactly what bounds each integer step-crossing to one poll interval for
@@ -104,7 +107,9 @@ def record_limit_readings(conn, usage_dict, fetched_epoch, source):
                     "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
                     (fetched_epoch, source, b["key"], b["utilization"],
                      b["resets_at"], _iso_to_epoch(b["resets_at"])))
-    except Exception as e:  # writer must never break the poll/ingest path
+    except Exception as e:
+        if strict:
+            raise
         log("record_limit_readings failed (source=%s): %s", source, e)
 
 
@@ -202,7 +207,7 @@ def persistent_resets(rows):
     return kept
 
 
-def corroborated_resets(conn, bucket, since_epoch):
+def corroborated_resets(conn, bucket, since_epoch, *, until_epoch=None):
     """persistent_resets for one bucket, PLUS account-level resets
     corroborated by sibling buckets.
 
@@ -228,17 +233,24 @@ def corroborated_resets(conn, bucket, since_epoch):
     at_epoch like detect_resets — response-shaping callers floor their own
     served copy (floor_reset_events).
     """
+    # Bound raw own AND sibling history before reset/recovery inference.
+    # Filtering inferred (or minute-floored) events afterwards is too late.
+    cutoff = " AND fetched_epoch<=?" if until_epoch is not None else ""
+    cutoff_args = (until_epoch,) if until_epoch is not None else ()
+
     def _rows(b):
         return conn.execute(
             "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
-            "FROM limit_readings WHERE bucket=? AND fetched_epoch>=? "
-            "ORDER BY fetched_epoch ASC", (b, since_epoch)).fetchall()
+            "FROM limit_readings WHERE bucket=? AND fetched_epoch>=?"
+            + cutoff + " ORDER BY fetched_epoch ASC",
+            (b, since_epoch) + cutoff_args).fetchall()
 
     own_rows = _rows(bucket)
     events = persistent_resets(own_rows)
     siblings = [r[0] for r in conn.execute(
         "SELECT DISTINCT bucket FROM limit_readings "
-        "WHERE fetched_epoch>=? AND bucket<>?", (since_epoch, bucket))]
+        "WHERE fetched_epoch>=? AND bucket<>?" + cutoff,
+        (since_epoch, bucket) + cutoff_args)]
     candidates = []
     for sib in siblings:
         for e in persistent_resets(_rows(sib)):

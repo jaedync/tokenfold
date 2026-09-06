@@ -16,8 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
+from .claude_usage import parse_claude_usage
 from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
-                     PiIngestRequest, ProviderUsageRequest)
+                     PiIngestRequest, ProviderUsageRequest, ClaudeUsageRequest)
 from .sigheader import decode_header, split_signature
 
 router = APIRouter()
@@ -834,6 +835,13 @@ def store_provider_limits(req: ProviderUsageRequest):
     return {"status": "ok", "providers": providers}
 
 
+@router.post("/api/usage/claude", dependencies=[Depends(require_api_key)])
+def store_claude_limits(req: ClaudeUsageRequest = Depends(parse_claude_usage)):
+    """Strict metadata-only observations from the personal default proxy."""
+    from .claude_usage import store_claude_usage
+    return store_claude_usage(req)
+
+
 @router.post("/api/usage", dependencies=[Depends(require_api_key)])
 async def store_usage(request: Request):
     """Store OAuth usage data pushed by the client."""
@@ -886,24 +894,14 @@ async def store_usage(request: Request):
         return {"status": "ignored_no_limits", "updated_at": None,
                 "captured_extra_usage": captured}
 
-    now = datetime.now(ZoneInfo(TZ_NAME)).isoformat()
-    with write_txn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            ("oauth_usage", json.dumps({"data": usage, "updated_at": now})),
-        )
-
-    # Historize per-bucket readings — but ONLY on instances not locked to
-    # enterprise scope: the compliance invariant says locked instances must
-    # never PERSIST personal Max limit history (test_enterprise_only). The
-    # meta snapshot write above stays ungated (existing behavior). Read
-    # LOCKED_SCOPE fresh via sys.modules for importlib.reload safety, like
-    # api.py does. Bucket-level validation lives inside record_limit_readings
-    # (invalid buckets skipped, valid ones recorded, never raises).
+    # Preserve legacy enterprise permissions, but never let receipt-stamped
+    # personal sources overwrite a managed provider observation or its history.
     import sys
-    if sys.modules["app.config"].LOCKED_SCOPE != "enterprise":
-        from .limit_readings import record_limit_readings
-        record_limit_readings(conn, usage, time.time(), "client")
+    from .claude_usage import store_snapshot
+    now = store_snapshot(usage, time.time(), "client", history=(
+        sys.modules["app.config"].LOCKED_SCOPE != "enterprise"))
+    if now is None:
+        return {"status": "ignored_managed_source", "updated_at": None}
 
     # The monthly hero/billing meter also depends on this observation, not
     # only the separately polled quota gauges.

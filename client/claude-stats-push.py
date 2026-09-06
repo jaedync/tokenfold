@@ -668,7 +668,7 @@ def _fetch_and_push_usage():
             usage = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            err(f"auth rejected (HTTP {e.code}) — TOKENFOLD_API_KEY must match the server's STATS_API_KEY")
+            err(f"Anthropic OAuth usage auth rejected (HTTP {e.code}); provider credentials unavailable or expired")
         else:
             err(f"Usage fetch: HTTP {e.code}")
         if e.code == 429:

@@ -4,6 +4,7 @@ Personal scope additionally returns oauth gauge fields when available.
 """
 
 import json
+import math
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -21,6 +22,7 @@ from .db import read_conn
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
+from .quota_freshness import quota_window_valid
 
 
 def _iso_to_epoch(iso_str: Optional[str]) -> Optional[float]:
@@ -87,7 +89,7 @@ def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     )
 
 
-def _bucket_window_start(conn, bucket_key, resets_epoch, window_s):
+def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None):
     """Start epoch of the CURRENT limit window for one historized bucket.
 
     resets_at − window_s (minute-floored — limit timestamps never leave the
@@ -105,7 +107,8 @@ def _bucket_window_start(conn, bucket_key, resets_epoch, window_s):
     """
     start = ((resets_epoch // 60) * 60.0) - window_s
     from .limit_readings import corroborated_resets, floor_reset_events
-    granted = floor_reset_events(corroborated_resets(conn, bucket_key, start))
+    granted = floor_reset_events(corroborated_resets(
+        conn, bucket_key, start, until_epoch=observed))
     if granted:
         start = max(start, granted[-1]["at_epoch"])
     return start
@@ -145,7 +148,7 @@ def stats(scope: Optional[str] = Query(default=None)):
     return JSONResponse(content=data)
 
 
-def _oauth_snapshot(usage, updated_at):
+def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
     """Shared quota-only shape for first paint and enriched responses."""
     extra = usage.get("extra_usage") or {}
 
@@ -180,12 +183,14 @@ def _oauth_snapshot(usage, updated_at):
         "buckets": buckets,
         "extra_usage": {
             "enabled": extra.get("is_enabled", False),
-            "monthly_limit_cents": extra.get("monthly_limit", 0),
-            "used_cents": extra.get("used_credits", 0),
-            "pct": extra.get("utilization", 0),
+            "monthly_limit_cents": extra.get("monthly_limit"),
+            "used_cents": extra.get("used_credits"),
+            "pct": extra.get("utilization"),
         } if extra else None,
         "updated_at": updated_at,
     }
+    if source:
+        oauth["source"] = source
     if updated_at:
         try:
             oauth["updated_at_epoch"] = datetime.fromisoformat(
@@ -194,6 +199,10 @@ def _oauth_snapshot(usage, updated_at):
         except (ValueError, TypeError):
             pass
 
+    if (isinstance(observed_at_epoch, (float, int))
+            and not isinstance(observed_at_epoch, bool)
+            and math.isfinite(observed_at_epoch) and observed_at_epoch > 0):
+        oauth["updated_at_epoch"] = observed_at_epoch
     return oauth, by_key
 
 
@@ -212,7 +221,8 @@ def rate_limit_snapshots(scope: Optional[str] = Query(default=None)):
                 try:
                     stored = json.loads(row["value"])
                     budget["oauth"], _ = _oauth_snapshot(
-                        stored.get("data", {}), stored.get("updated_at", ""))
+                        stored.get("data", {}), stored.get("updated_at", ""), stored.get("source"),
+                        stored.get("observed_at_epoch"))
                 except (ValueError, KeyError, TypeError):
                     pass
         return JSONResponse(content={"weekly_budget": budget})
@@ -370,7 +380,9 @@ def _build_rate_limits(scope, conn):
                 usage = stored.get("data", {})
                 updated_at = stored.get("updated_at", "")
 
-                oauth_block, by_key = _oauth_snapshot(usage, updated_at)
+                oauth_block, by_key = _oauth_snapshot(usage, updated_at, stored.get("source"),
+                                                     stored.get("observed_at_epoch"))
+                observed = oauth_block.get("updated_at_epoch")
                 seven_day = by_key.get("seven_day") or {}
                 five_hour = by_key.get("five_hour") or {}
                 buckets = oauth_block["buckets"]
@@ -391,18 +403,23 @@ def _build_rate_limits(scope, conn):
                     from .limit_trends import bucket_trend, distinct_buckets
                     present = distinct_buckets(conn, now)
                     if present:
-                        oauth_block["trend"] = {
-                            b: bucket_trend(conn, b, now) for b in present
-                        }
+                        trends = {}
+                        for key in present:
+                            reset = _iso_to_epoch((by_key.get(key) or {}).get("resets_at"))
+                            duration = 5 * 3600 if key == "five_hour" else 7 * 86400
+                            if quota_window_valid(observed, now, reset, (reset or 0) - duration):
+                                trends[key] = bucket_trend(conn, key, observed)
+                        if trends:
+                            oauth_block["trend"] = trends
                 except Exception as e:
                     print(f"[rate-limits] trend computation failed: {e}",
                           flush=True)
 
                 # Consistent "budget left" inputs (D5): cost + active time over
-                # the ACTUAL weekly limit window [weekly_resets_at - 7d, now],
+                # the ACTUAL weekly limit window ending at the observation,
                 # so the template no longer divides rolling-7d cost by
                 # limit-window pct. Omitted when seven_day.resets_at is
-                # unparseable. start_epoch is minute-floored (limit timestamps
+                # unparseable/stale/expired. start_epoch is minute-floored (limit timestamps
                 # never leave the server at sub-minute precision).
                 #
                 # Narrow try/except (Fix 6): same reasoning as the trend block
@@ -411,19 +428,22 @@ def _build_rate_limits(scope, conn):
                 try:
                     weekly_resets_epoch = _iso_to_epoch(
                         seven_day.get("resets_at"))
-                    if weekly_resets_epoch is not None:
+                    if quota_window_valid(observed, now, weekly_resets_epoch,
+                                          (weekly_resets_epoch or 0) - 7 * 86400):
                         # F1 window anchoring + granted-reset truncation now
                         # lives in _bucket_window_start (shared with the
                         # five_hour and scoped windows below).
                         lw_start = _bucket_window_start(
-                            conn, "seven_day", weekly_resets_epoch, 7 * 86400)
+                            conn, "seven_day", weekly_resets_epoch, 7 * 86400, observed)
                         oauth_block["limit_window"] = {
                             "start_epoch": lw_start,
+                            "observed_at_epoch": observed,
+                            "end_epoch": observed,
                             "cost": round(compute_window_cost(
-                                conn, lw_start, now, scope=effective,
+                                conn, lw_start, observed, scope=effective,
                                 anthropic_only=True), 2),
                             "active_s": round(
-                                _active_seconds(conn, pred, lw_start, now)),
+                                _active_seconds(conn, pred, lw_start, observed)),
                         }
                 except Exception as e:
                     print(f"[rate-limits] limit_window computation failed: "
@@ -440,13 +460,16 @@ def _build_rate_limits(scope, conn):
                 try:
                     fh_resets_epoch = _iso_to_epoch(
                         five_hour.get("resets_at"))
-                    if fh_resets_epoch is not None and fh_resets_epoch > now:
+                    if quota_window_valid(observed, now, fh_resets_epoch,
+                                          (fh_resets_epoch or 0) - 5 * 3600):
                         fh_start = _bucket_window_start(
-                            conn, "five_hour", fh_resets_epoch, 5 * 3600)
+                            conn, "five_hour", fh_resets_epoch, 5 * 3600, observed)
                         oauth_block["five_hour_window"] = {
                             "start_epoch": fh_start,
+                            "observed_at_epoch": observed,
+                            "end_epoch": observed,
                             "cost": round(compute_window_cost(
-                                conn, fh_start, now, scope=effective,
+                                conn, fh_start, observed, scope=effective,
                                 anthropic_only=True), 2),
                         }
                 except Exception as e:
@@ -475,21 +498,23 @@ def _build_rate_limits(scope, conn):
                     if not bkt_key.startswith("scoped:"):
                         continue
                     try:
-                        sb_resets_epoch = _iso_to_epoch(bkt.get("resets_at"))
-                        if sb_resets_epoch is None or sb_resets_epoch <= now:
+                        sb_resets_epoch = _iso_to_epoch(by_key[bkt_key].get("resets_at"))
+                        if not quota_window_valid(observed, now, sb_resets_epoch,
+                                                  (sb_resets_epoch or 0) - 7 * 86400):
                             continue  # unparseable or stale — no dollars
                         sb_start = _bucket_window_start(
-                            conn, bkt_key, sb_resets_epoch, 7 * 86400)
+                            conn, bkt_key, sb_resets_epoch, 7 * 86400, observed)
                         family = bkt_key.split(":", 1)[1].split("_")[0].lower()
                         if not family:
                             continue
                         sb_by_model = compute_window_cost_by_model(
-                            conn, sb_start, now, scope=effective,
+                            conn, sb_start, observed, scope=effective,
                             anthropic_only=True)
                         bkt["window_cost"] = round(sum(
                             v for k, v in sb_by_model.items()
                             if family in k.lower()), 2)
                         bkt["window_start_epoch"] = sb_start
+                        bkt["window_end_epoch"] = observed
                     except Exception as e:
                         print(f"[rate-limits] scoped window cost failed "
                               f"for {bkt_key}: {e}", flush=True)

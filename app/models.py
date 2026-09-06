@@ -184,3 +184,40 @@ class ProviderUsageRequest(BaseModel):
     # fail closed instead of stomping a peer scope.
     account_class: Literal["work", "personal"]
     limits: list[ProviderLimitSnapshot] = Field(max_length=3)
+
+
+class ClaudeUsageBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    key: str = Field(max_length=64, pattern=r"^(five_hour|seven_day|scoped:[a-z0-9]+(?:_[a-z0-9]+)*)$")
+    label: str = Field(min_length=1, max_length=64, pattern=r"\S")
+    pct: float = Field(ge=0, le=100)
+    resets_at_epoch: float = Field(gt=0, le=10**11)
+
+
+class ClaudeExtraUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    enabled: bool
+    monthly_limit_cents: float | None = Field(default=None, ge=0, le=10**9)
+    used_cents: float | None = Field(default=None, ge=0, le=10**9)
+    pct: float | None = Field(default=None, ge=0, le=100)
+
+
+class ClaudeUsageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    machine: str = Field(min_length=1, max_length=128, pattern=r"\S")
+    account_class: Literal["personal"]
+    source: Literal["meridian-oauth"]
+    source_profile: Literal["default"]
+    observed_at_epoch: float = Field(gt=0, le=10**11)
+    buckets: list[ClaudeUsageBucket] = Field(min_length=2, max_length=16)
+    extra_usage: ClaudeExtraUsage | None = None
+
+    @model_validator(mode="after")
+    def unique_required_buckets(self):
+        keys = [b.key for b in self.buckets]
+        if len(set(keys)) != len(keys) or not {"five_hour", "seven_day"} <= set(keys):
+            raise ValueError("unique five_hour and seven_day buckets required")
+        return self
