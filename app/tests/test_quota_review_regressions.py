@@ -4,7 +4,7 @@ import time
 from unittest.mock import patch
 
 from app.tests._support import TempDBTestCase
-from app.tests.test_bucket_windows import _ins_event, _ins_reading, _iso
+from app.tests.test_bucket_windows import _ins_event, _iso
 
 
 class ResetObservationCutoffTest(TempDBTestCase):
@@ -31,7 +31,13 @@ class ResetObservationCutoffTest(TempDBTestCase):
                 "scoped": (oauth["buckets"][2]["window_start_epoch"], oauth["buckets"][2]["window_cost"])}
 
     def reading(self, bucket, delta, pct):
-        _ins_reading(self.conn, bucket, self.observed + delta, pct, self.reset)
+        # These test the managed snapshot's own time cutoff, not a transfer
+        # from the legacy writer group. Give its history matching provenance.
+        from app.limit_readings import record_limit_readings
+        key = bucket.replace("scoped:", "seven_day_")
+        record_limit_readings(self.conn, {key: {
+            "utilization": pct, "resets_at": _iso(self.reset)}},
+            self.observed + delta, "meridian-oauth", strict=True)
 
     def test_later_same_minute_reset_cannot_cut_old_sample_windows(self):
         for bucket in self.keys:
