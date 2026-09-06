@@ -89,7 +89,7 @@ def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     )
 
 
-def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None):
+def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None, *, source=None):
     """Start epoch of the CURRENT limit window for one historized bucket.
 
     resets_at − window_s (minute-floored — limit timestamps never leave the
@@ -108,7 +108,7 @@ def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None
     start = ((resets_epoch // 60) * 60.0) - window_s
     from .limit_readings import corroborated_resets, floor_reset_events
     granted = floor_reset_events(corroborated_resets(
-        conn, bucket_key, start, until_epoch=observed))
+        conn, bucket_key, start, until_epoch=observed, source=source))
     if granted:
         start = max(start, granted[-1]["at_epoch"])
     return start
@@ -383,6 +383,7 @@ def _build_rate_limits(scope, conn):
                 oauth_block, by_key = _oauth_snapshot(usage, updated_at, stored.get("source"),
                                                      stored.get("observed_at_epoch"))
                 observed = oauth_block.get("updated_at_epoch")
+                history_source = stored.get("source")
                 seven_day = by_key.get("seven_day") or {}
                 five_hour = by_key.get("five_hour") or {}
                 buckets = oauth_block["buckets"]
@@ -401,14 +402,16 @@ def _build_rate_limits(scope, conn):
                 # 'trend' key alone.
                 try:
                     from .limit_trends import bucket_trend, distinct_buckets
-                    present = distinct_buckets(conn, now)
+                    present = (distinct_buckets(conn, observed, source=history_source)
+                               if observed is not None else [])
                     if present:
                         trends = {}
                         for key in present:
                             reset = _iso_to_epoch((by_key.get(key) or {}).get("resets_at"))
                             duration = 5 * 3600 if key == "five_hour" else 7 * 86400
                             if quota_window_valid(observed, now, reset, (reset or 0) - duration):
-                                trends[key] = bucket_trend(conn, key, observed)
+                                trends[key] = bucket_trend(conn, key, observed,
+                                                           source=history_source)
                         if trends:
                             oauth_block["trend"] = trends
                 except Exception as e:
@@ -434,7 +437,8 @@ def _build_rate_limits(scope, conn):
                         # lives in _bucket_window_start (shared with the
                         # five_hour and scoped windows below).
                         lw_start = _bucket_window_start(
-                            conn, "seven_day", weekly_resets_epoch, 7 * 86400, observed)
+                            conn, "seven_day", weekly_resets_epoch, 7 * 86400, observed,
+                            source=history_source)
                         oauth_block["limit_window"] = {
                             "start_epoch": lw_start,
                             "observed_at_epoch": observed,
@@ -463,7 +467,8 @@ def _build_rate_limits(scope, conn):
                     if quota_window_valid(observed, now, fh_resets_epoch,
                                           (fh_resets_epoch or 0) - 5 * 3600):
                         fh_start = _bucket_window_start(
-                            conn, "five_hour", fh_resets_epoch, 5 * 3600, observed)
+                            conn, "five_hour", fh_resets_epoch, 5 * 3600, observed,
+                            source=history_source)
                         oauth_block["five_hour_window"] = {
                             "start_epoch": fh_start,
                             "observed_at_epoch": observed,
@@ -503,7 +508,8 @@ def _build_rate_limits(scope, conn):
                                                   (sb_resets_epoch or 0) - 7 * 86400):
                             continue  # unparseable or stale — no dollars
                         sb_start = _bucket_window_start(
-                            conn, bkt_key, sb_resets_epoch, 7 * 86400, observed)
+                            conn, bkt_key, sb_resets_epoch, 7 * 86400, observed,
+                            source=history_source)
                         family = bkt_key.split(":", 1)[1].split("_")[0].lower()
                         if not family:
                             continue

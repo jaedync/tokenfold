@@ -70,23 +70,29 @@ class QuotaFreshnessTest(TempDBTestCase):
             fresh = _fresh_windows(snapshot, "codex", self.now, self.conn, "personal", True)
             self.assertEqual(fresh[0]["estimated_capacity"], 20)
 
+    def managed_reading(self, observed, pct, reset):
+        # Freshness assertions need the snapshot's own source, otherwise
+        # source isolation alone would make stale suppression pass vacuously.
+        from app.limit_readings import record_limit_readings
+        record_limit_readings(self.conn, {"seven_day": {
+            "utilization": pct, "resets_at": _iso(reset)}},
+            observed, "meridian-oauth", strict=True)
+
     def test_stale_observation_and_expired_bucket_do_not_publish_pace(self):
-        from app.tests.test_bucket_windows import _ins_reading
         for observed, reset in ((self.now - 3601, self.now + 3600),
                                 (self.observed, self.now - 1)):
             self.seed(observed, reset)
-            _ins_reading(self.conn, "seven_day", self.now - 1200, 40, reset)
-            _ins_reading(self.conn, "seven_day", self.now - 600, 50, reset)
+            self.managed_reading(self.now - 1200, 40, reset)
+            self.managed_reading(self.now - 600, 50, reset)
             self.assertNotIn("seven_day", self.budget()["oauth"].get("trend", {}))
 
     def test_trend_excludes_readings_after_observation(self):
-        from app.tests.test_bucket_windows import _ins_reading
         self.seed(self.observed)
         reset = self.now + 3600
         for t, pct in ((self.observed - 1800, 10), (self.observed - 1200, 20),
                        (self.observed - 600, 30), (self.observed, 40),
                        (self.observed + 300, 99)):
-            _ins_reading(self.conn, "seven_day", t, pct, reset)
+            self.managed_reading(t, pct, reset)
         trend = self.budget()["oauth"]["trend"]["seven_day"]
         self.assertEqual(trend["series"][-1][1], 40)
         self.assertTrue(all(t <= self.observed for t, _ in trend["series"]))

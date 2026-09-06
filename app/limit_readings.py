@@ -25,6 +25,7 @@ from .api import _scrub_to_minute_or_none, _iso_to_epoch
 from .auth import require_dashboard_auth
 from .db import get_conn, write_txn
 from .usage_buckets import normalize_usage_buckets
+from .quota_history import active_history_source, history_source_filter
 
 router = APIRouter()
 
@@ -207,7 +208,7 @@ def persistent_resets(rows):
     return kept
 
 
-def corroborated_resets(conn, bucket, since_epoch, *, until_epoch=None):
+def corroborated_resets(conn, bucket, since_epoch, *, until_epoch=None, source=None):
     """persistent_resets for one bucket, PLUS account-level resets
     corroborated by sibling buckets.
 
@@ -237,20 +238,21 @@ def corroborated_resets(conn, bucket, since_epoch, *, until_epoch=None):
     # Filtering inferred (or minute-floored) events afterwards is too late.
     cutoff = " AND fetched_epoch<=?" if until_epoch is not None else ""
     cutoff_args = (until_epoch,) if until_epoch is not None else ()
+    predicate, source_args = history_source_filter(source)
 
     def _rows(b):
         return conn.execute(
             "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
             "FROM limit_readings WHERE bucket=? AND fetched_epoch>=?"
-            + cutoff + " ORDER BY fetched_epoch ASC",
-            (b, since_epoch) + cutoff_args).fetchall()
+            + cutoff + f" AND {predicate} ORDER BY fetched_epoch ASC",
+            (b, since_epoch) + cutoff_args + source_args).fetchall()
 
     own_rows = _rows(bucket)
     events = persistent_resets(own_rows)
     siblings = [r[0] for r in conn.execute(
         "SELECT DISTINCT bucket FROM limit_readings "
-        "WHERE fetched_epoch>=? AND bucket<>?" + cutoff,
-        (since_epoch, bucket) + cutoff_args)]
+        "WHERE fetched_epoch>=? AND bucket<>?" + cutoff + f" AND {predicate}",
+        (since_epoch, bucket) + cutoff_args + source_args)]
     candidates = []
     for sib in siblings:
         for e in persistent_resets(_rows(sib)):
@@ -329,12 +331,16 @@ async def limit_history(bucket: str = Query(...),
     hours = max(1, min(HOURS_MAX, hours))  # clamp, never error
 
     conn = get_conn()
-    since = time.time() - hours * 3600
+    now = time.time()
+    since = now - hours * 3600
+    source = active_history_source(conn)
+    predicate, params = history_source_filter(source)
     rows = conn.execute(
         "SELECT bucket, fetched_epoch, utilization, resets_at, "
         "resets_at_epoch FROM limit_readings "
-        "WHERE bucket=? AND fetched_epoch>=? ORDER BY fetched_epoch ASC",
-        (bucket, since)).fetchall()
+        "WHERE bucket=? AND fetched_epoch>=? AND fetched_epoch<=? "
+        f"AND {predicate} ORDER BY fetched_epoch ASC",
+        (bucket, since, now) + params).fetchall()
     return {
         "bucket": bucket,
         "readings": [
@@ -353,17 +359,18 @@ async def limit_history(bucket: str = Query(...),
         # a raw event — same real-world reset) so the chart's markers agree
         # with the dollar-window anchors in /api/rate-limits.
         "resets": floor_reset_events(_resets_with_corroboration(
-            conn, bucket, since, rows)),
+            conn, bucket, since, rows, until_epoch=now, source=source)),
     }
 
 
-def _resets_with_corroboration(conn, bucket, since, rows):
+def _resets_with_corroboration(conn, bucket, since, rows, *, until_epoch=None, source=None):
     """Raw detect_resets events for the served window, plus
     corroborated-only events (borrowed from sibling buckets) that no raw
     event already covers. Sorted by at_epoch, full precision."""
     raw = detect_resets(rows)
     extras = [
-        e for e in corroborated_resets(conn, bucket, since)
+        e for e in corroborated_resets(conn, bucket, since,
+                                       until_epoch=until_epoch, source=source)
         if e.get("corroborated_by")
         and not any(abs(e["at_epoch"] - r["at_epoch"]) <= RESET_JUMP_S
                     for r in raw)

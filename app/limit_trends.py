@@ -20,6 +20,7 @@ zero code change.
 """
 
 from .limit_readings import detect_resets, floor_reset_events
+from .quota_history import history_source_filter
 
 # A segment must span at least this long, with at least this many distinct
 # readings, before an average burn is meaningful (a single poll pair over a few
@@ -31,7 +32,7 @@ SERIES_MAX_POINTS = 200
 FIVE_HOUR_KEY = "five_hour"
 
 
-def _load_dedup_rows(conn, bucket, boundary, end):
+def _load_dedup_rows(conn, bucket, boundary, end, source):
     """Load one bucket's readings at/after ``boundary`` plus the single latest
     reading strictly before it (the straddler), through ``end`` only,
     ascending, de-duplicated by
@@ -40,16 +41,17 @@ def _load_dedup_rows(conn, bucket, boundary, end):
     Server and client can land the same second; a zero-width [t, t] segment
     would divide by zero in interpolation, so duplicates collapse to one point.
     """
+    predicate, params = history_source_filter(source)
     in_window = conn.execute(
         "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
         "FROM limit_readings WHERE bucket=? AND fetched_epoch>=? AND fetched_epoch<=? "
-        "ORDER BY fetched_epoch ASC",
-        (bucket, boundary, end)).fetchall()
+        f"AND {predicate} ORDER BY fetched_epoch ASC",
+        (bucket, boundary, end) + params).fetchall()
     straddler = conn.execute(
         "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
         "FROM limit_readings WHERE bucket=? AND fetched_epoch<? "
-        "ORDER BY fetched_epoch DESC LIMIT 1",
-        (bucket, boundary)).fetchone()
+        f"AND {predicate} ORDER BY fetched_epoch DESC LIMIT 1",
+        (bucket, boundary) + params).fetchone()
     rows = ([straddler] if straddler is not None else []) + list(in_window)
     # Dedup by fetched_epoch keeping the last (rows already ascending).
     by_epoch = {}
@@ -76,7 +78,7 @@ def _interp(points, t):
     return points[-1][1]
 
 
-def compute_burn(conn, bucket, now, window_s):
+def compute_burn(conn, bucket, now, window_s, *, source=None):
     """Average utilization burn (percentage-points per hour) over the trailing
     ``window_s`` seconds for one bucket.
 
@@ -111,7 +113,7 @@ def compute_burn(conn, bucket, now, window_s):
       segment length.
     """
     boundary = now - window_s
-    rows = _load_dedup_rows(conn, bucket, boundary, now)
+    rows = _load_dedup_rows(conn, bucket, boundary, now, source)
 
     events = detect_resets(rows)
     # >=: a reset landing exactly ON the boundary is IN-window (Fix 8 —
@@ -165,23 +167,27 @@ def downsample(points, max_points=SERIES_MAX_POINTS):
     return out
 
 
-def _latest_utilization(conn, bucket, now):
-    """Utilization of the bucket's most recent reading; None if it has none."""
+def _latest_utilization(conn, bucket, now, source):
+    """Utilization of the selected source's latest reading; None if absent."""
+    predicate, params = history_source_filter(source)
     row = conn.execute(
         "SELECT utilization FROM limit_readings WHERE bucket=? AND fetched_epoch<=? "
-        "ORDER BY fetched_epoch DESC LIMIT 1", (bucket, now)).fetchone()
+        f"AND {predicate} ORDER BY fetched_epoch DESC LIMIT 1",
+        (bucket, now) + params).fetchone()
     return row["utilization"] if row is not None else None
 
 
-def distinct_buckets(conn, now, within_s=7 * 86400):
+def distinct_buckets(conn, now, within_s=7 * 86400, *, source=None):
     """Distinct bucket names seen in limit_readings within the trailing window,
     sorted for stable output ordering."""
+    predicate, params = history_source_filter(source)
     return [r["bucket"] for r in conn.execute(
-        "SELECT DISTINCT bucket FROM limit_readings WHERE fetched_epoch>=? "
-        "ORDER BY bucket", (now - within_s,)).fetchall()]
+        "SELECT DISTINCT bucket FROM limit_readings "
+        "WHERE fetched_epoch>=? AND fetched_epoch<=? "
+        f"AND {predicate} ORDER BY bucket", (now - within_s, now) + params).fetchall()]
 
 
-def bucket_trend(conn, bucket, now):
+def bucket_trend(conn, bucket, now, *, source=None):
     """Per-bucket trend dict for /api/rate-limits oauth.trend[bucket].
 
     Fields: burn_1h_pct_per_hr, burn_6h_pct_per_hr (2-dp, null when
@@ -198,8 +204,8 @@ def bucket_trend(conn, bucket, now):
     # Later history must not leak into this observation's pace or chart.
     is_five = bucket == FIVE_HOUR_KEY
 
-    b1 = compute_burn(conn, bucket, now, 3600)
-    b6 = compute_burn(conn, bucket, now, 21600)
+    b1 = compute_burn(conn, bucket, now, 3600, source=source)
+    b6 = compute_burn(conn, bucket, now, 21600, source=source)
     burn_1h = (round(b1["pct_per_hr"], 2)
                if b1["pct_per_hr"] is not None else None)
     burn_6h = (round(b6["pct_per_hr"], 2)
@@ -209,7 +215,7 @@ def bucket_trend(conn, bucket, now):
     window_hours = 5.0 if is_five else 168.0
     even_drain = 100.0 / window_hours
 
-    current_pct = _latest_utilization(conn, bucket, now)
+    current_pct = _latest_utilization(conn, bucket, now, source)
     eta = None
     if relevant is not None and relevant > 0 and current_pct is not None:
         eta = ((now + (100.0 - current_pct) / relevant * 3600.0) // 60) * 60.0
@@ -224,11 +230,12 @@ def bucket_trend(conn, bucket, now):
             pace = "on"
 
     series_hours = 24 if is_five else 168
+    predicate, params = history_source_filter(source)
     window_rows = conn.execute(
         "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
         "FROM limit_readings WHERE bucket=? AND fetched_epoch>=? AND fetched_epoch<=? "
-        "ORDER BY fetched_epoch ASC",
-        (bucket, now - series_hours * 3600, now)).fetchall()
+        f"AND {predicate} ORDER BY fetched_epoch ASC",
+        (bucket, now - series_hours * 3600, now) + params).fetchall()
     series = downsample(
         [[(r["fetched_epoch"] // 60) * 60.0, r["utilization"]]
          for r in window_rows])

@@ -46,6 +46,7 @@ from .read_cache import ReadCache
 from .limit_readings import (RESET_DROP_PTS, RESET_JUMP_S,
                              RESET_RECOVERY_FRACTION)
 from .usage_buckets import normalize_usage_buckets
+from .quota_history import active_history_source, history_source_filter
 
 router = APIRouter()
 _history_cache = ReadCache()
@@ -142,7 +143,7 @@ def _merge_boundaries(candidates):
     return out
 
 
-def weekly_window_segments(conn, scope, now=None, anchor_epoch=None):
+def weekly_window_segments(conn, scope, now=None, anchor_epoch=None, *, source=None):
     """Reset-bounded seven_day window segments, oldest -> ongoing last.
 
     Each segment: {start_epoch, end_epoch (None while ongoing), end_kind
@@ -151,10 +152,11 @@ def weekly_window_segments(conn, scope, now=None, anchor_epoch=None):
     Returns [] when no anchor is derivable (no oauth data ever seen).
     """
     now = time.time() if now is None else now
+    predicate, params = history_source_filter(source)
     rows = conn.execute(
         "SELECT bucket, fetched_epoch, utilization, resets_at_epoch "
-        "FROM limit_readings WHERE bucket='seven_day' "
-        "ORDER BY fetched_epoch ASC").fetchall()
+        "FROM limit_readings WHERE bucket='seven_day' AND fetched_epoch<=? "
+        f"AND {predicate} ORDER BY fetched_epoch ASC", (now,) + params).fetchall()
 
     if anchor_epoch is None:
         for r in reversed(rows):
@@ -211,14 +213,14 @@ def weekly_window_segments(conn, scope, now=None, anchor_epoch=None):
             continue  # entirely before any event data — nothing to show
         segments.append(_build_segment(conn, scope, b0, b1["epoch"],
                                        b1["kind"],
-                                       b0["inferred"] or b1["inferred"]))
+                                       b0["inferred"] or b1["inferred"], source=source))
     last = bounds[-1]
     # The ongoing segment is never 'inferred' (review L1): it covers LIVE
     # data — its start is either an observed boundary or the exact
     # current-anchor − 7d; rendering the live window faded would wrongly
     # imply its spend is assumed.
     ongoing = _build_segment(conn, scope, last, None, "ongoing",
-                             False, now=now)
+                             False, now=now, source=source)
     ongoing["projected_end_epoch"] = anchor_epoch
     segments.append(ongoing)
 
@@ -249,13 +251,15 @@ def _oldest_event_epoch(conn, scope, floor_epoch):
     return max(row["t"], floor_epoch)
 
 
-def _build_segment(conn, scope, b0, end_epoch, end_kind, inferred, now=None):
+def _build_segment(conn, scope, b0, end_epoch, end_kind, inferred, now=None, *, source=None):
     cost_end = end_epoch if end_epoch is not None else (
         time.time() if now is None else now)
+    predicate, params = history_source_filter(source)
     peak = conn.execute(
         "SELECT MAX(utilization) AS p FROM limit_readings "
         "WHERE bucket='seven_day' AND fetched_epoch >= ? "
-        "AND fetched_epoch < ?", (b0["epoch"], cost_end)).fetchone()
+        f"AND fetched_epoch < ? AND {predicate}",
+        (b0["epoch"], cost_end) + params).fetchone()
     return {
         "start_epoch": b0["epoch"],
         "end_epoch": end_epoch,
@@ -321,7 +325,12 @@ def spend_history(scope: Optional[str] = Query(default=None)):
     def build():
         with read_conn() as conn:
             return _spend_history(conn, effective, cfg.LOCKED_SCOPE)
-    return _history_cache.get((db.DB_PATH, effective, cfg.LOCKED_SCOPE), build)
+    # A pre-transfer cached overlay must not survive under the new owner.
+    source = None
+    if effective == "personal" and cfg.LOCKED_SCOPE != "enterprise":
+        with read_conn() as conn:
+            source = active_history_source(conn)
+    return _history_cache.get((db.DB_PATH, effective, cfg.LOCKED_SCOPE, source), build)
 
 
 def _spend_history(conn, effective, locked_scope):
@@ -340,16 +349,19 @@ def _spend_history(conn, effective, locked_scope):
         # must only drop 'windows', never the months chart.
         try:
             anchor = None
+            source = None
             row = conn.execute(
                 "SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
             if row:
-                usage = json.loads(row["value"]).get("data", {})
+                stored = json.loads(row["value"])
+                source = stored.get("source")
+                usage = stored.get("data", {})
                 for b in normalize_usage_buckets(usage):
                     if b["key"] == "seven_day":
                         anchor = _iso_to_epoch(b["resets_at"])
                         break
             windows = weekly_window_segments(conn, "personal", now=now,
-                                             anchor_epoch=anchor)
+                                             anchor_epoch=anchor, source=source)
             if windows:
                 out["windows"] = windows
         except Exception as e:
