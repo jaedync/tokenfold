@@ -117,6 +117,11 @@ def _buckets_from_legacy(usage):
                 continue
             key = "scoped:" + suffix
             label = suffix.replace("_", " ").title()
+            # Metadata-only ingest supplies a display label separately from the
+            # stable slug; do not derive bucket identity from that label.
+            supplied_label = value.get("label")
+            if isinstance(supplied_label, str) and supplied_label.strip():
+                label = supplied_label
         else:
             continue  # unknown dict shape — skip, never raise
         if key not in out:

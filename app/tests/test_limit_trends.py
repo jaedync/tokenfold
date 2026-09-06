@@ -356,7 +356,7 @@ class TrendEndpointTest(TempDBTestCase):
                 "seven_day": {"utilization": 40, "resets_at": resets_iso},
                 "five_hour": {"utilization": 20, "resets_at": resets_iso},
             },
-            "updated_at": resets_iso,
+            "updated_at": datetime.fromtimestamp(time.time(), tz=timezone.utc).isoformat(),
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('oauth_usage', ?)",
@@ -587,7 +587,9 @@ class TrendEndpointTest(TempDBTestCase):
         resets = now + 3 * 3600
         self._seed_oauth(resets)
         self._seed_readings("seven_day", now, n=40, span_s=6 * 3600)
-        with patch("app.api._iso_to_epoch", side_effect=RuntimeError("boom")):
+        # Parsing is now shared with trend freshness gates; fail only the
+        # dollar-window computation to test its independent error boundary.
+        with patch("app.api._bucket_window_start", side_effect=RuntimeError("boom")):
             c = self.client()
             r = c.get("/api/rate-limits?scope=personal")
         self.assertEqual(r.status_code, 200, r.text)

@@ -1,0 +1,13 @@
+{
+  "machine": "test-personal",
+  "account_class": "personal",
+  "source": "meridian-oauth",
+  "source_profile": "default",
+  "observed_at_epoch": 1788706007.457,
+  "buckets": [
+    {"key": "five_hour", "label": "5-Hour", "pct": 77, "resets_at_epoch": 1788700000},
+    {"key": "seven_day", "label": "7-Day", "pct": 0, "resets_at_epoch": 1789027200},
+    {"key": "scoped:fable", "label": "Fable", "pct": 13, "resets_at_epoch": 1789027200}
+  ],
+  "extra_usage": {"enabled": false}
+}
