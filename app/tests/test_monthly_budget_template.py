@@ -33,6 +33,14 @@ class MonthlyBudgetTemplateSourceTest(unittest.TestCase):
     def test_monthly_card_label_present(self):
         self.assertIn("Monthly usage limit", self.tpl)
 
+    def test_anchored_meter_wording_present(self):
+        # A stale same-month meter is labelled as billed + measured since,
+        # never as a plain "Anthropic billed" figure.
+        self.assertIn("mb.source === 'meter_anchored'", self.tpl)
+        self.assertIn("hero.source === 'meter_anchored'", self.tpl)
+        self.assertIn("' + tokenfold measured ' + fC(mb.measured_since_usd) + ' since'", self.tpl)
+        self.assertIn("function meterAgeText(", self.tpl)
+
     def test_empty_state_affordance_present(self):
         self.assertIn("Set monthly budget…", self.tpl)
 

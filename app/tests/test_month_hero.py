@@ -44,6 +44,30 @@ class MonthHeroSourceTest(unittest.TestCase):
         self.assertEqual(b["source"], "estimate")
         self.assertAlmostEqual(b["value"], 926.85)
 
+    def test_stale_anchored_meter_stays_the_month_base(self):
+        """A stale same-month reading plus spend measured since it beats the
+        bare estimate, and keeps the limit and headroom on screen."""
+        m = dict(meter(used=400.0, fresh=False),
+                 anchored={"base_usd": 400.0, "measured_since_usd": 5.0,
+                           "used_usd": 405.0})
+        b = month_hero_block(120.0, m)
+        self.assertEqual(b["source"], "meter_anchored")
+        self.assertAlmostEqual(b["value"], 405.0)
+        self.assertAlmostEqual(b["meter_base_usd"], 400.0)
+        self.assertAlmostEqual(b["measured_since_usd"], 5.0)
+        self.assertEqual(b["meter_updated_epoch"], 1784915060.0)
+        self.assertAlmostEqual(b["limit_usd"], 1000.0)
+        self.assertAlmostEqual(b["remaining_usd"], 595.0)
+        self.assertAlmostEqual(b["unaccounted_usd"], 285.0)
+
+    def test_anchored_meter_uses_remembered_limit(self):
+        m = dict(meter(used=400.0, limit=None, fresh=False),
+                 remembered_limit_usd=2000.0,
+                 anchored={"base_usd": 400.0, "measured_since_usd": 0.0,
+                           "used_usd": 400.0})
+        b = month_hero_block(120.0, m)
+        self.assertAlmostEqual(b["limit_usd"], 2000.0)
+
     def test_fresh_meter_wins_over_estimate(self):
         b = month_hero_block(926.85, meter())
         self.assertEqual(b["source"], "meter")
@@ -198,12 +222,18 @@ class MonthHeroPayloadTest(TempDBTestCase):
         self.assertAlmostEqual(d["month_hero"]["value"], d["month_cost"],
                                places=2)
 
-    def test_payload_hero_falls_back_on_stale_meter(self):
-        """Older than METER_STALE_S (48h) is no longer authoritative."""
-        self._seed(meter_age_s=60 * 60 * 72)
+    def test_payload_hero_on_stale_meter(self):
+        """Older than METER_STALE_S (48h): anchored inside the reading's UTC
+        month, the estimate once the month has turned over."""
+        age = 60 * 60 * 72
+        self._seed(meter_age_s=age)
         import app.aggregator as agg
         d = agg.build_dashboard_data("enterprise")
-        self.assertEqual(d["month_hero"]["source"], "estimate")
+        now = datetime.now(timezone.utc)
+        read = datetime.fromtimestamp(now.timestamp() - age, timezone.utc)
+        same_month = (read.year, read.month) == (now.year, now.month)
+        self.assertEqual(d["month_hero"]["source"],
+                         "meter_anchored" if same_month else "estimate")
 
     def test_personal_scope_never_gets_a_meter_hero(self):
         """Personal scope has no billing meter, so the estimate is authoritative

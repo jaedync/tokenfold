@@ -27,9 +27,13 @@ from typing import Optional
 from .cost_windows import compute_window_cost
 from .db import write_txn
 
-# A meter older than this stops driving the gauge (no enterprise machine has
-# pushed) — consumers fall back to the event-cost estimate.
+# A meter older than this is no longer shown as the billed figure by itself.
+# Inside its own UTC month it stays the base of the month-to-date figure
+# (meter_anchor); after the month turns over consumers use the estimate.
 METER_STALE_S = 48 * 3600
+# A meter limit older than this no longer overrides the stored budget, so
+# the budget becomes editable again once no enterprise machine reports.
+REMEMBERED_LIMIT_MAX_AGE_S = 92 * 86400
 
 
 def log(msg, *args):
@@ -111,7 +115,60 @@ def meter_is_fresh(meter: Optional[dict],
     if meter is None:
         return False
     now = time.time() if now is None else now
-    return (now - meter["fetched_epoch"]) < METER_STALE_S
+    # A reading from last month is not this month's billed figure, even when
+    # it is only minutes old: the cycle resets at the UTC month boundary.
+    return ((now - meter["fetched_epoch"]) < METER_STALE_S
+            and meter["fetched_epoch"] >= _utc_month_start(now))
+
+
+def remembered_limit_usd(conn: sqlite3.Connection,
+                         now: Optional[float] = None) -> Optional[float]:
+    """Newest positive monthly limit in dollars, up to
+    REMEMBERED_LIMIT_MAX_AGE_S old.
+
+    The limit is an org setting, not a spend sample, so it stays valid while
+    no enterprise machine pushes, and across a reading whose limit was
+    unusable (stored NULL)."""
+    now = time.time() if now is None else now
+    row = conn.execute(
+        "SELECT limit_cents FROM extra_usage_readings "
+        "WHERE limit_cents IS NOT NULL AND limit_cents > 0 "
+        "AND fetched_epoch >= ? "
+        "ORDER BY fetched_epoch DESC LIMIT 1",
+        (now - REMEMBERED_LIMIT_MAX_AGE_S,)).fetchone()
+    return round(row["limit_cents"] / 100.0, 2) if row else None
+
+
+def _utc_month_start(epoch: float) -> float:
+    d = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    return d.replace(day=1, hour=0, minute=0, second=0,
+                     microsecond=0).timestamp()
+
+
+def meter_anchor(conn: sqlite3.Connection, meter: Optional[dict],
+                 now: Optional[float] = None) -> Optional[dict]:
+    """Month-to-date figure anchored on a stale same-month reading.
+
+    Regression 2026-10-02: when the reporter stopped for 48h the gauge fell
+    back to the event estimate, which misses claude.ai and any unreported
+    machine, so the month figure dropped. Billing counts up from zero each
+    cycle, so a same-month reading is still a hard floor: keep it as the
+    base and add only the spend Tokenfold measured after it. None when the
+    meter is fresh (shown as-is; this includes clock-skewed future readings)
+    or from an earlier month.
+    """
+    if meter is None:
+        return None
+    now = time.time() if now is None else now
+    fetched = meter["fetched_epoch"]
+    if meter_is_fresh(meter, now) or fetched < _utc_month_start(now):
+        return None
+    since = compute_window_cost(conn, fetched, now, "enterprise")
+    return {
+        "base_usd": meter["used_usd"],
+        "measured_since_usd": round(since, 2),
+        "used_usd": round(meter["used_usd"] + since, 2),
+    }
 
 
 def build_meter_payload(conn: sqlite3.Connection, scope: str,
@@ -128,6 +185,8 @@ def build_meter_payload(conn: sqlite3.Connection, scope: str,
     return {
         **meter,
         "fresh": meter_is_fresh(meter, now),
+        "anchored": meter_anchor(conn, meter, now),
+        "remembered_limit_usd": remembered_limit_usd(conn, now),
         "daily": daily_meter_deltas(conn, days, now),
     }
 
