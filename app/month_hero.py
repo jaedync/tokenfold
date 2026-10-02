@@ -43,7 +43,9 @@ def month_hero_block(month_cost, meter: Optional[dict]) -> dict:
 
     Returns a NEW dict every call (never mutates `meter`) with keys:
       value            what the headline number must show
-      source           'meter' (billed, authoritative) | 'estimate'
+      source           'meter' (billed, authoritative) | 'meter_anchored'
+                       (stale same-month reading + spend measured since)
+                       | 'estimate'
       measured_usd     tokenfold's event-derived estimate, always present
       unaccounted_usd  signed billed-minus-measured gap, None without a meter
       limit_usd        the account's monthly limit, None when unknown
@@ -53,8 +55,12 @@ def month_hero_block(month_cost, meter: Optional[dict]) -> dict:
     measured = _finite(month_cost) or 0.0
 
     used = None
+    anchored = None
     if isinstance(meter, dict) and meter.get("fresh"):
         used = _finite(meter.get("used_usd"))
+    elif isinstance(meter, dict) and isinstance(meter.get("anchored"), dict):
+        anchored = meter["anchored"]
+        used = _finite(anchored.get("used_usd"))
 
     if used is None:
         # No authoritative figure available: the estimate is all we have.
@@ -71,6 +77,9 @@ def month_hero_block(month_cost, meter: Optional[dict]) -> dict:
     # A limit of 0 (or a missing/garbage one) is not a usable denominator;
     # headroom and utilization stay None rather than dividing by zero.
     limit = _finite(meter.get("limit_usd"))
+    if limit is None or limit <= 0:
+        # The limit is an org setting; a reading without one keeps the last.
+        limit = _finite(meter.get("remembered_limit_usd"))
     if limit is not None and limit <= 0:
         limit = None
 
@@ -80,9 +89,9 @@ def month_hero_block(month_cost, meter: Optional[dict]) -> dict:
     remaining = round(max(0.0, limit - used), 2) if limit is not None else None
     utilization = round(used / limit * 100.0, 2) if limit is not None else None
 
-    return {
+    block = {
         "value": round(used, 2),
-        "source": "meter",
+        "source": "meter_anchored" if anchored is not None else "meter",
         "measured_usd": round(measured, 2),
         # Signed on purpose: tokenfold can over-measure too (pricing drift,
         # a machine double-pushing), and hiding that would mask a real bug.
@@ -91,3 +100,8 @@ def month_hero_block(month_cost, meter: Optional[dict]) -> dict:
         "remaining_usd": remaining,
         "utilization": utilization,
     }
+    if anchored is not None:
+        block["meter_base_usd"] = _finite(anchored.get("base_usd"))
+        block["measured_since_usd"] = _finite(anchored.get("measured_since_usd"))
+        block["meter_updated_epoch"] = _finite(meter.get("fetched_epoch"))
+    return block

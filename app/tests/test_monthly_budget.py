@@ -274,14 +274,36 @@ class MeterFirstTest(TempDBTestCase):
         self._record_meter(21794.0, limit_cents="lots")
         self.assertIsNone(monthly_budget_block(self.conn, self.now_epoch))
 
-    def test_stale_meter_falls_back_to_estimate(self):
+    def test_stale_same_month_meter_anchors_the_gauge(self):
+        """Regression 2026-10-02: after 48h the gauge dropped to the event
+        estimate and the budget to the stored scalar. A same-month reading
+        stays the base; only spend measured since it is added."""
         from app.extra_usage import METER_STALE_S
-        self._record_meter(21794.0, age_s=METER_STALE_S + 3600)
-        set_budget(self.conn, 1000.0)
+        age = METER_STALE_S + 3600
+        _ins_event(self.conn, "e0", self.now_epoch - age - 60)  # before: $5
+        self._record_meter(21794.0, age_s=age)
+        set_budget(self.conn, 500.0)
+        _ins_event(self.conn, "e1", self.now_epoch - 60)  # after: $5
+        block = monthly_budget_block(self.conn, self.now_epoch)
+        self.assertEqual(block["source"], "meter_anchored")
+        self.assertEqual(block["mtd_cost"], 222.94)
+        self.assertEqual(block["meter_base_usd"], 217.94)
+        self.assertEqual(block["measured_since_usd"], 5.0)
+        self.assertEqual(block["measured_mtd_usd"], 10.0)
+        self.assertEqual(block["unaccounted_mtd_usd"], 212.94)
+        self.assertEqual(block["budget_usd"], 1000.0)
+        self.assertTrue(block["budget_from_meter"])
+        self.assertEqual(block["meter_machine"], "vm-a")
+
+    def test_previous_month_meter_falls_back_to_estimate_keeps_limit(self):
+        self._record_meter(21794.0, age_s=self.now_epoch - self.month_start + 60)
+        set_budget(self.conn, 500.0)
         _ins_event(self.conn, "e1", self.month_start + 3600)  # $5
         block = monthly_budget_block(self.conn, self.now_epoch)
         self.assertEqual(block["source"], "estimate")
         self.assertEqual(block["mtd_cost"], 5.0)
+        self.assertEqual(block["budget_usd"], 1000.0)
+        self.assertTrue(block["budget_from_meter"])
         self.assertNotIn("meter_machine", block)
 
     def test_no_meter_estimate_block_carries_source(self):

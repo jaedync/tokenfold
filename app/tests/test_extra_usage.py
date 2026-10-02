@@ -194,6 +194,67 @@ class BuildMeterPayloadTest(TempDBTestCase):
         self.assertEqual(p["daily"][0]["official_usd"], 20.0)
 
 
+class MeterAnchorTest(TempDBTestCase):
+    """A stale reading from the current UTC month stays the base of the
+    month-to-date figure; Tokenfold adds only the spend measured since."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        self.now = _epoch("2026-07-09T12:00:00")
+
+    def _record(self, used, limit=100000, epoch=None):
+        from app.extra_usage import record_meter_reading
+        record_meter_reading(self.conn, "vm-a",
+                             {"used_credits": used, "monthly_limit": limit},
+                             epoch)
+
+    def _anchor(self):
+        from app.extra_usage import latest_meter, meter_anchor
+        return meter_anchor(self.conn, latest_meter(self.conn), self.now)
+
+    def test_fresh_meter_is_not_anchored(self):
+        self._record(1000.0, epoch=self.now - 3600)
+        self.assertIsNone(self._anchor())
+
+    def test_stale_same_month_meter_adds_spend_measured_since(self):
+        meter_at = _epoch("2026-07-03T12:00:00")
+        _ins_event(self.conn, "before", meter_at - 60, day="2026-07-03")
+        self._record(40000.0, epoch=meter_at)  # $400 billed by Jul 3
+        _ins_event(self.conn, "after", meter_at + 60, day="2026-07-03")
+        anchor = self._anchor()
+        self.assertEqual(anchor["base_usd"], 400.0)
+        self.assertEqual(anchor["measured_since_usd"], 5.0)
+        self.assertEqual(anchor["used_usd"], 405.0)
+
+    def test_previous_month_meter_is_not_anchored(self):
+        self._record(40000.0, epoch=_epoch("2026-06-30T23:00:00"))
+        self.assertIsNone(self._anchor())
+
+    def test_future_meter_is_not_anchored(self):
+        self._record(40000.0, epoch=self.now + 7 * 86400)
+        self.assertIsNone(self._anchor())
+
+    def test_none_meter_is_not_anchored(self):
+        from app.extra_usage import meter_anchor
+        self.assertIsNone(meter_anchor(self.conn, None, self.now))
+
+    def test_remembered_limit_survives_null_limit_and_age(self):
+        from app.extra_usage import remembered_limit_usd
+        self.assertIsNone(remembered_limit_usd(self.conn))
+        self._record(1000.0, limit=200000, epoch=_epoch("2026-05-01T00:00:00"))
+        self._record(2000.0, limit="lots", epoch=self.now - 60)
+        self.assertEqual(remembered_limit_usd(self.conn), 2000.0)
+
+    def test_payload_carries_anchor_and_remembered_limit(self):
+        from app.extra_usage import build_meter_payload
+        self._record(40000.0, epoch=_epoch("2026-07-03T12:00:00"))
+        p = build_meter_payload(self.conn, "enterprise", now=self.now)
+        self.assertFalse(p["fresh"])
+        self.assertEqual(p["anchored"]["used_usd"], 400.0)
+        self.assertEqual(p["remembered_limit_usd"], 1000.0)
+
+
 class IngestRecordsMeterTest(TempDBTestCase):
     """The stomp-guard capture path historizes into extra_usage_readings."""
 

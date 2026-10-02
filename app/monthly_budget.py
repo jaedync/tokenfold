@@ -131,8 +131,11 @@ def monthly_budget_block(conn: sqlite3.Connection,
     see app/extra_usage.py) supplies both the MTD spend and — when present —
     the budget itself, so nothing needs hand-entering; the event-cost
     estimate rides along as measured_mtd_usd and the gap as
-    unaccounted_mtd_usd (claude.ai web etc.). A stale/absent meter falls
-    back to the stored budget scalar + estimate (source='estimate').
+    unaccounted_mtd_usd (claude.ai web etc.). A stale reading from this UTC
+    month stays the base: mtd_cost is that reading plus the spend measured
+    since it (source='meter_anchored', see extra_usage.meter_anchor). Older
+    or absent readings use the estimate (source='estimate'). The budget is
+    the newest meter limit at any age, else the stored scalar.
 
     Month boundaries are UTC calendar months. The meter's billing cycle is
     assumed calendar-aligned; if a used_credits rollover is ever observed
@@ -149,15 +152,14 @@ def monthly_budget_block(conn: sqlite3.Connection,
     """
     now = time.time() if now is None else now
 
-    from .extra_usage import latest_meter, meter_is_fresh
+    from .extra_usage import (latest_meter, meter_anchor, meter_is_fresh,
+                              remembered_limit_usd)
     meter = latest_meter(conn)
     use_meter = meter_is_fresh(meter, now)
+    anchor = None if use_meter else meter_anchor(conn, meter, now)
 
-    budget = None
-    budget_from_meter = False
-    if use_meter and meter["limit_usd"]:
-        budget = meter["limit_usd"]
-        budget_from_meter = True
+    budget = remembered_limit_usd(conn)
+    budget_from_meter = budget is not None
     if budget is None:
         budget = get_budget(conn)
     if budget is None:
@@ -172,7 +174,12 @@ def monthly_budget_block(conn: sqlite3.Connection,
 
     measured_mtd = compute_window_cost(
         conn, month_start, now, scope="enterprise")
-    mtd_cost = meter["used_usd"] if use_meter else measured_mtd
+    if use_meter:
+        mtd_cost = meter["used_usd"]
+    elif anchor is not None:
+        mtd_cost = anchor["used_usd"]
+    else:
+        mtd_cost = measured_mtd
 
     expected_usd = elapsed_fraction * budget
 
@@ -189,7 +196,8 @@ def monthly_budget_block(conn: sqlite3.Connection,
             pace = "on"
 
     block = {
-        "source": "meter" if use_meter else "estimate",
+        "source": ("meter" if use_meter else
+                   "meter_anchored" if anchor is not None else "estimate"),
         # Distinct from source: a fresh meter can lack a limit, in which case
         # the stored scalar is still the budget and must stay editable.
         "budget_from_meter": budget_from_meter,
@@ -204,7 +212,10 @@ def monthly_budget_block(conn: sqlite3.Connection,
                               if projected_eom_usd is not None else None),
         "pace": pace,
     }
-    if use_meter:
+    if anchor is not None:
+        block["meter_base_usd"] = anchor["base_usd"]
+        block["measured_since_usd"] = anchor["measured_since_usd"]
+    if use_meter or anchor is not None:
         block["measured_mtd_usd"] = round(measured_mtd, 2)
         block["unaccounted_mtd_usd"] = round(mtd_cost - measured_mtd, 2)
         block["meter_updated_epoch"] = meter["fetched_epoch"]

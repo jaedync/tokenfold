@@ -3640,6 +3640,13 @@ function fC(n){
   const value=Number(n), digits=Math.abs(value)>0&&Math.abs(value)<0.01?4:2;
   return '$'+value.toLocaleString(undefined,{minimumFractionDigits:digits,maximumFractionDigits:digits});
 }
+/* Age of a billing-meter reading: "45m", "3h", "2d". Empty when unknown. */
+function meterAgeText(epoch){
+  if(typeof epoch!=='number'||!isFinite(epoch))return '';
+  const min=Math.max(0,Math.round((Date.now()/1000-epoch)/60));
+  if(min<60)return min+'m';
+  return min<2880?Math.round(min/60)+'h':Math.round(min/1440)+'d';
+}
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
@@ -4668,6 +4675,7 @@ function renderMode(mode) {
     // under-report real billing by the unaccounted gap.
     var hero = (D && D.month_hero) ? D.month_hero : null;
     var fromMeter = !!(hero && hero.source === 'meter');
+    var heroAnchored = !!(hero && hero.source === 'meter_anchored');
     var rawMonthCost = (hero && typeof hero.value === 'number' && !isNaN(hero.value))
       ? hero.value
       : ((D && typeof D.month_cost === 'number' && !isNaN(D.month_cost)) ? D.month_cost : 0);
@@ -4691,6 +4699,12 @@ function renderMode(mode) {
             + (hero.unaccounted_usd > 0 ? ' unmetered' : ' over-measured');
         }
         noteEl.textContent = noteTxt;
+      } else if(heroAnchored) {
+        // Not "billed": part of this figure is tokenfold's own measurement.
+        var heroAge = meterAgeText(hero.meter_updated_epoch);
+        noteEl.textContent = 'Anthropic billed ' + fC(hero.meter_base_usd)
+          + (heroAge ? ' as of ' + heroAge + ' ago' : '')
+          + ' + tokenfold measured ' + fC(hero.measured_since_usd) + ' since';
       } else if(D && D.geo_assumed) {
         // honesty label: this instance bills enterprise usage at an ASSUMED
         // US-residency rate (transcripts can't tell us where inference ran)
@@ -4705,7 +4719,7 @@ function renderMode(mode) {
     if(headroomEl) {
       var limit = hero && typeof hero.limit_usd === 'number' ? hero.limit_usd : null;
       var util = hero && typeof hero.utilization === 'number' ? hero.utilization : null;
-      if(fromMeter && limit !== null && util !== null) {
+      if((fromMeter || heroAnchored) && limit !== null && util !== null) {
         var remaining = typeof hero.remaining_usd === 'number' ? hero.remaining_usd : 0;
         // Colour off the percentage AS DISPLAYED. 99.95% prints as "100.0%",
         // and a line reading 100% used has to be red. A caution colour next
@@ -5582,13 +5596,18 @@ function initRateLimits(){
     // Meter provenance — when the block runs on Anthropic's own billing
     // meter, say so and surface what tokenfold measured vs the gap.
     var fromMeter = mb.source === 'meter';
+    // A stale reading from this month stays the base; the server adds only
+    // the spend measured since it (app/extra_usage.meter_anchor).
+    var meterAnchored = mb.source === 'meter_anchored';
     var meterDiv = '';
-    if(fromMeter && typeof mb.measured_mtd_usd === 'number') {
-      var meterAge = '';
-      if(typeof mb.meter_updated_epoch === 'number' && isFinite(mb.meter_updated_epoch)) {
-        var ageMin = Math.max(0, Math.round((Date.now() / 1000 - mb.meter_updated_epoch) / 60));
-        meterAge = ' · updated ' + (ageMin < 60 ? ageMin + 'm' : Math.round(ageMin / 60) + 'h') + ' ago';
-      }
+    var meterAgeTxt = meterAgeText(mb.meter_updated_epoch);
+    var meterAge = meterAgeTxt ? ' · updated ' + meterAgeTxt + ' ago' : '';
+    if(meterAnchored && typeof mb.meter_base_usd === 'number') {
+      meterDiv = '<div class="rate-gauge-projection">'
+        + 'Anthropic billing meter ' + fC(mb.meter_base_usd) + meterAge
+        + ' + tokenfold measured ' + fC(mb.measured_since_usd) + ' since'
+        + '</div>';
+    } else if(fromMeter && typeof mb.measured_mtd_usd === 'number') {
       meterDiv = '<div class="rate-gauge-projection">'
         + 'Anthropic billing meter' + meterAge
         + ' · tokenfold measured ' + fC(mb.measured_mtd_usd)
@@ -7802,6 +7821,9 @@ function renderSpendMonthlyChart(months){
               if(m.partial && mh && mh.source === 'meter'
                   && typeof mh.value === 'number') {
                 lines.push('measured estimate · Anthropic billed ' + fC(mh.value));
+              } else if(m.partial && mh && mh.source === 'meter_anchored'
+                  && typeof mh.value === 'number') {
+                lines.push('measured estimate · meter-anchored ' + fC(mh.value));
               }
               return lines;
             }
