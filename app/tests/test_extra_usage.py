@@ -231,9 +231,27 @@ class MeterAnchorTest(TempDBTestCase):
         self._record(40000.0, epoch=_epoch("2026-06-30T23:00:00"))
         self.assertIsNone(self._anchor())
 
-    def test_future_meter_is_not_anchored(self):
-        self._record(40000.0, epoch=self.now + 7 * 86400)
+    def test_future_meter_counts_as_fresh_not_anchored(self):
+        """Clock skew: a reading ahead of the server is shown as-is."""
+        from app.extra_usage import latest_meter, meter_is_fresh
+        self._record(40000.0, epoch=self.now + 600)
+        self.assertTrue(meter_is_fresh(latest_meter(self.conn), self.now))
         self.assertIsNone(self._anchor())
+
+    def test_fresh_previous_month_reading_is_not_fresh(self):
+        """A Sep 30 23:00 reading must not become October's billed figure."""
+        from app.extra_usage import latest_meter, meter_is_fresh
+        self._record(180000.0, epoch=_epoch("2026-06-30T23:00:00"))
+        meter = latest_meter(self.conn)
+        self.assertFalse(meter_is_fresh(meter, _epoch("2026-07-01T01:00:00")))
+        self.assertTrue(meter_is_fresh(meter, _epoch("2026-06-30T23:30:00")))
+
+    def test_remembered_limit_expires_after_max_age(self):
+        from app.extra_usage import REMEMBERED_LIMIT_MAX_AGE_S, remembered_limit_usd
+        self._record(1000.0, limit=200000, epoch=self.now - REMEMBERED_LIMIT_MAX_AGE_S - 60)
+        self.assertIsNone(remembered_limit_usd(self.conn, self.now))
+        self._record(2000.0, limit=300000, epoch=self.now - 86400)
+        self.assertEqual(remembered_limit_usd(self.conn, self.now), 3000.0)
 
     def test_none_meter_is_not_anchored(self):
         from app.extra_usage import meter_anchor
@@ -241,10 +259,10 @@ class MeterAnchorTest(TempDBTestCase):
 
     def test_remembered_limit_survives_null_limit_and_age(self):
         from app.extra_usage import remembered_limit_usd
-        self.assertIsNone(remembered_limit_usd(self.conn))
+        self.assertIsNone(remembered_limit_usd(self.conn, self.now))
         self._record(1000.0, limit=200000, epoch=_epoch("2026-05-01T00:00:00"))
         self._record(2000.0, limit="lots", epoch=self.now - 60)
-        self.assertEqual(remembered_limit_usd(self.conn), 2000.0)
+        self.assertEqual(remembered_limit_usd(self.conn, self.now), 2000.0)
 
     def test_payload_carries_anchor_and_remembered_limit(self):
         from app.extra_usage import build_meter_payload

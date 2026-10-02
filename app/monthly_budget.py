@@ -135,7 +135,8 @@ def monthly_budget_block(conn: sqlite3.Connection,
     month stays the base: mtd_cost is that reading plus the spend measured
     since it (source='meter_anchored', see extra_usage.meter_anchor). Older
     or absent readings use the estimate (source='estimate'). The budget is
-    the newest meter limit at any age, else the stored scalar.
+    the newest meter limit up to REMEMBERED_LIMIT_MAX_AGE_S old, else the
+    stored scalar.
 
     Month boundaries are UTC calendar months. The meter's billing cycle is
     assumed calendar-aligned; if a used_credits rollover is ever observed
@@ -158,7 +159,7 @@ def monthly_budget_block(conn: sqlite3.Connection,
     use_meter = meter_is_fresh(meter, now)
     anchor = None if use_meter else meter_anchor(conn, meter, now)
 
-    budget = remembered_limit_usd(conn)
+    budget = remembered_limit_usd(conn, now)
     budget_from_meter = budget is not None
     if budget is None:
         budget = get_budget(conn)
