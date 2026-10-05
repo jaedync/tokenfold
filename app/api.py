@@ -236,7 +236,8 @@ async def rate_limits(scope: Optional[str] = Query(default=None)):
 
 
 def _rate_limits_response(scope):
-    with read_conn() as conn:
+    # One snapshot: trends read history up to the meta observation time.
+    with read_conn(snapshot=True) as conn:
         return _build_rate_limits(scope, conn)
 
 
