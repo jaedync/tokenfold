@@ -7,6 +7,7 @@ then sums costs across models using pricing.compute_cost().
 import sqlite3
 
 from .config import DEFAULT_SCOPE, scope_predicate
+from .event_dedupe import canonical_assistant_predicate
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
                       reported_cost)
@@ -16,7 +17,7 @@ from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
 # only when they genuinely used Anthropic. Codex/OpenCode/OpenRouter Pi rows
 # must never inflate the Claude limit-window gauges.
 ANTHROPIC_ONLY_SQL = (
-    " (source_client != 'pi-agent' OR provider = 'anthropic') "
+    " (source_client != 'pi-agent' OR LOWER(provider) = 'anthropic') "
 )
 
 
@@ -111,6 +112,7 @@ def compute_window_cost_by_model(
         "  MAX(reported_cost_total) as reported_total "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        f"  AND {canonical_assistant_predicate()} "
         f"  AND {pred} "
         "  AND ts_epoch >= ? AND ts_epoch < ? "
         "  GROUP BY model, provider, source_client, request_id"

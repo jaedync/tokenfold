@@ -22,6 +22,37 @@ class SchemaHasSignatureColumnsTest(TempDBTestCase):
         names = {r[1] for r in self.conn.execute("PRAGMA index_list(events)")}
         self.assertIn("idx_events_served", names)
 
+    def test_pi_anthropic_message_index_and_historical_backfill(self):
+        import app.db as db
+        names = {r[1] for r in self.conn.execute("PRAGMA index_list(events)")}
+        self.assertIn("idx_events_pi_anthropic_message", names)
+        message_id = "msg_historical"
+        request_id = f"pi:{'a' * 40}:{message_id}"
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,source_machine,"
+            "model,request_id,source_client,provider) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("pi-row", "assistant", "2026-06-09T12:00:00Z", 1781000000,
+             "2026-06-09", "m", "claude-opus-4-8", request_id,
+             "pi-agent", "anthropic"),
+        )
+        self.conn.execute(
+            "INSERT INTO daily_summary(day,account_email,cost,updated_at) "
+            "VALUES('2026-06-09','personal@example.com',5,'now')"
+        )
+        self.conn.commit()
+
+        db._migrate(self.conn)
+
+        stored = self.conn.execute(
+            "SELECT message_id FROM events WHERE uuid='pi-row'"
+        ).fetchone()[0]
+        self.assertEqual(stored, message_id)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM daily_summary").fetchone()[0],
+            0,
+            "a historical ID backfill must invalidate derived rollups",
+        )
+
 
 class MigrateLegacyDBTest(unittest.TestCase):
     def test_migrate_adds_columns_to_legacy_events(self):

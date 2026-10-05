@@ -53,18 +53,18 @@ class AnthropicOnlyWindowCostTest(TempDBTestCase):
         self.freeze_pricing()
 
     def _ins(self, uuid, req, *, source_client="claude-code", provider=None,
-             model="claude-opus-4-8", inp=1_000_000, reported=0.0,
-             ts=1781000000.0):
+             model="claude-opus-4-8", message_id=None, inp=1_000_000,
+             reported=0.0, ts=1781000000.0):
         """Personal-scope assistant row with optional Pi provider/reported cost."""
         self.conn.execute(
             "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,"
-            "request_id,source_machine,project_dir,model,is_sidechain,agent_id,"
+            "request_id,message_id,source_machine,project_dir,model,is_sidechain,agent_id,"
             "input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,"
             "speed,inference_geo,source_client,provider,reported_cost_total) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (uuid, "assistant", "2026-06-09T12:00:00Z", ts, "2026-06-09", "s",
-             req, "m", "proj", model, 0, None, inp, 0, 0, 0, None, None,
-             source_client, provider, reported),
+             req, message_id, "m", "proj", model, 0, None, inp, 0, 0, 0, None,
+             None, source_client, provider, reported),
         )
         self.conn.commit()
 
@@ -109,6 +109,61 @@ class AnthropicOnlyWindowCostTest(TempDBTestCase):
                                   1781000000.0 + 10, scope="personal",
                                   anthropic_only=True)
         self.assertAlmostEqual(got, 5.0, places=2)
+
+    def test_meridian_shadow_prefers_matching_pi_anthropic_row(self):
+        """One Anthropic response observed by Meridian and Pi bills once.
+
+        Meridian's Claude Agent SDK transcript has the raw message_id. Pi's
+        namespaced request_id retains that same msg_* identifier and carries
+        the exact reported cost, so the Pi row is canonical.
+        """
+        from app.cost_windows import compute_window_cost
+        message_id = "msg_shared"
+        self._ins("claude", "req_shared", message_id=message_id)  # $5 estimate
+        self._ins("pi", f"pi:{'a' * 40}:{message_id}",
+                  source_client="pi-agent", provider="anthropic",
+                  message_id=message_id, reported=1.25)
+
+        for anthropic_only in (False, True):
+            with self.subTest(anthropic_only=anthropic_only):
+                got = compute_window_cost(
+                    self.conn, 1781000000.0 - 10, 1781000000.0 + 10,
+                    scope="personal", anthropic_only=anthropic_only)
+                self.assertAlmostEqual(got, 1.25, places=2)
+
+    def test_matching_non_anthropic_pi_row_does_not_hide_claude(self):
+        from app.cost_windows import compute_window_cost
+        self._ins("claude", "req_shared", message_id="msg_shared")
+        self._ins("pi", f"pi:{'a' * 40}:msg_shared",
+                  source_client="pi-agent", provider="openrouter",
+                  message_id="msg_shared", reported=1.25)
+        got = compute_window_cost(self.conn, 1781000000.0 - 10,
+                                  1781000000.0 + 10, scope="personal")
+        self.assertAlmostEqual(got, 6.25, places=2)
+
+    def test_live_aggregate_paths_dedupe_meridian_shadow(self):
+        """Rate-limit hourly data, dashboard hourly data, and sessions agree."""
+        now = time.time()
+        self._ins("claude", "req_shared", message_id="msg_shared", ts=now - 10)
+        self._ins("pi", f"pi:{'a' * 40}:msg_shared",
+                  source_client="pi-agent", provider="anthropic",
+                  message_id="msg_shared", reported=1.25, ts=now - 9)
+
+        rate_limits = self.client().get(
+            "/api/rate-limits?scope=personal").json()["weekly_budget"]
+        self.assertAlmostEqual(rate_limits["week_cost"], 1.25, places=2)
+        self.assertAlmostEqual(
+            sum(bucket["c"] for bucket in rate_limits["hourly_costs"]),
+            1.25, places=2)
+
+        from app.aggregator import _build_hourly, _build_recent_sessions
+        from app.config import PERSONAL_PRED
+        self.assertAlmostEqual(
+            sum(bucket["cost"] for bucket in _build_hourly(
+                self.conn, PERSONAL_PRED)), 1.25, places=2)
+        sessions = _build_recent_sessions(self.conn, PERSONAL_PRED)
+        self.assertEqual(len(sessions), 1)
+        self.assertAlmostEqual(sessions[0]["cost"], 1.25, places=2)
 
 
 class StreamedChunksMixedSpeedDedupTest(TempDBTestCase):

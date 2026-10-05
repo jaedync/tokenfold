@@ -19,6 +19,7 @@ from .config import IDLE_THRESHOLD_S
 from .cost_windows import (ANTHROPIC_ONLY_SQL, compute_window_cost,
                           compute_window_cost_by_model)
 from .db import read_conn
+from .event_dedupe import canonical_assistant_predicate
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
@@ -253,6 +254,7 @@ def _build_rate_limits(scope, conn):
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo "
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        f"  AND {canonical_assistant_predicate()} "
         f"  AND {pred} "
         f"  AND{ANTHROPIC_ONLY_SQL}"
         "  AND ts_epoch>=? AND ts_epoch<? "

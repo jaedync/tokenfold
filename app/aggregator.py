@@ -22,6 +22,7 @@ from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn, read_conn
+from .event_dedupe import canonical_assistant_predicate
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
     REPORTED_COST_SUM_SQL, display_model, display_model_for_row, effective_geo,
@@ -467,6 +468,7 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
         "  FROM events WHERE type='assistant' AND model IS NOT NULL "
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         "  AND session_id IS NOT NULL "
+        f"  AND {canonical_assistant_predicate()} "
         f"  AND {pred} AND ts_epoch >= ? "
         "  GROUP BY session_id, model, provider, source_client, request_id"
         ") GROUP BY session_id, model, provider, source_client, speed, inference_geo",
@@ -780,6 +782,7 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
         "  MAX(reported_cost_total) as reported_total "
         f"  FROM events WHERE type='assistant' AND model IS NOT NULL "
         f"  AND model != '<synthetic>' AND request_id IS NOT NULL "
+        f"  AND {canonical_assistant_predicate()} "
         f"  AND {pred} "
         "  AND ts_epoch>=? AND ts_epoch<? "
         "  GROUP BY model, provider, source_client, request_id"

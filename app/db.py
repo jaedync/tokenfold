@@ -281,6 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_desktop_source
 # columns to a pre-existing table, so ALTER them in on connect. Each guarded by a check.
 _ADDED_COLUMNS = {
     "events": {
+        "message_id": "TEXT",
         "speed": "TEXT", "inference_geo": "TEXT",
         "account_email": "TEXT", "org_name": "TEXT",
         "plan": "TEXT", "rate_limit_tier": "TEXT",
@@ -313,6 +314,14 @@ _POST_MIGRATION_INDEXES = (
     # grouped by served model, so the index stays small.
     "CREATE INDEX IF NOT EXISTS idx_events_served "
     "ON events(day, model, served_model) WHERE sig_header IS NOT NULL",
+    # Exact Anthropic message IDs make Meridian/Pi cross-source deduplication
+    # deterministic and keep the correlated canonical-row lookup indexed.
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_anthropic_message "
+    "ON events(message_id) WHERE source_client='pi-agent' "
+    "AND LOWER(provider)='anthropic' AND type='assistant'",
+    "CREATE INDEX IF NOT EXISTS idx_events_claude_message "
+    "ON events(message_id) WHERE source_client='claude-code' "
+    "AND type='assistant'",
 )
 
 
@@ -326,6 +335,18 @@ def _migrate(conn) -> None:
     for ddl in _POST_MIGRATION_INDEXES:
         conn.execute(ddl)
 
+    # Pi request IDs are ``pi:<40 hex>:<provider response ID>``. Older rows
+    # predate message_id preservation, so recover Anthropic msg_* IDs in place.
+    # The fixed offset follows _pi_namespace's stable 40-hex contract.
+    backfilled = conn.execute(
+        "UPDATE events SET message_id=substr(request_id, 45) "
+        "WHERE source_client='pi-agent' AND LOWER(provider)='anthropic' "
+        "AND type='assistant' AND message_id IS NULL "
+        "AND length(request_id)>48 AND substr(request_id, 1, 3)='pi:' "
+        "AND substr(request_id, 44, 5)=':msg_' "
+        "AND substr(request_id, 4, 40) NOT GLOB '*[^0-9a-f]*'"
+    ).rowcount
+
     # daily_summary is a derived rollup — if it exists in a stale shape (missing
     # account_email or missing org_type), drop and recreate from _DAILY_SUMMARY_DDL.
     # Both columns are load-bearing: account_email is the PK component; org_type is
@@ -334,7 +355,23 @@ def _migrate(conn) -> None:
     ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)")}
     if ds_cols and ("account_email" not in ds_cols or "org_type" not in ds_cols):
         conn.execute("DROP TABLE daily_summary")   # derived rollup — rebuilt from events
-        conn.executescript(_DAILY_SUMMARY_DDL)
+        conn.execute(_DAILY_SUMMARY_DDL)
+
+    # A data UPDATE rowcount is not a migration version: even databases with
+    # message_id already populated can have pre-canonical rollups. Commit the
+    # version, invalidation and durable rebuild obligation together. The pending
+    # marker survives a partially completed startup backfill (nonempty table).
+    version = conn.execute(
+        "SELECT value FROM meta WHERE key='meridian_pi_dedupe_version'"
+    ).fetchone()
+    if version is None or version[0] != '1' or backfilled > 0:
+        conn.execute("DELETE FROM daily_summary")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key,value) "
+            "VALUES('meridian_pi_dedupe_version','1')")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key,value) "
+            "VALUES('daily_summary_rebuild_pending','1')")
 
     # Startup-only exception to the write_txn rule: this runs inside
     # _init_lock before the connection is published to any other thread, so

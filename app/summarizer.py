@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn, write_txn
+from .event_dedupe import canonical_assistant_predicate
 from .pricing import (compute_cost, display_model, display_model_for_row,
                       effective_geo, load_pricing, reported_cost)
 
@@ -72,7 +73,8 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"MIN(ts_epoch) as first_ts, MAX(ts_epoch) as last_ts "
         f"FROM events "
         f"WHERE type='assistant' AND model IS NOT NULL AND model != '<synthetic>' "
-        f"AND request_id IS NOT NULL AND day IN ({placeholders}) {acct_filter} "
+        f"AND request_id IS NOT NULL AND {canonical_assistant_predicate()} "
+        f"AND day IN ({placeholders}) {acct_filter} "
         f"GROUP BY request_id, provider, source_client",
         days + [account],
     ).fetchall()
