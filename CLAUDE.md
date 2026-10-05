@@ -60,6 +60,9 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/notify.py` | POST /api/notify - notification relay to Home Assistant |
 | `app/ha.py` | GET /api/ha - flat scrubbed metrics for Home Assistant REST sensors |
 | `app/cost_windows.py` | Shared helper: dedup-by-request_id cost over an event window |
+| `app/meridian_quota.py` | Meridian `/v1/usage/quota` -> `/api/usage/claude` payload; port of dotfleet `parseClaudeUsage`, parity-tested on the shared fixture |
+| `app/meridian_collector.py` | `quota-collector` compose service (profile `meridian`): polls host-loopback Meridian every 120s (OAuth usage endpoint 429s faster polls), posts through `/api/usage/claude` |
+| `app/limit_readings.py` | Quota history writer (managed flat runs compacted; burn, resets and boundaries unchanged at the latest observation), reset detection, `/api/limit-history` |
 | `app/config.py` | Environment variable config |
 | `app/models.py` | Pydantic request/response schemas |
 
@@ -77,6 +80,7 @@ Indexes on: `session_id+type+ts_epoch`, `day`, `request_id`, `model`, `source_ma
 - **Cache invalidation**: `aggregator.invalidate_cache()` called after successful ingest; dashboard rebuilt lazily on next request.
 - **Content stripping**: Client strips large message bodies before sending (privacy + bandwidth). Metadata (sizes, types) preserved.
 - **Pricing fallback chain**: LiteLLM GitHub -> DB cache -> static hardcoded prices.
+- **Claude quota freshness**: The Pi reporter posts only on Pi session events. The optional `quota-collector` service polls Meridian on a fixed cadence, so the snapshot stays within about two minutes when Pi is idle. Both post through `/api/usage/claude`, which rejects observations that are not newer.
 - **Provider quota reporting**: Pi sends short-timeout Codex/OpenCode Go snapshots; observed Zen fallback spend is derived from reclassified Pi events. Missing feeds never fabricate gauges.
 
 ## Environment Variables
