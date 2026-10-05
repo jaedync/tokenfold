@@ -99,6 +99,12 @@ class ClaudeUsageTest(TempDBTestCase):
         self.assertEqual(self.stored()["observed_at_epoch"], self.now)
         self.assertEqual(self.stored()["original_observed_at_epoch"], original)
 
+    def test_accepted_sample_does_not_rebuild_dashboard_stats(self):
+        # /api/stats never reads personal quota; a rebuild here only made every
+        # open tab refetch stats once per collector poll.
+        self.assertEqual(self.post().json()["status"], "ok")
+        self.rebuild.assert_not_called()
+
     def test_atomic_monotonic_and_duplicate_history(self):
         self.assertEqual(self.post().status_code, 200)
         self.post()

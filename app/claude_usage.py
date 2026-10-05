@@ -102,7 +102,7 @@ def store_claude_usage(req):
         "source_profile": req.source_profile,
         "original_observed_at_epoch": original,
     })
-    if updated:
-        from .aggregator import trigger_eager_rebuild
-        trigger_eager_rebuild()
+    # No stats rebuild: /api/stats never reads personal quota, and the quota
+    # panel polls its own routes. A rebuild here bumped the SSE version and
+    # made every open tab refetch stats once per collector poll.
     return {"status": "ok" if updated else "ignored_stale", "updated_at": updated}
