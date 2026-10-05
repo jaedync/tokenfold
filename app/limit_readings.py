@@ -1,11 +1,12 @@
-"""Append-only OAuth usage-limit history: writer, reset detection, retention,
-and GET /api/limit-history.
+"""OAuth usage-limit history: writer, reset detection, retention, and
+GET /api/limit-history.
 
-Both oauth_usage writers (server poller, client POST /api/usage) append one
-row per normalized bucket per poll into limit_readings, so mid-window limit
-resets survive the next INSERT OR REPLACE of the meta snapshot. Reset events
-are DERIVED ON READ, never persisted: the heuristic stays tunable without a
-re-migration, and the append-only source rows remain the truth.
+Every oauth_usage writer records one reading per normalized bucket per poll
+into limit_readings, so mid-window limit resets survive the next INSERT OR
+REPLACE of the meta snapshot. Flat runs are compacted (see
+record_limit_readings) without changing any derived value. Reset events are
+DERIVED ON READ, never persisted: the heuristic stays tunable without a
+re-migration, and the source rows remain the truth.
 """
 
 import re
@@ -26,6 +27,7 @@ from .auth import require_dashboard_auth
 from .db import get_conn, write_txn
 from .usage_buckets import normalize_usage_buckets
 from .quota_history import active_history_source, history_source_filter
+from .claude_usage import MANAGED_SOURCE
 
 router = APIRouter()
 
@@ -40,6 +42,16 @@ RESET_JUMP_S = 1200    # resets_at forward jump > 2x the 600s poll interval
 # was vacuously true for any utilization_before < 10, so low-utilization
 # grants could never survive the filter (2026-07-09 incident).
 RESET_RECOVERY_FRACTION = 0.8
+
+# Run compaction (managed source only). A fixed-cadence collector repeats the
+# same reading all day, so a flat run keeps its first row, one row per
+# heartbeat, and a tail row that moves forward to the latest poll. Legacy
+# sources are read merged with each other, so they are never compacted. The heartbeat equals the 600s poll cadence
+# the heuristics above were tuned on, so flat periods are never sparser than
+# that design. OAuth resets_at varies by sub-second amounts between fetches;
+# the jitter tolerance is far below RESET_JUMP_S, so no jump can hide in a run.
+HISTORY_HEARTBEAT_S = 600
+ANCHOR_JITTER_S = 60.0
 
 # F7: 400 days (was 90) — the spend-history window chart derives peak-%
 # per limit window from these rows, so retention IS the chart's horizon.
@@ -84,15 +96,20 @@ def floor_reset_events(events):
 
 
 def record_limit_readings(conn, usage_dict, fetched_epoch, source, *, strict=False):
-    """Append normalized history; legacy callers are best-effort by default.
+    """Record normalized history; legacy callers are best-effort by default.
 
     Managed metadata ingestion uses strict=True so any partial history failure
     reaches its outer transaction and rolls back snapshot/source ownership too.
 
-    Every-poll writes, NO dedupe-on-change: a "still N% at time T" row is
-    exactly what bounds each integer step-crossing to one poll interval for
-    the burn-rate interpolation (Workstream D). Volume math: ~3 buckets x
-    144 polls/day ~= 450 rows/day — trivial for SQLite.
+    A "still N% at time T" row is what bounds each integer step-crossing to
+    one poll interval for the burn-rate interpolation (Workstream D), so the
+    last poll before every change is always kept. Within a flat run the
+    intermediate polls carry no information: interpolation through equal
+    values is flat, and reset rules need a change between neighbors. The
+    tail row therefore moves forward instead of growing the table (see
+    _write_reading). Evaluated at the latest observation (the bucket_trend
+    contract), burn, resets, and window boundaries equal every-poll storage;
+    raw series and /api/limit-history return fewer rows for flat runs.
 
     Bucket-level validation is delegated to normalize_usage_buckets: invalid
     or garbage buckets are skipped there; only valid ones are recorded.
@@ -103,15 +120,47 @@ def record_limit_readings(conn, usage_dict, fetched_epoch, source, *, strict=Fal
             return
         with write_txn(conn) as conn:
             for b in buckets:
-                conn.execute(
-                    "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
-                    "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
-                    (fetched_epoch, source, b["key"], b["utilization"],
-                     b["resets_at"], _iso_to_epoch(b["resets_at"])))
+                _write_reading(conn, fetched_epoch, source, b,
+                               compact=source == MANAGED_SOURCE)
     except Exception as e:
         if strict:
             raise
         log("record_limit_readings failed (source=%s): %s", source, e)
+
+
+def _same_reading(util, reset, row):
+    if util != row[2]:
+        return False
+    if reset is None or row[3] is None:
+        return reset is None and row[3] is None
+    return abs(reset - row[3]) <= ANCHOR_JITTER_S
+
+
+def _write_reading(conn, fetched_epoch, source, bucket, *, compact):
+    """Insert one reading, or move a flat run's tail forward to it.
+
+    The tail moves only when the two newest rows of this (bucket, source)
+    and the new reading are the same reading, the new one is newer, and the
+    run's previous kept row is within one heartbeat. An older (replayed)
+    reading always inserts, as before.
+    """
+    util, raw = bucket["utilization"], bucket["resets_at"]
+    reset = _iso_to_epoch(raw)
+    tail = conn.execute(
+        "SELECT id, fetched_epoch, utilization, resets_at_epoch FROM limit_readings "
+        "WHERE bucket=? AND source=? ORDER BY fetched_epoch DESC, id DESC LIMIT 2",
+        (bucket["key"], source)).fetchall() if compact else []
+    if (len(tail) == 2 and fetched_epoch > tail[0][1]
+            and fetched_epoch - tail[1][1] <= HISTORY_HEARTBEAT_S
+            and all(_same_reading(util, reset, row) for row in tail)):
+        conn.execute(
+            "UPDATE limit_readings SET fetched_epoch=?, resets_at=?, resets_at_epoch=? "
+            "WHERE id=?", (fetched_epoch, raw, reset, tail[0][0]))
+        return
+    conn.execute(
+        "INSERT INTO limit_readings(fetched_epoch, source, bucket, "
+        "utilization, resets_at, resets_at_epoch) VALUES(?,?,?,?,?,?)",
+        (fetched_epoch, source, bucket["key"], util, raw, reset))
 
 
 def detect_resets(rows):

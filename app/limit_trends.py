@@ -1,17 +1,18 @@
 """Sub-window burn-rate & projection math over historized limit_readings.
 
-Utilization arrives integer-quantized and is written every poll (~600s server
-cadence plus client pushes), so a "still N% at time T" row bounds each integer
-step-crossing to one poll interval. compute_burn reconstructs a continuous
+Utilization arrives integer-quantized. The writer keeps the last "still N% at
+time T" poll before every change (flat runs are compacted, see
+limit_readings.record_limit_readings), so each integer step-crossing is
+bounded to one poll interval. compute_burn reconstructs a continuous
 utilization curve û(t) by piecewise-linear interpolation through the recorded
 (fetched_epoch, utilization) points and reads the average burn off it.
 
 Step-crossing rationale: when utilization steps from u to u+k somewhere between
 two polls, the exact crossing instant is unknown within that interval. A linear
 segment between the two readings places each integer crossing at the unbiased
-midpoint position implied by the ±poll-interval uncertainty; because rows are
-written EVERY poll (not only on change), each crossing is bounded to a single
-interval rather than smeared across a long quiet stretch. Averaging over the
+midpoint position implied by the ±poll-interval uncertainty; because the last
+unchanged poll is always kept, each crossing is bounded to a single interval
+rather than smeared across a long quiet stretch. Averaging over the
 whole window then cancels the per-crossing residuals.
 
 Bucket-name-generic: nothing here hardcodes bucket names except the five_hour

@@ -91,6 +91,20 @@ Legacy `CLAUDE_STATS_*` env vars are still supported as fallbacks.
 | `HA_TOKEN` | *(empty)* | Home Assistant long-lived access token |
 | `HA_DEVICES` | *(empty)* | Comma-separated HA notify targets (e.g. `mobile_app_phone`) |
 
+### Claude quota collector (optional)
+
+If a [Meridian](https://github.com/rynfar/meridian) proxy with a Claude Pro or Max login runs on the server host, the `quota-collector` service keeps Claude quota current at all times. Without it, quota arrives only while a Pi session reports it.
+
+```bash
+# .env
+COMPOSE_PROFILES=meridian
+
+docker compose up -d --build
+docker logs tokenfold-quota-collector   # logs only health changes
+```
+
+The service polls `MERIDIAN_URL` (loopback only, default `http://127.0.0.1:3456`) every 120 seconds and posts to `POST /api/usage/claude` with `STATS_API_KEY`. Anthropic rate-limits the OAuth usage endpoint for each token. A 60-second poll got HTTP 429 on every second request, so 120 seconds gives the same freshness without rejected requests. The service uses host networking to reach Meridian on loopback, publishes no port, and runs as an unprivileged user on a read-only filesystem. `COLLECTOR_MACHINE` (default: the host name) labels the reports. `COLLECTOR_INTERVAL_S` (30 to 3600) changes the cadence. `TOKENFOLD_URL` must use https unless it is a loopback address.
+
 ## Notification Relay (optional)
 
 Tokenfold includes an optional notification relay that forwards Claude Code hook events to [Home Assistant](https://www.home-assistant.io/) as mobile push notifications. Get notified when Claude finishes a response, needs permission, or asks a question.
@@ -177,6 +191,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 | `POST` | `/api/ingest/pi` | `X-API-Key` | Ingest typed, privacy-scrubbed Pi Agent events; provider-aware reported costs and required dotfleet `work`/`personal` account class |
 | `POST` | `/api/desktop-metadata` | `X-API-Key` | Ingest Claude Desktop session metadata (macOS) |
 | `POST` | `/api/usage` | `X-API-Key` | Push Anthropic OAuth usage/quota data (Claude-only; not Pi) |
+| `POST` | `/api/usage/claude` | `X-API-Key` | Personal Claude quota observed through Meridian (Pi reporter and `quota-collector`) |
 | `POST` | `/api/provider-usage` | `X-API-Key` | Merge best-effort Codex/OpenCode quota snapshots from Pi, filed under the reporter's `account_class` (work = enterprise scope, personal = personal scope) |
 | `POST` | `/api/notify` | `Bearer` | Notification relay to Home Assistant |
 | `GET` | `/health` | No | Health check |

@@ -373,17 +373,25 @@ def get_conn() -> sqlite3.Connection:
 
 
 @contextmanager
-def read_conn():
+def read_conn(*, snapshot=False):
     """Independent read-only connection for concurrent quota HTTP requests.
 
     SQLite serializes statements on a connection; sharing the ingest connection
     would leave even a tiny meta lookup waiting behind a long event aggregation.
     Startup owns schema initialization, not these latency-sensitive readers.
+
+    snapshot=True opens one read transaction, so every SELECT in the block
+    sees the same WAL snapshot: a commit between a meta read and a history
+    read (for example a compacted tail moving forward) cannot mix two states.
+    Keep such blocks short: the hourly TRUNCATE checkpoint waits for them.
     """
     conn = sqlite3.connect(Path(DB_PATH).resolve().as_uri() + "?mode=ro",
-                           uri=True, timeout=5, cached_statements=0)
+                           uri=True, timeout=5, cached_statements=0,
+                           isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:
+        if snapshot:
+            conn.execute("BEGIN")
         yield conn
     finally:
         conn.close()
