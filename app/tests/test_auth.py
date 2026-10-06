@@ -4,7 +4,7 @@ Human routes (/, /api/stats, /api/stats/version, /api/rate-limits) protected
 by HTTP Basic Auth when DASHBOARD_PASSWORD is set; open when unset.
 
 Machine route (/api/ha) protected by X-API-Key always (regardless of
-DASHBOARD_PASSWORD).
+DASHBOARD_PASSWORD): the ingest key or the optional read-only key.
 
 /health is unconditionally open.
 """
@@ -145,6 +145,39 @@ class HAMachineAuthTest(TempDBTestCase):
         c = self.client()
         r = c.get("/api/ha", headers={"X-API-Key": "wrong-key"})
         self.assertEqual(r.status_code, 401)
+
+
+class HAReadKeyTest(TempDBTestCase):
+    """TOKENFOLD_READ_API_KEY reads GET /api/ha and nothing else.
+
+    A display host (the redarch tty dashboard) shows the quota without
+    holding the ingest key, which can write usage.
+    """
+
+    READ_KEY = "read-only-test-key"
+
+    def test_read_key_reads_ha(self):
+        with patch.object(app.config, "READ_API_KEY", self.READ_KEY):
+            r = self.client().get("/api/ha", headers={"X-API-Key": self.READ_KEY})
+        self.assertEqual(r.status_code, 200)
+
+    def test_ingest_key_still_reads_ha(self):
+        with patch.object(app.config, "READ_API_KEY", self.READ_KEY):
+            r = self.client().get("/api/ha", headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200)
+
+    def test_read_key_cannot_write(self):
+        with patch.object(app.config, "READ_API_KEY", self.READ_KEY):
+            c = self.client()
+            for path in ("/api/ingest", "/api/usage/claude", "/api/usage", "/api/provider-usage"):
+                r = c.post(path, json={}, headers={"X-API-Key": self.READ_KEY})
+                self.assertEqual(r.status_code, 401, path)
+
+    def test_unset_read_key_does_not_open_ha(self):
+        with patch.object(app.config, "READ_API_KEY", ""):
+            c = self.client()
+            self.assertEqual(c.get("/api/ha", headers={"X-API-Key": ""}).status_code, 401)
+            self.assertEqual(c.get("/api/ha").status_code, 401)
 
 
 class IngestAfterRefactorTest(TempDBTestCase):
