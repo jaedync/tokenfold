@@ -10,6 +10,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - STATS_API_KEY=${STATS_API_KEY}
+      # Optional read-only key for GET /api/ha (display hosts); empty disables it.
+      - TOKENFOLD_READ_API_KEY=${TOKENFOLD_READ_API_KEY:-}
       - DB_PATH=/app/data/claude_stats.db
       - TZ=${TZ:-America/Chicago}
       - STATS_OWNER=jaedyn

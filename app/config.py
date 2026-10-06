@@ -1,6 +1,9 @@
 import os
 
 STATS_API_KEY = os.environ.get("STATS_API_KEY", "")
+# Optional read-only machine key: GET /api/ha only, never ingest. Lets a display
+# host show quota without holding STATS_API_KEY, which can write usage.
+READ_API_KEY = os.environ.get("TOKENFOLD_READ_API_KEY", "")
 DB_PATH = os.environ.get("DB_PATH", "/app/data/tokenfold.db")
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")  # unset => dashboard auth disabled (open)

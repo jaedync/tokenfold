@@ -83,6 +83,8 @@ Legacy `CLAUDE_STATS_*` env vars are still supported as fallbacks.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STATS_API_KEY` | *(required)* | API key for authenticating client pushes |
+| `TOKENFOLD_READ_API_KEY` | *(empty)* | Optional read-only key for `GET /api/ha` only (display hosts). Every write route refuses it. Empty disables it |
+| `TOKENFOLD_READ_API_KEY` | *(empty)* | Optional read-only key for `GET /api/ha` only (display hosts). Every write route refuses it. Empty disables it |
 | `TZ` | `America/Chicago` | Timezone for daily bucketing |
 | `DB_PATH` | `/app/data/tokenfold.db` | SQLite database path |
 | `STATS_OWNER` | *(empty)* | Display name shown on the dashboard |

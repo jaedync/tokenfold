@@ -39,3 +39,13 @@ def require_api_key(x_api_key: str = Header(default="", alias="X-API-Key")):
     expected = config.STATS_API_KEY
     if not expected or not hmac.compare_digest(x_api_key, expected):
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def require_read_key(x_api_key: str = Header(default="", alias="X-API-Key")):
+    """Read-only machine auth: STATS_API_KEY or READ_API_KEY. Constant-time,
+    both compared every call; an unset key never matches (fail-closed)."""
+    ingest, read = config.STATS_API_KEY, config.READ_API_KEY
+    ok_ingest = bool(ingest) and hmac.compare_digest(x_api_key, ingest)
+    ok_read = bool(read) and hmac.compare_digest(x_api_key, read)
+    if not (ok_ingest or ok_read):
+        raise HTTPException(status_code=401, detail="Invalid API key")

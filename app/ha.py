@@ -14,7 +14,7 @@ import app.config as config
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from .auth import require_api_key
+from .auth import require_read_key
 
 from .aggregator import build_dashboard_data
 from .cost_windows import compute_window_cost
@@ -103,7 +103,7 @@ def _window_block(
     }
 
 
-@router.get("/api/ha", dependencies=[Depends(require_api_key)])
+@router.get("/api/ha", dependencies=[Depends(require_read_key)])
 async def ha_metrics():
     """Flat metrics feed for Home Assistant REST sensors."""
     conn = get_conn()
