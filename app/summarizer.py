@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
 from .db import get_conn, write_txn
-from .event_dedupe import canonical_assistant_predicate
+from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (compute_cost, display_model, display_model_for_row,
                       effective_geo, load_pricing, reported_cost)
 
@@ -39,6 +39,9 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     tool_uses queries are scoped via the account's session_ids.
     """
     acct_filter = "AND COALESCE(account_email,'unknown') = ?"
+    # Meridian's SDK copies of Pi sessions, and Claude Code sessions with no
+    # reply, are not activity. Cost (Q1) keeps the per-row dedupe instead.
+    activity = counts_as_activity('events')
 
     # ── Tool counts per day — scoped to account's sessions ──
     # tool_uses has no account_email; scope via session_id subquery.
@@ -52,7 +55,8 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     daily_tool_totals: dict[str, int] = defaultdict(int)
     for r in conn.execute(
         f"SELECT day, name, COUNT(*) as cnt FROM tool_uses "
-        f"WHERE day IN ({placeholders}) {session_subq} GROUP BY day, name",
+        f"WHERE day IN ({placeholders}) {session_subq} "
+        f"AND {counts_as_activity('tool_uses')} GROUP BY day, name",
         days + [account] + days,
     ):
         daily_tool_counts[r["day"]][r["name"]] = r["cnt"]
@@ -176,7 +180,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT day, COUNT(DISTINCT session_id) as cnt "
         f"FROM events WHERE agent_id IS NULL AND day IN ({placeholders}) "
-        f"{acct_filter} GROUP BY day",
+        f"AND {activity} {acct_filter} GROUP BY day",
         days + [account],
     ):
         if r["day"] in day_data:
@@ -186,7 +190,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT day, COUNT(*) as cnt "
         f"FROM events WHERE is_human_prompt=1 AND is_sidechain=0 "
-        f"AND day IN ({placeholders}) {acct_filter} GROUP BY day",
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} GROUP BY day",
         days + [account],
     ):
         if r["day"] in day_data:
@@ -196,7 +200,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT day, source_machine, COUNT(*) as cnt "
         f"FROM events WHERE is_human_prompt=1 AND day IN ({placeholders}) "
-        f"{acct_filter} GROUP BY day, source_machine",
+        f"AND {activity} {acct_filter} GROUP BY day, source_machine",
         days + [account],
     ):
         if r["day"] in day_data:
@@ -206,7 +210,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT day, source_machine, COUNT(*) as cnt "
         f"FROM tool_uses WHERE day IN ({placeholders}) {session_subq} "
-        f"GROUP BY day, source_machine",
+        f"AND {counts_as_activity('tool_uses')} GROUP BY day, source_machine",
         days + [account] + days,
     ):
         if r["day"] in day_data:
@@ -222,7 +226,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"AND ("
         f"  (type='user' AND is_human_prompt=1) OR "
         f"  (type='assistant' AND model IS NOT NULL AND model != '<synthetic>')"
-        f") AND day IN ({placeholders}) {acct_filter} "
+        f") AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
         days + [account],
     ):
@@ -249,7 +253,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     target_sessions = conn.execute(
         f"SELECT DISTINCT session_id FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders}) {acct_filter}",
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter}",
         days + [account],
     ).fetchall()
     target_session_ids = {r["session_id"] for r in target_sessions}
@@ -279,7 +283,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL "
         f"AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders}) {acct_filter} "
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
         days + [account],
     ):
@@ -328,7 +332,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"SELECT agent_id, day, ts_epoch, type, model, provider, source_client "
         f"FROM events "
         f"WHERE agent_id IS NOT NULL AND type IN ('user','assistant') "
-        f"AND day IN ({placeholders}) {acct_filter} "
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY agent_id, ts_epoch",
         days + [account],
     ):
@@ -364,7 +368,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"SELECT day, agent_id, model, provider, source_client FROM events "
         f"WHERE agent_id IS NOT NULL AND type='assistant' "
         f"AND model IS NOT NULL AND model != '<synthetic>' "
-        f"AND day IN ({placeholders}) {acct_filter} "
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"GROUP BY day, agent_id, model, provider, source_client",
         days + [account],
     ):
@@ -378,7 +382,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT session_id, ts_epoch, day FROM events "
         f"WHERE type='user' AND is_sidechain=0 AND agent_id IS NULL "
-        f"AND day IN ({placeholders}) {acct_filter} "
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
         days + [account],
     ):
@@ -388,7 +392,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     for r in conn.execute(
         f"SELECT agent_id, ts_epoch, day FROM events "
         f"WHERE type='user' AND agent_id IS NOT NULL "
-        f"AND day IN ({placeholders}) {acct_filter} "
+        f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY agent_id, ts_epoch",
         days + [account],
     ):

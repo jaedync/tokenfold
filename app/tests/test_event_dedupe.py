@@ -66,7 +66,8 @@ class MeridianPiAccountingTest(TempDBTestCase):
         response = self.http.post(route, json=body,
                                   headers={'X-API-Key': self.api_key})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['duplicates' if duplicate else 'accepted'], 1)
+        self.assertEqual(response.json()['duplicates' if duplicate else 'accepted'],
+                         len(body['events']))
 
     def api(self, scope):
         response = self.http.get('/api/rate-limits?scope=' + scope,
@@ -107,9 +108,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertEqual(self.http.get('/api/rate-limits?scope=personal').status_code, 401)
         for pi_first in (False, True):
             with self.subTest(pi_first=pi_first):
-                for table in ('events', 'daily_summary', 'sync_cursors'):
-                    self.conn.execute('DELETE FROM ' + table)
-                self.conn.commit()
+                self.reset()
                 pair = [self.pi(), self.sdk()]
                 if not pi_first:
                     pair.reverse()
@@ -119,7 +118,9 @@ class MeridianPiAccountingTest(TempDBTestCase):
                     self.post(payload, duplicate=True)
                 self.assert_costs()
                 by_day = dict(self.conn.execute('SELECT day, SUM(cost) FROM daily_summary GROUP BY day'))
-                self.assertEqual(by_day, {self.days[0]: 0, self.days[1]: 1.25})
+                # The SDK row on days[0] is Meridian's twin: no cost and no
+                # activity there, so that day has no rollup row at all.
+                self.assertEqual(by_day, {self.days[1]: 1.25})
                 from app.cost_windows import compute_window_cost
                 boundary = self.midnight.timestamp()
                 self.assertEqual(compute_window_cost(
@@ -167,6 +168,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.post(self.sdk('work', 'msg_work', scope='work'))
         self.post(self.pi('personal', 'msg_work', cost=1.25))
         self.assert_costs(personal=6.25, work=8)
+        self.assertEqual(self.mirrors(), [])
 
     def test_non_anthropic_and_non_message_ids_do_not_suppress_direct_claude(self):
         self.post(self.sdk('router-sdk', 'msg_router'))
@@ -174,6 +176,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.post(self.sdk('non-message-sdk', 'not-a-message-id'))
         self.post(self.pi('non-message-pi', 'not-a-message-id'))
         self.assert_costs(personal=11.25, other=2)
+        self.assertEqual(self.mirrors(), [])
 
     def test_configured_org_type_scope_and_zero_reported_cost(self):
         route, sdk = self.sdk(scope='personal')
@@ -221,9 +224,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         for usage, missing_model, expected in cases:
             for pi_first in (False, True):
                 with self.subTest(usage=usage, missing_model=missing_model, pi_first=pi_first):
-                    for table in ('events', 'daily_summary', 'sync_cursors'):
-                        self.conn.execute('DELETE FROM ' + table)
-                    self.conn.commit()
+                    self.reset()
                     route, body = self.pi()
                     event = {k: v for k, v in body['events'][0].items()
                              if k != 'usage' and not (missing_model and k == 'model')}
@@ -278,6 +279,212 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertTrue(any('SEARCH events USING INDEX idx_events_pi_anthropic_message'
                             in row['detail'] for row in plan))
 
+    def _at(self, seconds):
+        return (datetime.fromisoformat(self.after) + timedelta(seconds=seconds)).isoformat()
+
+    def pi_session(self):
+        events = [
+            {'event_id': 'pi-u1', 'session_id': 'pi-s', 'timestamp': self._at(10),
+             'kind': 'user', 'has_text': True},
+            {'event_id': 'pi-a1', 'session_id': 'pi-s', 'timestamp': self._at(40),
+             'kind': 'assistant', 'provider': 'Anthropic', 'api': 'anthropic-messages',
+             'model': 'claude-opus-4-8', 'request_id': 'msg_turn', 'has_tool_use': True,
+             'tools': [{'tool_use_id': 'toolu_pi', 'name': 'bash'}],
+             'usage': {'input': 1_000_000, 'cost_input': 1.0, 'cost_output': .25,
+                       'cost_total': 1.25}},
+            {'event_id': 'pi-r1', 'session_id': 'pi-s', 'timestamp': self._at(70),
+             'kind': 'tool_result', 'has_tool_result': True}]
+        return '/api/ingest/pi', {
+            'machine': 'pi-machine', 'account_class': 'personal',
+            'project_dir': '/metadata-only', 'session_file': 'pi-s.jsonl', 'events': events}
+
+    def sdk_session(self, sid, message_ids):
+        """A Claude Code transcript: one prompt, then a tool turn per message ID."""
+        recs = [{'uuid': sid + '-u', 'sessionId': sid, 'type': 'user', 'userType': 'external',
+                 'timestamp': self._at(11),
+                 'message': {'role': 'user', 'content': 'run the tests'}}]
+        for i, mid in enumerate(message_ids):
+            t = 41 + 60 * i
+            recs.append({'uuid': f'{sid}-a{i}', 'sessionId': sid, 'type': 'assistant',
+                         'timestamp': self._at(t), 'requestId': f'req_{sid}_{i}',
+                         'message': {'id': mid, 'model': 'claude-opus-4-8',
+                                     'usage': {'input_tokens': 1_000_000},
+                                     'content': [{'type': 'tool_use', 'id': f'toolu_{sid}_{i}',
+                                                  'name': 'bash', 'input': {}}]}})
+            recs.append({'uuid': f'{sid}-r{i}', 'sessionId': sid, 'type': 'user',
+                         'userType': 'external', 'timestamp': self._at(t + 30),
+                         'message': {'role': 'user', 'content': [
+                             {'type': 'tool_result', 'tool_use_id': f'toolu_{sid}_{i}',
+                              'content': 'ok'}]}})
+        return '/api/ingest', {
+            'machine': 'sdk-machine', 'project_dir': '/metadata-only',
+            'session_file': sid + '.jsonl', 'account_email': 'personal@example.test',
+            'plan': 'personal', 'events': recs}
+
+    def activity(self):
+        from app.aggregator import _build_hourly, _build_recent_sessions
+        from app.api import _active_seconds
+        from app.config import PERSONAL_PRED
+        row = self.conn.execute(
+            'SELECT SUM(sessions), SUM(human_prompts), SUM(tool_calls), '
+            'ROUND(SUM(active_s), 3), ROUND(SUM(cost), 4) FROM daily_summary').fetchone()
+        hourly = _build_hourly(self.conn, PERSONAL_PRED)
+        return {'rollup': tuple(row[:4]), 'cost': row[4],
+                'hourly': (sum(h.get('prompts', 0) for h in hourly),
+                           sum(h.get('tool_calls', 0) for h in hourly)),
+                'active': round(_active_seconds(self.conn, PERSONAL_PRED,
+                                                self.now - 86400, self.now + 86400), 3),
+                'sessions': sorted(s['session_id'] for s in
+                                   _build_recent_sessions(self.conn, PERSONAL_PRED))}
+
+    def reset(self):
+        for table in ('events', 'daily_summary', 'sync_cursors', 'tool_uses',
+                      'pi_mirror_sessions'):
+            self.conn.execute('DELETE FROM ' + table)
+        self.conn.commit()
+
+    def test_meridian_twin_session_is_not_counted_as_activity(self):
+        from app import db, main
+        direct = self.sdk_session('sdk-direct', ['msg_direct'])
+        # The SDK copy of the Pi session, plus one internal Meridian call
+        # with no Pi twin: real spend that must still bill once.
+        mirror = self.sdk_session('sdk-mirror', ['msg_turn', 'msg_internal'])
+        self.reset()
+        for payload in (self.pi_session(), direct):
+            self.post(payload)
+        baseline = self.activity()
+        self.assertEqual(baseline['rollup'][:3], (2, 2, 2))
+        for mirror_first in (False, True):
+            with self.subTest(mirror_first=mirror_first):
+                self.reset()
+                order = ([mirror, self.pi_session(), direct] if mirror_first
+                         else [self.pi_session(), direct, mirror])
+                for payload in order:
+                    self.post(payload)
+                self.assertEqual([r[0] for r in self.conn.execute(
+                    'SELECT session_id FROM pi_mirror_sessions')], ['sdk-mirror'])
+                got = self.activity()
+                self.assertEqual({k: v for k, v in got.items() if k != 'cost'},
+                                 {k: v for k, v in baseline.items() if k != 'cost'})
+                self.assertAlmostEqual(got['cost'], baseline['cost'] + 5)
+        # The migration rebuilds the twin set from history alone.
+        self.conn.execute('DELETE FROM pi_mirror_sessions')
+        self.conn.execute("DELETE FROM meta WHERE key='meridian_pi_dedupe_version'")
+        self.conn.commit()
+        db._migrate(self.conn)
+        main._backfill_if_needed()
+        self.assertEqual([r[0] for r in self.conn.execute(
+            'SELECT session_id FROM pi_mirror_sessions')], ['sdk-mirror'])
+        self.assertEqual({k: v for k, v in self.activity().items() if k != 'cost'},
+                         {k: v for k, v in baseline.items() if k != 'cost'})
+
+    def mirrors(self):
+        return [r[0] for r in self.conn.execute(
+            'SELECT session_id FROM pi_mirror_sessions ORDER BY session_id')]
+
+    def test_sdk_session_without_reply_is_not_activity(self):
+        # Meridian's SDK copy is often caught before its reply is written and
+        # then deleted: only the replayed prompt, attachments and tool result
+        # remain, while Pi already counts that turn.
+        self.reset()
+        for payload in (self.pi_session(), self.sdk_session('sdk-direct', ['msg_direct'])):
+            self.post(payload)
+        baseline = self.activity()
+        route, body = self.sdk_session('sdk-partial', ['msg_never_ingested'])
+        prompt, _, result = body['events']
+        attachment = {'uuid': 'sdk-partial-att', 'sessionId': 'sdk-partial',
+                      'type': 'attachment', 'timestamp': self._at(12),
+                      'attachment': {'type': 'environment'}}
+        self.post((route, {**body, 'events': [prompt, attachment,
+                                              {**result, 'timestamp': self._at(14)}]}))
+        self.assertEqual(self.activity(), baseline)
+        # A direct session counts from its first reply, its prompt included.
+        route, body = self.sdk_session('sdk-late', ['msg_late'])
+        self.post((route, {**body, 'events': body['events'][:1]}))
+        self.assertEqual(self.activity(), baseline)
+        self.post((route, {**body, 'events': body['events'][1:]}))
+        self.assertEqual(self.activity()['rollup'][:3], (3, 3, 3))
+
+    def test_first_reply_rerolls_earlier_days_and_pi_is_unaffected(self):
+        self.reset()
+        route, body = self.sdk_session('sdk-late', ['msg_late'])
+        prompt = {**body['events'][0], 'timestamp': self.before}
+        self.post((route, {**body, 'events': [prompt]}))
+        def first_day():
+            return tuple(self.conn.execute(
+                'SELECT SUM(sessions), SUM(human_prompts) FROM daily_summary '
+                'WHERE day=?', (self.days[0],)).fetchone())
+        self.assertEqual(first_day(), (None, None))
+        # The first reply lands after midnight: the prompt's day now counts.
+        self.post((route, {**body, 'events': body['events'][1:]}))
+        self.assertEqual(first_day(), (1, 1))
+        # Pi sessions never need a reply to count. A '<synthetic>' row is not
+        # a reply: Claude Code writes it after an API error, with no model call.
+        pi_route, pi_body = self.pi_session()
+        self.post((pi_route, {**pi_body, 'events': pi_body['events'][:1]}))
+        synthetic = self.sdk_session('sdk-synthetic', ['msg_synthetic'])
+        events = synthetic[1]['events'][:2]
+        events[1] = {**events[1], 'message': {**events[1]['message'], 'model': '<synthetic>',
+                                              'usage': {}, 'content': []}}
+        self.post((synthetic[0], {**synthetic[1], 'events': events}))
+        self.assertEqual(self.activity()['rollup'][:2], (3, 2))
+
+    def test_mirror_scan_bounds_combine(self):
+        from app.event_dedupe import find_mirror_sessions
+        self.reset()
+        self.post(self.pi_session())
+        self.post(self.sdk_session('sdk-mirror', ['msg_turn']))
+        self.conn.execute('DELETE FROM pi_mirror_sessions')
+        self.conn.commit()
+        for since, expected in ((self.now + 86400, set()), (self.now - 86400, {'sdk-mirror'})):
+            self.assertEqual(find_mirror_sessions(
+                self.conn, {'msg_turn', 'msg_other'}, since_epoch=since), expected)
+        self.assertEqual(find_mirror_sessions(self.conn, {'msg_other'},
+                                              since_epoch=self.now - 86400), set())
+
+    def test_twin_found_later_rerolls_earlier_days_of_the_session(self):
+        self.reset()
+        self.post(self.pi_session())
+        route, body = self.sdk_session('sdk-mirror', ['msg_internal', 'msg_turn'])
+        def day_before(event):
+            ts = datetime.fromisoformat(event['timestamp']) - timedelta(days=1)
+            return {**event, 'timestamp': ts.isoformat()}
+        def first_day():
+            return tuple(self.conn.execute(
+                'SELECT SUM(sessions), SUM(human_prompts), SUM(tool_calls), SUM(cost) '
+                'FROM daily_summary WHERE day=?', (self.days[0],)).fetchone())
+        # The previous day holds the prompt and Meridian's own call; nothing
+        # there shares an ID with Pi, so the session is not a twin yet.
+        self.post((route, {**body, 'events': [day_before(e) for e in body['events'][:3]]}))
+        self.assertEqual(first_day(), (1, 1, 1, 5))
+        self.post((route, {**body, 'events': body['events'][3:]}))
+        self.assertEqual(self.mirrors(), ['sdk-mirror'])
+        self.assertEqual(first_day(), (0, 0, 0, 5))
+
+    def test_failed_mark_is_repaired_by_resend_or_hourly_sweep(self):
+        from app import aggregator
+        for repair in ('resend', 'sweep'):
+            with self.subTest(repair=repair):
+                self.reset()
+                self.post(self.pi_session())
+                mirror = self.sdk_session('sdk-mirror', ['msg_turn'])
+                with patch('app.event_dedupe.find_mirror_sessions',
+                           side_effect=RuntimeError('simulated')), \
+                        self.assertLogs('app.event_dedupe', level='ERROR'):
+                    self.post(mirror)
+                self.assertEqual(self.mirrors(), [])
+                if repair == 'resend':
+                    # A crash after commit: the client resends; every row is
+                    # a duplicate, but the mark still runs.
+                    self.post(mirror, duplicate=True)
+                else:
+                    # A logged failure returned 200, so nothing resends.
+                    with patch.object(aggregator, '_schedule_periodic_sweep'), \
+                            patch.object(aggregator, '_last_full_sweep', 0.0):
+                        aggregator._run_periodic_sweep()
+                self.assertEqual(self.mirrors(), ['sdk-mirror'])
+                self.assertEqual(self.activity()['rollup'][:3], (1, 1, 1))
+
     def test_reroll_lookups_use_partial_indexes_with_bound_parameters(self):
         from app.event_dedupe import matching_claude_days, matching_pi_days
         self.post(self.sdk())
@@ -300,6 +507,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         from app import db, main, summarizer
         self.post(self.sdk())
         self.post(self.pi())
+        self.post(self.sdk('direct', 'msg_direct'))
         # Emulate pre-release rollups with IDs already populated. No ID UPDATE
         # rowcount can signal this stale-accounting case.
         with patch('app.summarizer.canonical_assistant_predicate', return_value='1'):
@@ -314,7 +522,7 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_summary').fetchone()[0], 0)
         real = summarizer.summarize_days
         def interrupt(days):
-            if days == [self.days[1]]:
+            if days == [self.days[0]]:
                 raise RuntimeError('simulated interrupted backfill')
             real(days)
         # A failing day must not crash-loop startup: log it, finish the other
@@ -322,15 +530,18 @@ class MeridianPiAccountingTest(TempDBTestCase):
         with patch('app.summarizer.summarize_days', side_effect=interrupt), \
                 self.assertLogs('tokenfold.main', level='ERROR') as logs:
             main._backfill_if_needed()
-        self.assertIn(self.days[1], '\n'.join(logs.output))
+        self.assertIn(self.days[0], '\n'.join(logs.output))
         self.assertEqual(self.conn.execute(
             "SELECT value FROM meta WHERE key='daily_summary_rebuild_pending'").fetchone()[0], '1')
+        # The day after the failure was still rebuilt; the failed day was not.
         self.assertEqual({r[0] for r in self.conn.execute('SELECT DISTINCT day FROM daily_summary')},
-                         {self.days[0]})
+                         {self.days[1]})
         db.close_conn()
         self.conn = db.get_conn()
         main._backfill_if_needed()
-        self.assert_costs()
+        self.assertEqual({r[0] for r in self.conn.execute('SELECT DISTINCT day FROM daily_summary')},
+                         set(self.days))
+        self.assert_costs(personal=6.25)
         rows = [tuple(r) for r in self.conn.execute('SELECT * FROM daily_summary ORDER BY day,account_email')]
         db._migrate(self.conn)
         main._backfill_if_needed()

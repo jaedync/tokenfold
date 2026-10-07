@@ -89,10 +89,12 @@ class PiIngestTest(TempDBTestCase):
         self.assertTrue(pi_row["request_id"].endswith(":" + message_id))
         self.assertEqual(pi_row["message_id"], message_id)
 
+        # The re-roll deleted the stale row: the shadow is Meridian's twin, so
+        # that day has neither cost nor activity of its own.
         shadow_summary = self.conn.execute(
             "SELECT cost FROM daily_summary WHERE day='2026-06-08'"
         ).fetchone()
-        self.assertEqual(shadow_summary["cost"], 0)
+        self.assertIsNone(shadow_summary)
         total = self.conn.execute(
             "SELECT SUM(cost) FROM daily_summary"
         ).fetchone()[0]

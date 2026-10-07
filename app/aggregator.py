@@ -22,7 +22,7 @@ from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn, read_conn
-from .event_dedupe import canonical_assistant_predicate
+from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
     REPORTED_COST_SUM_SQL, display_model, display_model_for_row, effective_geo,
@@ -469,6 +469,9 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
         "  AND model != '<synthetic>' AND request_id IS NOT NULL "
         "  AND session_id IS NOT NULL "
         f"  AND {canonical_assistant_predicate()} "
+        # A twin's own Meridian calls still bill in the daily rollup but are
+        # not listed here: the session is shown once, as its Pi original.
+        f"  AND {counts_as_activity()} "
         f"  AND {pred} AND ts_epoch >= ? "
         "  GROUP BY session_id, model, provider, source_client, request_id"
         ") GROUP BY session_id, model, provider, source_client, speed, inference_geo",
@@ -540,6 +543,7 @@ def _build_recent_sessions(conn, pred, limit=25, enterprise=False):
     prompt_counts = {r["session_id"]: r["n"] for r in conn.execute(
         f"SELECT session_id, COUNT(*) as n FROM events "
         f"WHERE is_human_prompt=1 AND session_id IS NOT NULL AND {pred} "
+        f"AND {counts_as_activity()} "
         f"AND ts_epoch >= ? GROUP BY session_id", (cutoff_epoch,))}
 
     titles = {r["session_id"]: r["title"] for r in conn.execute(
@@ -747,6 +751,7 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
     for r in conn.execute(
         f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
         f"FROM events WHERE is_human_prompt=1 AND {pred} AND ts_epoch>=? AND ts_epoch<? "
+        f"AND {counts_as_activity()} "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -757,6 +762,7 @@ def _build_hourly(conn, pred: str, enterprise: bool = False) -> list[dict]:
         f"SELECT CAST(ts_epoch / 3600 AS INTEGER) * 3600 as bucket, COUNT(*) as cnt "
         f"FROM tool_uses WHERE ts_epoch>=? AND ts_epoch<? "
         f"AND session_id IN (SELECT session_id FROM events WHERE {pred}) "
+        f"AND {counts_as_activity('tool_uses')} "
         "GROUP BY bucket", (h_start_epoch, h_end_epoch),
     ):
         idx = epoch_to_idx.get(r["bucket"])
@@ -1624,7 +1630,10 @@ def _run_periodic_sweep():
         from .summarizer import summarize_days
         today = datetime.now(TZ)
         days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-        summarize_days(days)
+        # Repairs a Meridian twin mark that ingest logged and skipped.
+        from .event_dedupe import record_mirror_sessions
+        extra = record_mirror_sessions(since_epoch=_time.time() - 7 * 86400)
+        summarize_days(days + sorted(extra - set(days)))
         trigger_eager_rebuild()
     except Exception:
         # Swallowing keeps the timer alive; logging keeps the failure visible

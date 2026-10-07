@@ -1,7 +1,10 @@
 """Canonical event filters shared by live and rolled-up usage accounting."""
 
+import logging
 import sqlite3
 from .config import enterprise_predicate
+
+logger = logging.getLogger(__name__)
 
 _MESSAGE_ID_BATCH = 500
 _COMPONENTS = ('input', 'output', 'cache_read', 'cache_write')
@@ -90,3 +93,128 @@ def matching_pi_days(conn: sqlite3.Connection, message_ids: set[str]) -> set[str
     """Pi days without positive reported cost, invalidated by a newly arrived
     paid SDK fallback."""
     return _matching_days(conn, message_ids, 'pi-agent')
+
+
+# ── Meridian twin sessions (activity metrics) ──
+# Meridian writes a separate Claude Code session for the requests it serves
+# for Pi. Cost is deduped per row above; activity (sessions, prompts, active
+# time, tools, agents) is per session, so the whole SDK copy is excluded. A
+# Claude Code session is a twin exactly when one of its assistant rows shares
+# an Anthropic msg_* ID with a Pi row of the same class: direct Claude Code
+# use never carries a Pi response ID. Twin rows without a Pi counterpart
+# (Meridian's own calls) still bill through the row predicate.
+#
+# Many SDK copies are caught before their reply is written and then deleted,
+# leaving only the replayed prompt, attachments and tool results: no ID to
+# match. Copies of failed Pi turns hold only a '<synthetic>' row, which Claude
+# Code writes itself after an API error. A Claude Code session with no real
+# model reply did no model work, so it is not activity either; a live session
+# counts from its first reply.
+
+_REPLY = "{a}.type='assistant' AND COALESCE({a}.model, '') != '<synthetic>'"
+
+def counts_as_activity(alias: str = 'events') -> str:
+    """Activity filter for events or tool_uses rows. Aliases are internal."""
+    return (f"NOT ({alias}.source_client='claude-code' AND {alias}.session_id IS NOT NULL "
+            "AND (EXISTS (SELECT 1 FROM pi_mirror_sessions AS mirror "
+            f"WHERE mirror.session_id={alias}.session_id) "
+            "OR NOT EXISTS (SELECT 1 FROM events AS reply "
+            f"WHERE reply.session_id={alias}.session_id AND {_REPLY.format(a='reply')})))")
+
+
+def find_mirror_sessions(conn: sqlite3.Connection,
+                         message_ids: set[str] | None = None, *,
+                         since_epoch: float | None = None) -> set[str]:
+    """Twin sessions not yet recorded in pi_mirror_sessions. Read-only.
+
+    ``message_ids=None`` scans all history (migration). Otherwise only SDK
+    rows carrying those IDs are checked, which covers both arrival orders:
+    an SDK batch passes its own IDs, a Pi batch passes the IDs it reported.
+    ``since_epoch`` bounds the scan to recent SDK rows (hourly repair).
+    """
+    query = (
+        "SELECT DISTINCT sdk.session_id FROM events AS sdk "
+        "WHERE sdk.source_client='claude-code' AND sdk.type='assistant' "
+        "AND sdk.session_id IS NOT NULL AND sdk.message_id GLOB 'msg_?*' "
+        "AND NOT EXISTS (SELECT 1 FROM pi_mirror_sessions AS known "
+        "WHERE known.session_id=sdk.session_id) "
+        "AND EXISTS (SELECT 1 FROM events AS twin_pi WHERE "
+        "twin_pi.source_client='pi-agent' AND LOWER(twin_pi.provider)='anthropic' "
+        f"AND twin_pi.type='assistant' AND {_same_response('twin_pi', 'sdk')})")
+    since = [] if since_epoch is None else [since_epoch]
+    if since:
+        query += " AND sdk.ts_epoch >= ?"
+    if message_ids is None:
+        batches = [None]
+    else:
+        ids = sorted(m for m in message_ids if m)
+        batches = [ids[i:i + _MESSAGE_ID_BATCH]
+                   for i in range(0, len(ids), _MESSAGE_ID_BATCH)]
+    found: set[str] = set()
+    for batch in batches:
+        sql = query if batch is None else (
+            query + f" AND sdk.message_id IN ({','.join('?' for _ in batch)})")
+        found.update(row[0] for row in conn.execute(sql, since + (batch or [])))
+    return found
+
+
+def _insert_mirror_sessions(conn: sqlite3.Connection, session_ids: set[str]) -> None:
+    conn.executemany("INSERT OR IGNORE INTO pi_mirror_sessions(session_id) VALUES (?)",
+                     [(sid,) for sid in sorted(session_ids)])
+
+
+def mark_mirror_sessions(conn: sqlite3.Connection) -> set[str]:
+    """Record every twin session in history (migration; caller owns the txn)."""
+    found = find_mirror_sessions(conn)
+    _insert_mirror_sessions(conn, found)
+    return found
+
+
+def record_mirror_sessions(message_ids: set[str] | None = None, *,
+                           since_epoch: float | None = None) -> set[str]:
+    """Mark new twin sessions in their own transaction; return days to re-roll.
+
+    Ingest calls this for every batch, an all-duplicate retry included, and
+    the hourly sweep calls it for the last 7 days, which repairs a mark that
+    failed after its events committed. Never raises: ingest is durable and
+    the sweep timer must stay alive.
+    """
+    from .db import get_conn, write_txn
+    if message_ids is not None and not message_ids:
+        return set()
+    try:
+        # Scan outside the write lock; a race only repeats a harmless insert.
+        found = find_mirror_sessions(get_conn(), message_ids, since_epoch=since_epoch)
+        if not found:
+            return set()
+        with write_txn() as conn:
+            _insert_mirror_sessions(conn, found)
+        return session_days(get_conn(), found)
+    except Exception:
+        logger.exception("Meridian twin-session mark failed; the hourly sweep retries")
+        return set()
+
+
+def sessions_without_reply(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
+    """Sessions with no model reply yet: their first reply makes every day
+    of the session count as activity (counts_as_activity)."""
+    ids = sorted(session_ids)
+    have: set[str] = set()
+    for offset in range(0, len(ids), _MESSAGE_ID_BATCH):
+        batch = ids[offset:offset + _MESSAGE_ID_BATCH]
+        have.update(row[0] for row in conn.execute(
+            f"SELECT DISTINCT session_id FROM events AS e WHERE {_REPLY.format(a='e')} "
+            f"AND session_id IN ({','.join('?' for _ in batch)})", batch))
+    return set(ids) - have
+
+
+def session_days(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
+    """Every day a session touched: a new twin changes all of its rollups."""
+    ids = sorted(session_ids)
+    days: set[str] = set()
+    for offset in range(0, len(ids), _MESSAGE_ID_BATCH):
+        batch = ids[offset:offset + _MESSAGE_ID_BATCH]
+        days.update(row[0] for row in conn.execute(
+            f"SELECT DISTINCT day FROM events WHERE session_id IN "
+            f"({','.join('?' for _ in batch)})", batch))
+    return days

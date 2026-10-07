@@ -199,6 +199,12 @@ CREATE TABLE IF NOT EXISTS session_titles (
     updated_at  TEXT
 );
 
+-- Claude Code sessions that are Meridian's SDK copy of a Pi session (see
+-- event_dedupe.mark_mirror_sessions). Excluded from activity metrics.
+CREATE TABLE IF NOT EXISTS pi_mirror_sessions (
+    session_id  TEXT PRIMARY KEY
+) WITHOUT ROWID;
+
 -- Manually recorded Claude org-page billing figures. FIRST-CLASS data:
 -- not derived from events, never rebuilt, included in DB backups.
 CREATE TABLE IF NOT EXISTS billing_readings (
@@ -364,11 +370,14 @@ def _migrate(conn) -> None:
     version = conn.execute(
         "SELECT value FROM meta WHERE key='meridian_pi_dedupe_version'"
     ).fetchone()
-    if version is None or version[0] != '1' or backfilled > 0:
+    # Version 2 adds twin-session exclusion for activity metrics.
+    if version is None or version[0] != '2' or backfilled > 0:
+        from .event_dedupe import mark_mirror_sessions
+        mark_mirror_sessions(conn)
         conn.execute("DELETE FROM daily_summary")
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) "
-            "VALUES('meridian_pi_dedupe_version','1')")
+            "VALUES('meridian_pi_dedupe_version','2')")
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) "
             "VALUES('daily_summary_rebuild_pending','1')")

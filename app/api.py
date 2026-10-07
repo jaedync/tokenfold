@@ -19,7 +19,7 @@ from .config import IDLE_THRESHOLD_S
 from .cost_windows import (ANTHROPIC_ONLY_SQL, compute_window_cost,
                           compute_window_cost_by_model)
 from .db import read_conn
-from .event_dedupe import canonical_assistant_predicate
+from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
@@ -45,6 +45,7 @@ def _active_seconds(conn, pred, start, end):
         "AND type IN ('user','assistant') "
         "AND is_sidechain=0 AND agent_id IS NULL "
         f"AND {pred} "
+        f"AND {counts_as_activity()} "
         "ORDER BY session_id, ts_epoch",
         (start, end),
     ):
