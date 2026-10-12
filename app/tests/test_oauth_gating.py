@@ -90,7 +90,9 @@ def _seed_oauth_usage(conn, five_hour_resets_at, seven_day_resets_at,
                 "utilization": sd_utilization,
             },
         },
-        "updated_at": "2026-06-09T12:00:00+00:00",
+        # A current observation: /api/ha pairs pct with spend up to it, and
+        # gives no dollars for an observation outside the window.
+        "updated_at": _epoch_to_iso(time.time() - 30),
     }
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",

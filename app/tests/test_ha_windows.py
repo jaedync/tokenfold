@@ -39,7 +39,9 @@ def _ins_reading(conn, bucket, fetched, pct, resets_epoch, source="server"):
     conn.commit()
 
 
-class HAWindowsTest(TempDBTestCase):
+class _HABase(TempDBTestCase):
+    """Seeding helpers only; no tests, so subclasses do not rerun any."""
+
     def setUp(self):
         super().setUp()
         self.freeze_pricing()
@@ -76,6 +78,8 @@ class HAWindowsTest(TempDBTestCase):
                        (grant_t + 600, after)):
             _ins_reading(self.conn, bucket, t, pct, resets, source)
 
+
+class HAWindowsTest(_HABase):
     # ── no reset: unchanged start ───────────────────────────────────────
 
     def test_no_reset_keeps_resets_minus_window_start(self):
@@ -196,3 +200,109 @@ class HAWindowsTest(TempDBTestCase):
             self.assertTrue(start.endswith(":00+00:00"), start)
             dt = datetime.fromisoformat(start)
             self.assertEqual((dt.second, dt.microsecond), (0, 0))
+
+
+DOLLAR_KEYS = ("spend_usd", "implied_limit_usd", "window_start")
+
+
+class HAWindowsSafetyTest(_HABase):
+    """No pairing of a percent with spend from another time, no fallback to
+    resets_at - window on error, and agreement with /api/rate-limits."""
+
+    def _assert_no_dollars(self, block):
+        for key in DOLLAR_KEYS:
+            self.assertIn(key, block)
+            self.assertIsNone(block[key], key)
+        # The quota fields stay: HA history needs them even without dollars.
+        self.assertIsNotNone(block["pct_used"])
+        self.assertIsNotNone(block["resets_at"])
+        self.assertIsNotNone(block["resets_in_s"])
+
+    # ── parity with /api/rate-limits ────────────────────────────────────
+
+    def test_matches_rate_limits_windows(self):
+        grant_t = self.now - 86400
+        self._seed_oauth(sd_pct=12.0, fh_pct=30.0, source=MANAGED_SOURCE)
+        self._grant("seven_day", grant_t, self.sd_resets, source=MANAGED_SOURCE)
+        _ins_event(self.conn, "p1", "r1", grant_t - 3600, inp=1_000_000)
+        _ins_event(self.conn, "p2", "r2", self.now - 7200, inp=2_000_000)
+        _ins_event(self.conn, "p3", "r3", self.now - 600, inp=1_000_000)
+        _ins_pi_event(self.conn, "p4", "r4", self.now - 600, "openai-codex",
+                      "gpt-5.6-sol", 9.0)
+        ha = self._ha()
+        oauth = self.client().get("/api/rate-limits?scope=personal").json()[
+            "weekly_budget"]["oauth"]
+        for block, window in ((ha["weekly"], oauth["limit_window"]),
+                              (ha["five_hour"], oauth["five_hour_window"])):
+            self.assertEqual(block["spend_usd"], window["cost"])
+            self.assertEqual(datetime.fromisoformat(
+                block["window_start"]).timestamp(), window["start_epoch"])
+        self.assertAlmostEqual(ha["weekly"]["spend_usd"], 15.0, places=2)
+
+    # ── error isolation ─────────────────────────────────────────────────
+
+    def test_window_error_keeps_quota_and_other_fields(self):
+        self._seed_oauth()
+        _ins_event(self.conn, "e1", "r1", self.now - 600, inp=1_000_000)
+        for target in ("app.ha._bucket_window_start", "app.ha.compute_window_cost"):
+            with self.subTest(target=target), \
+                    patch(target, side_effect=RuntimeError("boom")):
+                resp = None
+                with patch.object(app.config, "LOCKED_SCOPE", None):
+                    resp = self.client().get(
+                        "/api/ha", headers={"X-API-Key": self.api_key})
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertIn("cost_today_usd", body)
+                self.assertIn("updated_at_epoch", body)
+                self._assert_no_dollars(body["weekly"])
+                self._assert_no_dollars(body["five_hour"])
+
+    # ── no end: the percent cannot be paired with spend ─────────────────
+
+    def test_no_dollars_when_observation_missing(self):
+        stored = {"data": {
+            "seven_day": {"utilization": 40.0, "resets_at": _iso(self.sd_resets)},
+            "five_hour": {"utilization": 20.0, "resets_at": _iso(self.fh_resets)},
+        }}
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('oauth_usage', ?)",
+            (json.dumps(stored),))
+        self.conn.commit()
+        _ins_event(self.conn, "m1", "r1", self.now - 600, inp=1_000_000)
+        body = self._ha()
+        self._assert_no_dollars(body["weekly"])
+        self._assert_no_dollars(body["five_hour"])
+
+    def test_no_dollars_when_observation_in_future(self):
+        self._seed_oauth(observed=self.now + 600)
+        _ins_event(self.conn, "f1", "r1", self.now - 600, inp=1_000_000)
+        body = self._ha()
+        self._assert_no_dollars(body["weekly"])
+        self._assert_no_dollars(body["five_hour"])
+
+    def test_no_dollars_when_observation_before_start(self):
+        # Before both starts: weekly starts ~4 days ago, five_hour ~3h ago.
+        self._seed_oauth(observed=self.now - 5 * 86400)
+        _ins_event(self.conn, "b1", "r1", self.now - 600, inp=1_000_000)
+        body = self._ha()
+        self._assert_no_dollars(body["weekly"])
+        self._assert_no_dollars(body["five_hour"])
+
+    # ── grant corroborated by a sibling bucket ──────────────────────────
+
+    def test_sibling_corroborated_grant_moves_weekly_start(self):
+        """An account-wide grant zeroed five_hour (55 -> 3) while seven_day
+        only fell 9 -> 7 (usage resumed inside the poll gap): too small for
+        its own rules, but the sibling's grant cuts its window too."""
+        grant_t = self.now - 1800
+        self._seed_oauth(sd_pct=8.0)
+        self._grant("five_hour", grant_t, self.fh_resets)
+        for t, pct in ((grant_t - 600, 9.0), (grant_t, 7.0),
+                       (grant_t + 600, 8.0)):
+            _ins_reading(self.conn, "seven_day", t, pct, self.sd_resets)
+        _ins_event(self.conn, "c1", "r1", grant_t - 3600, inp=1_000_000)
+        _ins_event(self.conn, "c2", "r2", self.now - 60, inp=1_000_000)
+        weekly = self._ha()["weekly"]
+        self.assertEqual(weekly["window_start"], _iso(_minute(grant_t)))
+        self.assertAlmostEqual(weekly["spend_usd"], 5.0, places=2)

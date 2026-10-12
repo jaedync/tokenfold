@@ -29,11 +29,13 @@ check 'has("updated_at_epoch")'             'updated_at_epoch key must be presen
 # If the window blocks are present, their sub-shape must be complete.
 for win in five_hour weekly; do
   if [ "$(echo "$body" | jq ".$win")" != "null" ]; then
-    for sub in pct_used spend_usd implied_limit_usd resets_at resets_in_s; do
+    for sub in pct_used spend_usd implied_limit_usd resets_at resets_in_s window_start; do
       check ".$win | has(\"$sub\")" "$win.$sub must be present when $win is not null"
     done
     check ".$win.resets_at | endswith(\":00+00:00\")" \
       "$win.resets_at must be minute-truncated"
+    check ".$win.window_start | (. == null) or endswith(\":00+00:00\")" \
+      "$win.window_start must be minute-truncated or null"
   fi
 done
 
