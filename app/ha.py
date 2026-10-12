@@ -18,9 +18,9 @@ from fastapi.responses import JSONResponse
 from .auth import require_read_key
 
 from .aggregator import build_dashboard_data
-from .api import _bucket_window_start, _iso_to_epoch
 from .cost_windows import compute_window_cost
 from .db import read_conn
+from .limit_windows import _bucket_window_start, _iso_to_epoch
 from .usage_buckets import normalize_usage_buckets
 
 router = APIRouter()
@@ -218,21 +218,20 @@ def _oauth_blocks(conn, now_epoch: float) -> tuple:
     # (the caller only reads this snapshot when not enterprise-locked).
     model_buckets = _model_buckets(buckets, now_epoch)
 
-    updated_at_epoch = None
-    updated_at_iso = stored.get("updated_at", "")
-    if updated_at_iso:
-        try:
-            ua = datetime.fromisoformat(updated_at_iso).timestamp()
-            # Round to nearest 10 seconds for symmetry with resets_at.
-            updated_at_epoch = int(round(ua / 10.0) * 10)
-        except (ValueError, TypeError):
-            pass
+    # The clock the window spend ends at, floored to the minute: every
+    # timestamp that leaves the server is minute-truncated.
+    updated_at_epoch = int((observed // 60) * 60) if observed is not None else None
     return five_hour_block, weekly_block, model_buckets, updated_at_epoch
 
 
 @router.get("/api/ha", dependencies=[Depends(require_read_key)])
-async def ha_metrics():
-    """Flat metrics feed for Home Assistant REST sensors."""
+def ha_metrics():
+    """Flat metrics feed for Home Assistant REST sensors.
+
+    Plain def on purpose: FastAPI runs it in the threadpool, so the blocking
+    SQLite reads below never stall the event loop (/api/rate-limits gets the
+    same result with run_in_threadpool).
+    """
     now_epoch = time.time()
 
     # Read the scope lock fresh so tests can monkeypatch app.config.LOCKED_SCOPE.

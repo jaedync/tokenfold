@@ -54,9 +54,9 @@ if [ "$(echo "$body" | jq '.model_buckets')" != "null" ]; then
   done
 fi
 
-# updated_at_epoch, if present, must be divisible by 10.
+# updated_at_epoch, if present, must be minute-truncated.
 if [ "$(echo "$body" | jq '.updated_at_epoch')" != "null" ]; then
-  check '.updated_at_epoch % 10 == 0' 'updated_at_epoch must be divisible by 10'
+  check '.updated_at_epoch % 60 == 0' 'updated_at_epoch must be minute-truncated'
 fi
 
 echo "OK: /api/ha shape is valid"

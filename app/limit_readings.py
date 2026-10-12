@@ -16,13 +16,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-# No import cycle: api.py never imports this module at module level (its one
-# dependency, .limit_trends -> bucket_trend/distinct_buckets, is imported
-# LAZILY inside the route body — see app/api.py), so both shared helpers
-# (fail-closed minute-scrub, ISO-to-epoch parse) are imported rather than
-# duplicated (Fix 9: this used to have its own _epoch_or_none, byte-identical
-# to api._iso_to_epoch — consolidated onto the one copy).
-from .api import _scrub_to_minute_or_none, _iso_to_epoch
+# No import cycle: limit_windows imports nothing from app at module level
+# (its _bucket_window_start imports this module lazily), so both shared
+# helpers (fail-closed minute-scrub, ISO-to-epoch parse) are imported rather
+# than duplicated (Fix 9: this used to have its own _epoch_or_none,
+# byte-identical to _iso_to_epoch — consolidated onto the one copy).
+from .limit_windows import _iso_to_epoch, _scrub_to_minute_or_none
 from .auth import require_dashboard_auth
 from .db import get_conn, write_txn
 from .usage_buckets import normalize_usage_buckets
@@ -73,7 +72,7 @@ def log(msg, *args):
 
 def _floor_to_minute_or_none(epoch: Optional[float]) -> Optional[float]:
     """Floor an epoch-seconds value to whole-minute precision; None passes
-    through unchanged. Mirrors _scrub_to_minute_or_none (app/api.py): a raw
+    through unchanged. Mirrors _scrub_to_minute_or_none (app/limit_windows.py): a raw
     resets_at_epoch is account-derived, and its sub-minute offset can
     fingerprint the account across responses, so it must never leave the
     server at full precision.
