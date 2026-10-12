@@ -331,3 +331,44 @@ class HAWindowsSafetyTest(_HABase):
         for key in ("five_hour", "weekly", "model_buckets", "updated_at_epoch"):
             self.assertIn(key, body)
             self.assertIsNone(body[key], key)
+
+
+class HAUpdatedAtTest(_HABase):
+    """updated_at_epoch leaves the server, so it is minute-floored, and it
+    comes from the observation clock the window spend ends at."""
+
+    def _seed_stored(self, stored):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('oauth_usage', ?)",
+            (json.dumps(stored),))
+        self.conn.commit()
+
+    def _data(self):
+        return {
+            "seven_day": {"utilization": 40.0, "resets_at": _iso(self.sd_resets)},
+            "five_hour": {"utilization": 20.0, "resets_at": _iso(self.fh_resets)},
+        }
+
+    def test_managed_observation_clock_floored_to_minute(self):
+        # updated_at differs from the observation on purpose: the field must
+        # follow observed_at_epoch, the end of the window spend.
+        observed = _minute(self.now - 300) + 37.654321
+        self._seed_stored({"data": self._data(), "source": MANAGED_SOURCE,
+                           "observed_at_epoch": observed,
+                           "updated_at": _iso(self.now - 20.5)})
+        value = self._ha()["updated_at_epoch"]
+        self.assertIsInstance(value, int)
+        self.assertEqual(value, int(_minute(observed)))
+
+    def test_legacy_updated_at_floored_to_minute(self):
+        # 37 s into the minute: the old 10 s rounding gave minute + 40.
+        observed = _minute(self.now - 300) + 37.25
+        self._seed_stored({"data": self._data(), "updated_at": _iso(observed)})
+        value = self._ha()["updated_at_epoch"]
+        self.assertIsInstance(value, int)
+        self.assertEqual(value, int(_minute(observed)))
+
+    def test_none_when_no_clock_parses(self):
+        self._seed_stored({"data": self._data(), "updated_at": "not-a-time"})
+        self.assertIsNone(self._ha()["updated_at_epoch"])
+

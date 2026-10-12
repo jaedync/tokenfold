@@ -218,15 +218,9 @@ def _oauth_blocks(conn, now_epoch: float) -> tuple:
     # (the caller only reads this snapshot when not enterprise-locked).
     model_buckets = _model_buckets(buckets, now_epoch)
 
-    updated_at_epoch = None
-    updated_at_iso = stored.get("updated_at", "")
-    if updated_at_iso:
-        try:
-            ua = datetime.fromisoformat(updated_at_iso).timestamp()
-            # Round to nearest 10 seconds for symmetry with resets_at.
-            updated_at_epoch = int(round(ua / 10.0) * 10)
-        except (ValueError, TypeError):
-            pass
+    # The clock the window spend ends at, floored to the minute: every
+    # timestamp that leaves the server is minute-truncated.
+    updated_at_epoch = int((observed // 60) * 60) if observed is not None else None
     return five_hour_block, weekly_block, model_buckets, updated_at_epoch
 
 
