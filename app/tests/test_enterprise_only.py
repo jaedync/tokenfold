@@ -72,7 +72,9 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
                 "seven_day": {"utilization": 50, "resets_at": resets_iso},
                 "five_hour": {"utilization": 50, "resets_at": resets_iso},
             },
-            "updated_at": resets_iso,
+            # Observed now: /api/ha gives no dollars for a future observation.
+            "updated_at": datetime.fromtimestamp(
+                time.time() - 30, tz=timezone.utc).isoformat(),
         }
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES('oauth_usage', ?)",
