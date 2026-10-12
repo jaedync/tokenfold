@@ -225,8 +225,13 @@ def _oauth_blocks(conn, now_epoch: float) -> tuple:
 
 
 @router.get("/api/ha", dependencies=[Depends(require_read_key)])
-async def ha_metrics():
-    """Flat metrics feed for Home Assistant REST sensors."""
+def ha_metrics():
+    """Flat metrics feed for Home Assistant REST sensors.
+
+    Plain def on purpose: FastAPI runs it in the threadpool, so the blocking
+    SQLite reads below never stall the event loop (/api/rate-limits gets the
+    same result with run_in_threadpool).
+    """
     now_epoch = time.time()
 
     # Read the scope lock fresh so tests can monkeypatch app.config.LOCKED_SCOPE.

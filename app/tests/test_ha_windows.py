@@ -9,12 +9,15 @@ the observation the utilization came from. Claude-subscription spend only.
 'now' is derived at seed time and every window is seeded relative to it.
 """
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
 import app.config
+import app.ha
+from app.aggregator import build_dashboard_data
 from app.claude_usage import MANAGED_SOURCE
 from app.tests._support import TempDBTestCase
 from app.tests.test_bucket_windows import _ins_event, _ins_pi_event
@@ -372,3 +375,62 @@ class HAUpdatedAtTest(_HABase):
         self._seed_stored({"data": self._data(), "updated_at": "not-a-time"})
         self.assertIsNone(self._ha()["updated_at_epoch"])
 
+
+def _loop_running():
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+class HAThreadpoolTest(_HABase):
+    """The blocking SQLite work runs off the event loop, and the body is
+    unchanged."""
+
+    def test_blocking_work_runs_off_event_loop(self):
+        self._seed_oauth()
+        seen = []
+        real_dash, real_blocks = app.ha.build_dashboard_data, app.ha._oauth_blocks
+
+        def dash(scope):
+            seen.append(("dash", _loop_running()))
+            return real_dash(scope)
+
+        def blocks(conn, now_epoch):
+            seen.append(("blocks", _loop_running()))
+            return real_blocks(conn, now_epoch)
+
+        with patch("app.ha.build_dashboard_data", side_effect=dash), \
+                patch("app.ha._oauth_blocks", side_effect=blocks):
+            body = self._ha()
+        self.assertEqual(seen, [("dash", False), ("blocks", False)])
+        self.assertIsNotNone(body["weekly"])
+
+    def test_body_unchanged(self):
+        self._seed_oauth()
+        _ins_event(self.conn, "b1", "r1", self.now - 600, inp=1_000_000)
+        with patch.object(app.ha, "time") as clock:
+            clock.time.return_value = self.now
+            body = self._ha()
+        # Cost totals come from the aggregator (day summaries), not from
+        # this route; the route only rounds them.
+        dash = build_dashboard_data("personal")
+
+        def block(resets, window_s, pct, implied):
+            return {
+                "pct_used": pct, "spend_usd": 5.0, "implied_limit_usd": implied,
+                "resets_at": _iso(_minute(resets)),
+                "resets_in_s": int(_minute(resets) - self.now),
+                "window_start": _iso(_minute(resets) - window_s),
+            }
+
+        self.assertEqual(body, {
+            "cost_today_usd": round(
+                (dash.get("today") or {}).get("cost", 0.0) or 0.0, 2),
+            "cost_total_usd": round(dash.get("total_cost", 0.0) or 0.0, 2),
+            "five_hour": block(self.fh_resets, FIVE_H_S, 20.0, 25.0),
+            "weekly": block(self.sd_resets, WEEK_S, 40.0, 12.5),
+            "model_buckets": None,
+            "updated_at_epoch": int(_minute(self.now - 30)),
+        })
