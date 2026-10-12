@@ -32,9 +32,9 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-# Cycle check: api.py never imports this module (routers meet in main.py),
-# and limit_readings -> api is the only edge below us — acyclic.
-from .api import _iso_to_epoch
+# Cycle check: limit_windows imports nothing from app at module scope, and
+# nothing below us imports this module (routers meet in main.py) — acyclic.
+from .limit_windows import _iso_to_epoch
 from .auth import require_dashboard_auth
 from .config import scope_predicate
 from .cost_windows import compute_window_cost, compute_window_cost_by_model

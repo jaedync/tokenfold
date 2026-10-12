@@ -23,23 +23,9 @@ from .pricing import (REPORTED_COST_SUM_SQL, compute_cost, display_model,
                       display_model_for_row, effective_geo, reported_cost)
 from .usage_buckets import normalize_usage_buckets
 from .quota_freshness import quota_window_valid
-
-
-def _iso_to_epoch(iso_str: Optional[str]) -> Optional[float]:
-    """Parse an ISO-8601 string to epoch seconds; None on ANY failure.
-
-    Also imported by app/limit_readings.py (module-level `from .api import
-    ..._iso_to_epoch`) — that direction is acyclic (this module never imports
-    limit_readings at module scope, only lazily inside the rate_limits route
-    body below), so the helper lives here once rather than being duplicated
-    (Fix 9).
-    """
-    if not isinstance(iso_str, str) or not iso_str:
-        return None
-    try:
-        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
+# Imported by name (not module-qualified) so tests can patch
+# app.api._bucket_window_start for this route alone.
+from .limit_windows import _bucket_window_start, _iso_to_epoch
 
 
 def _active_seconds(conn, pred, start, end):
@@ -71,6 +57,9 @@ def _active_seconds(conn, pred, start, end):
 def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
 
+    Also imported by app/limit_readings.py at module level, so this module
+    imports limit_trends (which imports limit_readings) only lazily.
+
     Removes subsecond and second precision so a per-account microsecond
     offset can't fingerprint the account across responses.
 
@@ -87,31 +76,6 @@ def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
     return (
         dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
     )
-
-
-def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None, *, source=None):
-    """Start epoch of the CURRENT limit window for one historized bucket.
-
-    resets_at − window_s (minute-floored — limit timestamps never leave the
-    server at sub-minute precision), pushed forward to the latest persistent
-    GRANTED reset recorded for that bucket: a granted mid-window reset voids
-    pre-grant usage, so spend anchored at resets_at − window would overcount
-    (F1). corroborated_resets = persistent_resets (not raw detect_resets: a
-    stale client replay must not move the cost window, review M1) plus
-    account-level resets borrowed from sibling buckets — a grant zeroes
-    every bucket at once, and a bucket whose own decrease is too small for
-    detection still had its window cut (2026-07-09 incident). Lazy import —
-    limit_readings imports api at module level, so api must never import it
-    back at module scope (same cycle-break as the limit_trends import in
-    rate_limits).
-    """
-    start = ((resets_epoch // 60) * 60.0) - window_s
-    from .limit_readings import corroborated_resets, floor_reset_events
-    granted = floor_reset_events(corroborated_resets(
-        conn, bucket_key, start, until_epoch=observed, source=source))
-    if granted:
-        start = max(start, granted[-1]["at_epoch"])
-    return start
 
 
 def _resolve_scope(requested):

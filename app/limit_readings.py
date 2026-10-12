@@ -16,13 +16,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-# No import cycle: api.py never imports this module at module level (its one
-# dependency, .limit_trends -> bucket_trend/distinct_buckets, is imported
-# LAZILY inside the route body — see app/api.py), so both shared helpers
-# (fail-closed minute-scrub, ISO-to-epoch parse) are imported rather than
-# duplicated (Fix 9: this used to have its own _epoch_or_none, byte-identical
-# to api._iso_to_epoch — consolidated onto the one copy).
-from .api import _scrub_to_minute_or_none, _iso_to_epoch
+# No import cycle: api.py and limit_windows.py never import this module at
+# module level (api imports .limit_trends LAZILY inside the route body, and
+# limit_windows._bucket_window_start imports this module lazily), so both
+# shared helpers (fail-closed minute-scrub, ISO-to-epoch parse) are imported
+# rather than duplicated (Fix 9: this used to have its own _epoch_or_none,
+# byte-identical to _iso_to_epoch — consolidated onto the one copy).
+from .api import _scrub_to_minute_or_none
+from .limit_windows import _iso_to_epoch
 from .auth import require_dashboard_auth
 from .db import get_conn, write_txn
 from .usage_buckets import normalize_usage_buckets
