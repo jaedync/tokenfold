@@ -306,3 +306,28 @@ class HAWindowsSafetyTest(_HABase):
         weekly = self._ha()["weekly"]
         self.assertEqual(weekly["window_start"], _iso(_minute(grant_t)))
         self.assertAlmostEqual(weekly["spend_usd"], 5.0, places=2)
+
+    def test_no_dollars_when_observation_after_reset(self):
+        """A stale snapshot: its resets_at passed before the observation, so
+        the percent describes an ended window (/api/rate-limits refuses the
+        same case through quota_window_valid)."""
+        self.fh_resets = self.now - 600.0
+        self._seed_oauth(observed=self.now - 30)
+        _ins_event(self.conn, "r1", "r1", self.now - 1200, inp=1_000_000)
+        five = self._ha()["five_hour"]
+        self._assert_no_dollars(five)
+        self.assertEqual(five["resets_in_s"], 0)
+
+    def test_snapshot_read_failure_keeps_cost_totals(self):
+        self._seed_oauth()
+        with patch("app.ha.read_conn", side_effect=RuntimeError("db gone")):
+            with patch.object(app.config, "LOCKED_SCOPE", None):
+                resp = self.client().get(
+                    "/api/ha", headers={"X-API-Key": self.api_key})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNotNone(body["cost_today_usd"])
+        self.assertIsNotNone(body["cost_total_usd"])
+        for key in ("five_hour", "weekly", "model_buckets", "updated_at_epoch"):
+            self.assertIn(key, body)
+            self.assertIsNone(body[key], key)

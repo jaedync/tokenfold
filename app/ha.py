@@ -95,19 +95,18 @@ def _window_dollars(conn, bucket_key, resets_epoch, window_seconds, now_epoch,
     when the percent cannot be paired with spend.
 
     pct_used describes the observation, so the spend paired with it ends
-    there. An observation that is missing, in the future, or not after the
-    window start has no such pairing, and spend up to another time would
-    give implied_limit_usd no meaning. The end is capped at resets_at so an
-    ended window never borrows the next one's spend.
+    there. An observation that is missing, in the future, not after the
+    window start, or not before resets_at (a stale snapshot of an ended
+    window) has no such pairing, and spend up to another time would give
+    implied_limit_usd no meaning.
     """
-    if observed is None or observed > now_epoch:
+    if observed is None or observed > now_epoch or observed >= resets_epoch:
         return None
     start_epoch = _bucket_window_start(
         conn, bucket_key, resets_epoch, window_seconds, observed, source=source)
     if observed <= start_epoch:
         return None
-    end_epoch = min(observed, resets_epoch)
-    spend = round(compute_window_cost(conn, start_epoch, end_epoch, scope=scope,
+    spend = round(compute_window_cost(conn, start_epoch, observed, scope=scope,
                                       anthropic_only=True), 2)
     # Minute-floored again here, not trusted from the helper: window_start
     # leaves the server, and a grant time is a poll time (sub-minute).
@@ -254,9 +253,15 @@ async def ha_metrics():
         # before the lock can't leak through. One snapshot (as rate_limits):
         # a compacted history tail moving between the meta read and the
         # reset detection cannot mix two states.
-        with read_conn(snapshot=True) as conn:
-            five_hour_block, weekly_block, model_buckets, updated_at_epoch = (
-                _oauth_blocks(conn, now_epoch))
+        # A failed open or BEGIN drops only the quota blocks; the cost
+        # totals above still reach HA.
+        try:
+            with read_conn(snapshot=True) as conn:
+                five_hour_block, weekly_block, model_buckets, updated_at_epoch = (
+                    _oauth_blocks(conn, now_epoch))
+        except Exception as e:
+            print(f"[ha] quota snapshot read failed: {e!r}", flush=True)
+            five_hour_block = weekly_block = model_buckets = updated_at_epoch = None
 
     return JSONResponse(content={
         "cost_today_usd": cost_today,
