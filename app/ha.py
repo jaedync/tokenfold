@@ -6,6 +6,7 @@ microsecond offsets of OAuth resets_at cannot fingerprint the account.
 """
 
 import json
+import math
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from fastapi.responses import JSONResponse
 from .auth import require_read_key
 
 from .aggregator import build_dashboard_data
+from .api import _bucket_window_start, _iso_to_epoch
 from .cost_windows import compute_window_cost
 from .db import get_conn
 from .usage_buckets import normalize_usage_buckets
@@ -75,12 +77,38 @@ def _implied_limit(spend_usd: float, pct_used: float | None) -> float | None:
     return round(spend_usd / (pct_used / 100.0), 2)
 
 
+def _observed_epoch(stored: dict) -> float | None:
+    """When the stored utilization was observed, with the same precedence as
+    /api/rate-limits (_oauth_snapshot): the managed observation clock first,
+    else updated_at. None when neither parses.
+    """
+    obs = stored.get("observed_at_epoch")
+    if (isinstance(obs, (float, int)) and not isinstance(obs, bool)
+            and math.isfinite(obs) and obs > 0):
+        return float(obs)
+    return _iso_to_epoch(stored.get("updated_at"))
+
+
+def _spend_end(observed, start_epoch, resets_epoch, now_epoch):
+    """pct_used describes the observation, so the spend paired with it ends
+    there too. An observation that cannot belong to this window (missing,
+    in the future, or older than its start) falls back to now; both are
+    capped at resets_at so an ended window never borrows the next one's spend.
+    """
+    if observed is not None and start_epoch < observed <= now_epoch:
+        return min(observed, resets_epoch)
+    return min(now_epoch, resets_epoch)
+
+
 def _window_block(
     conn: sqlite3.Connection,
+    bucket_key: str,
     raw_resets_at: str,
     pct_used: float | None,
     window_seconds: int,
     now_epoch: float,
+    observed: float | None,
+    source: str | None,
     scope: str = "personal",
 ) -> dict | None:
     """Build a five_hour / weekly sub-object, or None if resets_at is missing.
@@ -88,18 +116,34 @@ def _window_block(
     These windows reflect the personal Max budget utilization reported by the
     OAuth API, so spend must be PERSONAL-scoped for implied_limit arithmetic
     to be coherent: implied_limit = personal_spend / (personal_pct / 100).
+
+    The span is the one /api/rate-limits uses for limit_window and
+    five_hour_window: from resets_at - window, or from a later persistent
+    granted reset (a grant voids pre-grant usage, so counting it inflated
+    implied_limit roughly 9x after the 2026-10-12 grant), to the
+    observation. Claude-subscription spend only (anthropic_only): Codex and
+    OpenCode Pi rows do not consume this limit. window_start tells clients
+    which part of the window spend_usd covers.
     """
     resets_iso, resets_epoch = _truncate_to_minute(raw_resets_at)
     if resets_iso is None:
         return None
-    start_epoch = resets_epoch - window_seconds
-    spend = round(compute_window_cost(conn, start_epoch, resets_epoch, scope=scope), 2)
+    start_epoch = _bucket_window_start(
+        conn, bucket_key, resets_epoch, window_seconds, observed, source=source)
+    end_epoch = _spend_end(observed, start_epoch, resets_epoch, now_epoch)
+    spend = round(compute_window_cost(conn, start_epoch, end_epoch, scope=scope,
+                                      anthropic_only=True), 2)
+    # Minute-floored again here, not trusted from the helper: window_start
+    # leaves the server, and a grant time is a poll time (sub-minute).
+    start_iso = datetime.fromtimestamp(
+        (start_epoch // 60) * 60, tz=timezone.utc).isoformat()
     return {
         "pct_used": pct_used if pct_used is not None else 0.0,
         "spend_usd": spend,
         "implied_limit_usd": _implied_limit(spend, pct_used),
         "resets_at": resets_iso,
         "resets_in_s": max(0, int(resets_epoch - now_epoch)),
+        "window_start": start_iso,
     }
 
 
@@ -149,24 +193,35 @@ async def ha_metrics():
                 by_key = {b["key"]: b for b in buckets}
                 fh = by_key.get("five_hour") or {}
                 sd = by_key.get("seven_day") or {}
+                # Same observation clock and history source as
+                # /api/rate-limits, so both surfaces anchor the window on
+                # the same granted reset.
+                observed = _observed_epoch(stored)
+                history_source = stored.get("source")
 
                 # Window spend is personal-scoped: these windows track the personal
                 # Max utilization, so spend must match (personal) for
                 # implied_limit = spend / (pct/100) to be coherent.
                 five_hour_block = _window_block(
                     conn,
+                    "five_hour",
                     fh.get("resets_at") or "",
                     fh.get("utilization"),
                     FIVE_HOURS_S,
                     now_epoch,
+                    observed,
+                    history_source,
                     scope="personal",
                 )
                 weekly_block = _window_block(
                     conn,
+                    "seven_day",
                     sd.get("resets_at") or "",
                     sd.get("utilization"),
                     SEVEN_DAYS_S,
                     now_epoch,
+                    observed,
+                    history_source,
                     scope="personal",
                 )
                 # Per-model scoped buckets — same enterprise gate as the
