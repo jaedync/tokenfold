@@ -60,7 +60,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/notify.py` | POST /api/notify - notification relay to Home Assistant |
 | `app/ha.py` | GET /api/ha - flat scrubbed metrics for Home Assistant REST sensors |
 | `app/cost_windows.py` | Shared helper: dedup-by-request_id cost over an event window |
-| `app/limit_windows.py` | Shared helpers, no routes: `_iso_to_epoch` and `_bucket_window_start` (limit window start, moved to the latest granted reset) |
+| `app/limit_windows.py` | Shared helpers, no routes: `_iso_to_epoch`, `_scrub_to_minute_or_none` (fail-closed minute scrub) and `_bucket_window_start` (limit window start, moved to the latest granted reset) |
 | `app/meridian_quota.py` | Meridian `/v1/usage/quota` -> `/api/usage/claude` payload; port of dotfleet `parseClaudeUsage`, parity-tested on the shared fixture |
 | `app/meridian_collector.py` | `quota-collector` compose service (profile `meridian`): polls host-loopback Meridian every 120s (OAuth usage endpoint 429s faster polls), posts through `/api/usage/claude` |
 | `app/limit_readings.py` | Quota history writer (managed flat runs compacted; burn, resets and boundaries unchanged at the latest observation), reset detection, `/api/limit-history` |

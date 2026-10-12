@@ -65,7 +65,7 @@ def log(msg, *args):
 
 def _floor_minute(epoch):
     """Minute-floor account-derived epochs (fingerprinting invariant — same
-    rule as api._scrub_to_minute_or_none / limit_readings)."""
+    rule as limit_windows._scrub_to_minute_or_none / limit_readings)."""
     return None if epoch is None else (epoch // 60) * 60.0
 
 

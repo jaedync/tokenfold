@@ -6,7 +6,7 @@ Personal scope additionally returns oauth gauge fields when available.
 import json
 import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,7 +25,8 @@ from .usage_buckets import normalize_usage_buckets
 from .quota_freshness import quota_window_valid
 # Imported by name (not module-qualified) so tests can patch
 # app.api._bucket_window_start for this route alone.
-from .limit_windows import _bucket_window_start, _iso_to_epoch
+from .limit_windows import (_bucket_window_start, _iso_to_epoch,
+                            _scrub_to_minute_or_none)
 
 
 def _active_seconds(conn, pred, start, end):
@@ -52,30 +53,6 @@ def _active_seconds(conn, pred, start, end):
                 total += gap
         prev_evt = e
     return total
-
-
-def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
-    """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
-
-    Also imported by app/limit_readings.py at module level, so this module
-    imports limit_trends (which imports limit_readings) only lazily.
-
-    Removes subsecond and second precision so a per-account microsecond
-    offset can't fingerprint the account across responses.
-
-    Fails CLOSED: returns None when the input is empty or unparseable, so a
-    raw (full-precision, fingerprintable) value can never pass through to
-    the response.
-    """
-    if not iso_str:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    return (
-        dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
-    )
 
 
 def _resolve_scope(requested):

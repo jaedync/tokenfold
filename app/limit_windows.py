@@ -2,14 +2,14 @@
 
 Importers: app/api.py (/api/rate-limits), app/ha.py (/api/ha),
 app/limit_readings.py and app/spend_history.py. They live outside the route
-modules so a feed like /api/ha does not depend on another route module.
+modules so no route module depends on another for them.
 
 Import rule: this module imports nothing from app at module scope.
-limit_readings imports _iso_to_epoch from here at module level, so
-_bucket_window_start must import limit_readings lazily.
+limit_readings imports _iso_to_epoch and _scrub_to_minute_or_none from here
+at module level, so _bucket_window_start must import limit_readings lazily.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -27,6 +27,27 @@ def _iso_to_epoch(iso_str: Optional[str]) -> Optional[float]:
         return None
 
 
+def _scrub_to_minute_or_none(iso_str: Optional[str]) -> Optional[str]:
+    """Truncate an ISO-8601 timestamp to whole-minute UTC precision.
+
+    Removes subsecond and second precision so a per-account microsecond
+    offset can't fingerprint the account across responses.
+
+    Fails CLOSED: returns None when the input is empty or unparseable, so a
+    raw (full-precision, fingerprintable) value can never pass through to
+    the response.
+    """
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return (
+        dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    )
+
+
 def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None, *, source=None):
     """Start epoch of the CURRENT limit window for one historized bucket.
 
@@ -39,8 +60,8 @@ def _bucket_window_start(conn, bucket_key, resets_epoch, window_s, observed=None
     account-level resets borrowed from sibling buckets — a grant zeroes
     every bucket at once, and a bucket whose own decrease is too small for
     detection still had its window cut (2026-07-09 incident). Lazy import —
-    limit_readings imports this module at module level (_iso_to_epoch), so
-    this module must never import it back at module scope.
+    limit_readings imports this module at module level, so this module must
+    never import it back at module scope.
     """
     start = ((resets_epoch // 60) * 60.0) - window_s
     from .limit_readings import corroborated_resets, floor_reset_events
