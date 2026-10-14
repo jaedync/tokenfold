@@ -26,6 +26,7 @@ from .usage_buckets import normalize_usage_buckets
 from .quota_freshness import quota_window_valid
 # Imported by name (not module-qualified) so tests can patch
 # app.api._bucket_window_start for this route alone.
+from .usage_pace import FIVE_HOUR_S, WEEK_S, tight_epoch, usage_pace
 from .limit_windows import (_bucket_window_start, _iso_to_epoch,
                             _scrub_to_minute_or_none)
 
@@ -91,8 +92,34 @@ def stats(scope: Optional[str] = Query(default=None)):
     return JSONResponse(content=data)
 
 
-def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
-    """Shared quota-only shape for first paint and enriched responses."""
+def _bucket_pace(key, pct, resets_at, now, conn=None, observed=None, source=None):
+    """The shared pace block for one Claude bucket (None when not applicable).
+
+    With a connection, pace runs from the latest granted reset (the same start
+    the spend windows use), so a grant does not dilute the average over usage
+    it voided. A failed lookup falls back to the nominal window: it must never
+    cost the gauge its pace.
+    """
+    window_s = FIVE_HOUR_S if key == "five_hour" else WEEK_S
+    resets_epoch = _iso_to_epoch(resets_at)
+    start = None
+    if conn is not None and resets_epoch is not None:
+        try:
+            start = _bucket_window_start(conn, key, resets_epoch, window_s,
+                                         observed, source=source)
+        except Exception as e:
+            print(f"[rate-limits] pace window start for {key} failed: {e}",
+                  flush=True)
+    return usage_pace(pct, resets_epoch, window_s, now, window_start_epoch=start)
+
+
+def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None,
+                    now=None, conn=None):
+    """Shared quota-only shape for first paint and enriched responses.
+
+    conn (optional) lets pace measure from a granted reset; see _bucket_pace.
+    """
+    now = time.time() if now is None else now
     extra = usage.get("extra_usage") or {}
 
     # Normalize ONCE (limits[] primary, legacy dicts fallback):
@@ -106,15 +133,21 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
     seven_day = by_key.get("seven_day") or {}
     five_hour = by_key.get("five_hour") or {}
 
-    buckets = [
-        {
+    buckets = []
+    for b in normalized:
+        resets_at = _scrub_to_minute_or_none(b["resets_at"])
+        buckets.append({
             "key": b["key"],
             "label": b["label"],
             "pct": b["utilization"],
-            "resets_at": _scrub_to_minute_or_none(b["resets_at"]),
-        }
-        for b in normalized
-    ]
+            "resets_at": resets_at,
+            # One pace rule (app/usage_pace.py) for every gauge.
+            "pace": _bucket_pace(b["key"], b["utilization"], resets_at, now,
+                                 conn, observed_at_epoch
+                                 if _valid_epoch(observed_at_epoch) else None,
+                                 source),
+        })
+    pace_by_key = {b["key"]: b["pace"] for b in buckets}
 
     oauth = {
         "weekly_pct": seven_day.get("utilization", 0),
@@ -124,6 +157,8 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
         "five_hour_resets_at":
             _scrub_to_minute_or_none(five_hour.get("resets_at")) or "",
         "buckets": buckets,
+        "weekly_pace": pace_by_key.get("seven_day"),
+        "five_hour_pace": pace_by_key.get("five_hour"),
         "extra_usage": {
             "enabled": extra.get("is_enabled", False),
             "monthly_limit_cents": extra.get("monthly_limit"),
@@ -142,11 +177,14 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
         except (ValueError, TypeError):
             pass
 
-    if (isinstance(observed_at_epoch, (float, int))
-            and not isinstance(observed_at_epoch, bool)
-            and math.isfinite(observed_at_epoch) and observed_at_epoch > 0):
+    if _valid_epoch(observed_at_epoch):
         oauth["updated_at_epoch"] = observed_at_epoch
     return oauth, by_key
+
+
+def _valid_epoch(value):
+    return (isinstance(value, (float, int)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0)
 
 
 @router.get("/api/rate-limit-snapshots", dependencies=[Depends(require_dashboard_auth)])
@@ -165,7 +203,7 @@ def rate_limit_snapshots(scope: Optional[str] = Query(default=None)):
                     stored = json.loads(row["value"])
                     budget["oauth"], _ = _oauth_snapshot(
                         stored.get("data", {}), stored.get("updated_at", ""), stored.get("source"),
-                        stored.get("observed_at_epoch"))
+                        stored.get("observed_at_epoch"), conn=conn)
                 except (ValueError, KeyError, TypeError):
                     pass
         return JSONResponse(content={"weekly_budget": budget})
@@ -326,7 +364,8 @@ def _build_rate_limits(scope, conn):
                 updated_at = stored.get("updated_at", "")
 
                 oauth_block, by_key = _oauth_snapshot(usage, updated_at, stored.get("source"),
-                                                     stored.get("observed_at_epoch"))
+                                                     stored.get("observed_at_epoch"),
+                                                     conn=conn)
                 observed = oauth_block.get("updated_at_epoch")
                 history_source = stored.get("source")
                 seven_day = by_key.get("seven_day") or {}
@@ -357,6 +396,13 @@ def _build_rate_limits(scope, conn):
                             if quota_window_valid(observed, now, reset, (reset or 0) - duration):
                                 trends[key] = bucket_trend(conn, key, observed,
                                                            source=history_source)
+                                # Recent burn disagreeing with the window
+                                # average: the template's TIGHT warning.
+                                pace = next((b["pace"] for b in buckets
+                                             if b["key"] == key), None)
+                                trends[key]["tight_epoch"] = tight_epoch(
+                                    pace and pace["pace_state"],
+                                    trends[key]["eta_100_epoch"], reset)
                         if trends:
                             oauth_block["trend"] = trends
                 except Exception as e:

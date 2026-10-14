@@ -119,16 +119,16 @@ class LimitWindowTicksSourceTest(unittest.TestCase):
         start = self.tpl.index("var scopedBuckets = ")
         end = self.tpl.index("// Extra usage block")
         block = self.tpl[start:end]
-        self.assertIn("windowPace(sb.resets_at, WEEK_MS, sbPct)", block)
+        self.assertIn("windowPace(sb.resets_at, WEEK_MS)", block)
         self.assertIn("ticks: sbPace.ticks", block)
-        self.assertIn("projectedPct: sbPace.projected", block)
+        self.assertIn("pace: sb.pace", block)
 
     def test_reported_provider_windows_use_shared_gauge(self):
         block = _extract_function(self.tpl, "buildReportedProviderGroups")
         self.assertIn("windowPace(", block)
         self.assertIn("buildGauge(", block)
         self.assertIn("ticks: pace.ticks", block)
-        self.assertIn("projectedPct: pace.projected", block)
+        self.assertIn("pace: win.pace", block)
         # No hand-rolled bar/projection markup left in the provider loop.
         self.assertNotIn("provider-limit-projection", block)
         self.assertNotIn('<div class="rate-gauge-track">', block)
@@ -242,15 +242,15 @@ class LimitWindowTicksNodeTest(unittest.TestCase):
         self.assertEqual(out, [[], [], [], [], []])
 
     def test_window_pace_projection_marker_and_ticks(self):
-        # now = 2 hours into a 5-hour window (expected 40%), pct 30 -> 75%.
+        # now = 2 hours into a 5-hour window (expected 40%). The projection
+        # is the server's (app/usage_pace.py); windowPace only places the marker.
         out = self._run(
             "var NOW = new Date('2026-09-03T02:40:00Z').getTime();"
             "Date.now = function(){ return NOW; };"
-            "var p = windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000, 30);"
-            "console.log(JSON.stringify({e: p.expected, pr: p.projected,"
+            "var p = windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000);"
+            "console.log(JSON.stringify({e: p.expected,"
             " n: p.ticks.length, labels: p.ticks.map(function(t){return t.label;})}));")
         self.assertAlmostEqual(out["e"], 40.0, places=6)
-        self.assertAlmostEqual(out["pr"], 75.0, places=6)
         self.assertEqual(out["n"], 5)
         self.assertEqual(out["labels"], ["8p", "9p", "10p", "11p", "12a"])
 
@@ -259,23 +259,21 @@ class LimitWindowTicksNodeTest(unittest.TestCase):
             "var NOW = new Date('2026-09-03T06:00:00Z').getTime();"
             "Date.now = function(){ return NOW; };"
             "console.log(JSON.stringify(["
-            "windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000, 30),"
-            "windowPace(null, 5 * 3600 * 1000, 30),"
-            "windowPace('2026-09-03T09:00:00Z', null, 30),"
-            "windowPace('junk', 1000, 30)]));")
+            "windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000),"
+            "windowPace(null, 5 * 3600 * 1000),"
+            "windowPace('2026-09-03T09:00:00Z', null),"
+            "windowPace('junk', 1000)]));")
         for entry in out:
-            self.assertEqual(entry, {"expected": None, "projected": None,
-                                     "ticks": []})
+            self.assertEqual(entry, {"expected": None, "ticks": []})
 
-    def test_window_pace_no_projection_inside_deadband(self):
-        # 1% into the window: expected <= 2 -> marker but no projection.
+    def test_window_pace_early_window_still_places_marker(self):
         out = self._run(
             "var NOW = new Date('2026-09-03T00:43:00Z').getTime();"
             "Date.now = function(){ return NOW; };"
-            "var p = windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000, 30);"
-            "console.log(JSON.stringify({e: p.expected, pr: p.projected}));")
+            "var p = windowPace('2026-09-03T05:40:00Z', 5 * 3600 * 1000);"
+            "console.log(JSON.stringify({e: p.expected, keys: Object.keys(p)}));")
         self.assertAlmostEqual(out["e"], 1.0, places=6)
-        self.assertIsNone(out["pr"])
+        self.assertEqual(sorted(out["keys"]), ["expected", "ticks"])
 
 
 if __name__ == "__main__":

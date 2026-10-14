@@ -327,7 +327,7 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
         self.assertIn("extraHtml", rendered)
         self.assertIn("buildGauge('Weekly Limit'", self.tpl)
         self.assertIn("buildGauge('5-Hour Window'", self.tpl)
-        self.assertIn("projectedPct", self.tpl)
+        self.assertIn("paceHtml(opts.pace)", self.tpl)
         self.assertIn("budgetStats", self.tpl)
 
     def test_provider_group_helper_is_generic_for_future_sources(self):
@@ -351,7 +351,7 @@ class ProviderUsageLimitsLayoutTest(unittest.TestCase):
         self.assertIn("win.window_seconds", self.tpl)
         # Provider windows get the same marker / projection / boundary-tick
         # treatment as the Claude gauges through the shared windowPace read.
-        self.assertIn("windowPace(win.resets_at, periodMs, pct)", self.tpl)
+        self.assertIn("windowPace(win.resets_at, periodMs)", self.tpl)
         self.assertIn("API-equivalent", self.tpl)
 
 
@@ -451,11 +451,16 @@ class TrendGaugeNoteTest(unittest.TestCase):
         self.assertGreater(fmt_rel_pos, fmt_reset_pos,
                             "fmtRelative should sit near/after fmtReset")
 
-    def test_build_trend_note_reads_burn_and_eta_fields(self):
+    def test_build_trend_note_reads_burn_and_tight_fields(self):
         self.assertIn("function buildTrendNote(", self.tpl)
         self.assertIn("burn_6h_pct_per_hr", self.tpl)
         self.assertIn("burn_1h_pct_per_hr", self.tpl)
-        self.assertIn("eta_100_epoch", self.tpl)
+        self.assertIn("tight_epoch", self.tpl)
+        self.assertIn("TIGHT: at the recent rate, 100% at", self.tpl)
+        # One forecast: the old second and third ETAs are gone.
+        self.assertNotIn("'limit ~'", self.tpl)
+        self.assertNotIn("trendEntry.eta_100_epoch", self.tpl)
+        self.assertNotIn("trendEntry.pace", self.tpl)
 
     def test_burn_labels_distinguish_window(self):
         """Weekly reads the 6h burn, 5-Hour reads the 1h burn — each call
@@ -467,13 +472,17 @@ class TrendGaugeNoteTest(unittest.TestCase):
         """'over' pace must reuse the SAME .proj-warn class the whole-window
         projection already uses — never a new color, never var(--red) as a
         fill (that token is reserved for the over-pace overflow bar)."""
-        self.assertIn('<strong class="proj-warn">over pace</strong>', self.tpl)
-        self.assertIn("'on pace'", self.tpl)  # new verdict state, wasn't in the old code
+        self.assertIn('<strong class="proj-warn">above pace</strong>', self.tpl)
+        self.assertIn("pace.pace_state + ' pace'", self.tpl)
 
-    def test_whole_window_projection_relabeled(self):
-        """The existing whole-window linear projection is now explicitly
-        labeled so it can't be confused with the new sub-window burn note."""
-        self.assertIn("(window avg)", self.tpl)
+    def test_one_pace_line_from_server_block(self):
+        """Verdict, projection and 100% time all render from the server's
+        pace block; no client-side re-derivation or second verdict."""
+        self.assertIn("function paceHtml(pace)", self.tpl)
+        self.assertIn("% at reset", self.tpl)
+        self.assertIn("pace: oauth.weekly_pace", self.tpl)
+        self.assertIn("pace: oauth.five_hour_pace", self.tpl)
+        self.assertNotIn("projectedPct", self.tpl)
 
     def test_reset_annotation_uses_current_window_boundaries(self):
         """C4: a reset only annotates the gauge when it falls inside THAT
@@ -534,7 +543,7 @@ class FiveHourExpiredGaugeTest(unittest.TestCase):
 
     def test_five_hour_gauge_reads_expected_from_window_pace(self):
         self.assertIn(
-            "var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);",
+            "var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS);",
             self.tpl)
         self.assertIn("var hExpected = fiveHourState === 'current' ? fiveHourPace.expected : null;", self.tpl)
 
@@ -821,7 +830,7 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
         # stats are wired into the 5-Hour buildGauge call.
         call = self.tpl.index("buildGauge('5-Hour Window'")
         call_block = self.tpl[call:self.tpl.index("});", call)]
-        self.assertIn("projectedPct: fiveHourPace.projected", call_block)
+        self.assertIn("pace: oauth.five_hour_pace", call_block)
         self.assertIn("stats: fiveHourStats", call_block)
 
     def test_scoped_rows_use_build_gauge_with_identity_color(self):
@@ -832,7 +841,7 @@ class BudgetProjectionGaugesTest(unittest.TestCase):
         self.assertIn("budgetStats(sb.window_cost, sbPct)", block)
         # windowPace carries the D6 stale-reset guard for the row's marker
         # and projection, plus the weekly day ticks.
-        self.assertIn("windowPace(sb.resets_at, WEEK_MS, sbPct)", block)
+        self.assertIn("windowPace(sb.resets_at, WEEK_MS)", block)
         self.assertIn("sbPace.expected", block)
         # The hand-rolled bare-bar markup is gone from the scoped loop.
         self.assertNotIn("'<div class=\"rate-gauge-track\">'", block)
