@@ -455,6 +455,34 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertEqual(set(data['machine_last_active']), {'pi-machine'})
         self.assertEqual(data['last_active_ts'], pi_last)
 
+    def test_enterprise_session_without_reply_is_not_activity_and_cost_is_unchanged(self):
+        from app.config import scope_predicate
+        self.reset()
+
+        def enterprise(sid, message_ids, events=None):
+            route, body = self.sdk_session(sid, message_ids)
+            return route, {**body, 'account_email': 'work@example.test',
+                           'plan': 'enterprise',
+                           'events': body['events'] if events is None else events}
+
+        def rollup():
+            row = self.conn.execute(
+                'SELECT SUM(sessions), SUM(human_prompts), SUM(cost) FROM daily_summary '
+                'WHERE ' + scope_predicate('enterprise')).fetchone()
+            return tuple(row)
+
+        self.post(enterprise('ent-real', ['msg_ent']))
+        baseline = rollup()
+        self.assertEqual(baseline[:2], (1, 1))
+        self.assertAlmostEqual(baseline[2], 5.0)
+        # Prompt and tool result only: the model never replied.
+        route, body = enterprise('ent-silent', ['msg_none'])
+        prompt, _, result = body['events']
+        self.post((route, {**body, 'events': [prompt, result]}))
+        after = rollup()
+        self.assertEqual(after[:2], (1, 1))
+        self.assertAlmostEqual(after[2], baseline[2])
+
     def test_recent_pi_message_ids_use_time_index_and_bound_the_sweep(self):
         from app.event_dedupe import RECENT_PI_MESSAGES_SQL, recent_pi_message_ids
         self.reset()

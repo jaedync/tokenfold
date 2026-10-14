@@ -126,6 +126,20 @@ class HAWindowsTest(_HABase):
         self.assertAlmostEqual(five["spend_usd"], 5.0, places=2)
         self.assertAlmostEqual(five["implied_limit_usd"], 10.0, places=2)
 
+    def test_meridian_twin_pair_counts_once_in_window_spend(self):
+        """Pi row with a positive reported cost + its SDK copy (same msg_ id)
+        are one request: the window bills the Pi cost, not both."""
+        self._seed_oauth(fh_pct=50.0)
+        t = self.now - 600
+        _ins_pi_event(self.conn, "pi1", "msg_twin", t, "anthropic",
+                      "claude-opus-4-8", 3.0)
+        _ins_event(self.conn, "sdk1", "req_sdk1", t + 5, inp=1_000_000)  # $5
+        self.conn.execute("UPDATE events SET message_id='msg_twin'")
+        self.conn.commit()
+        body = self._ha()
+        self.assertAlmostEqual(body["five_hour"]["spend_usd"], 3.0, places=2)
+        self.assertAlmostEqual(body["weekly"]["spend_usd"], 3.0, places=2)
+
     def test_stale_replay_does_not_move_start(self):
         """60 -> 40 -> 62: the 40 is a stale out-of-order push, not a grant
         (the next reading recovered), so the window keeps its full span."""
