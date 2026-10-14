@@ -442,6 +442,19 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertEqual(find_mirror_sessions(self.conn, {'msg_other'},
                                               since_epoch=self.now - 86400), set())
 
+    def test_twin_only_machine_is_not_last_active(self):
+        from app.aggregator import _build_dashboard_data_inner
+        self.reset()
+        self.post(self.pi_session())
+        # The SDK copy ends after Pi's last event, on its own Meridian host.
+        self.post(self.sdk_session('sdk-mirror', ['msg_turn', 'msg_internal']))
+        self.assertEqual(self.mirrors(), ['sdk-mirror'])
+        data = _build_dashboard_data_inner('personal')
+        pi_last = self.conn.execute(
+            "SELECT MAX(ts_epoch) FROM events WHERE source_client='pi-agent'").fetchone()[0]
+        self.assertEqual(set(data['machine_last_active']), {'pi-machine'})
+        self.assertEqual(data['last_active_ts'], pi_last)
+
     def test_recent_pi_message_ids_use_time_index_and_bound_the_sweep(self):
         from app.event_dedupe import RECENT_PI_MESSAGES_SQL, recent_pi_message_ids
         self.reset()

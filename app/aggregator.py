@@ -1462,7 +1462,7 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
     last_active_ts = None
     for r in conn.execute(
         f"SELECT source_machine, MAX(ts_epoch) as ts FROM events "
-        f"WHERE {pred} "
+        f"WHERE {pred} AND {counts_as_activity()} "
         "GROUP BY source_machine"
     ):
         if r["ts"]:
