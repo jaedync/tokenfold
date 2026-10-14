@@ -50,7 +50,9 @@ def init_notify_token():
     row = conn.execute("SELECT value FROM meta WHERE key='notify_token'").fetchone()
     if row:
         _notify_token = row["value"]
-        print(f"[notify] Token (from DB): {_notify_token}", flush=True)
+        # Never print the value: it is a bearer secret and container logs are
+        # kept and shipped. Read it from the meta table when it is needed.
+        print("[notify] Token loaded from DB (meta.notify_token)", flush=True)
         return
 
     _notify_token = secrets.token_urlsafe(24)
@@ -59,7 +61,8 @@ def init_notify_token():
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
             ("notify_token", _notify_token),
         )
-    print(f"[notify] Generated token: {_notify_token}", flush=True)
+    print("[notify] Generated a new token and stored it in meta.notify_token",
+          flush=True)
 
 
 def _check_auth(authorization: str | None) -> bool:
