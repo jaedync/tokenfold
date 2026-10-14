@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const {world, open, drive, snap, check, failures, launch} = require('./dashboard_dom.test.cjs');
 const HOUR = 3600, DAY = 86400;
-const inference = /est\. window (budget|capacity)|budget left|under pace|over pace|Projected by reset/i;
+const inference = /est\. window (budget|capacity)|budget left|under pace|over pace|Projected by reset|at reset|above pace|below pace/i;
 
 async function ready(page) {
   await page.waitForFunction(() => document.querySelector('[data-provider="codex"] .rate-gauge-stat'));
@@ -15,7 +15,7 @@ function withTrendNotes(w) {
     const oauth = original(full);
     if (!oauth.trend) return oauth;
     return {...oauth, trend: {...oauth.trend, seven_day: {...oauth.trend.seven_day,
-      burn_6h_pct_per_hr: 2.25, eta_100_epoch: w.now + HOUR, pace: 'over'}}};
+      burn_6h_pct_per_hr: 2.25, tight_epoch: w.now + HOUR}}};
   };
 }
 async function chartState(page) {
@@ -49,7 +49,7 @@ async function sourceTransfer(browser, offset) {
       const value = await snap(page);
       assert.match(value.claude.status, /meridian-oauth/);
       assert.equal(value.claude.pcts[0], '7%');
-      assert.doesNotMatch(value.claude.text, /\$163\.15|1,019\.69|2\.25%\/hr/);
+      assert.doesNotMatch(value.claude.text, /\$163\.15|1,019\.69|2\.25%\/h/);
       assert.equal((await chartState(page)).id, beforeChart.id);
       assert.deepEqual((await chartState(page)).labels, ['Actual usage']);
     });
@@ -58,7 +58,7 @@ async function sourceTransfer(browser, offset) {
     await check('source transfer ' + offset + ': late legacy cannot revert owner', async () => {
       const value = await snap(page);
       assert.match(value.claude.status, /meridian-oauth/); assert.equal(value.claude.pcts[0], '7%');
-      assert.doesNotMatch(value.claude.text, /\$163\.15|1,019\.69|2\.25%\/hr/);
+      assert.doesNotMatch(value.claude.text, /\$163\.15|1,019\.69|2\.25%\/h/);
     });
     await sourceRemovalAndReturn(page, hits, w, offset);
     await check('source transfer ' + offset + ': no page errors', () => assert.deepEqual(hits.errors, []));
@@ -88,11 +88,11 @@ async function retainedProvenance(browser) {
   const {page, hits, close} = await open(browser, 'personal', w);
   try {
     await ready(page);
-    assert.match((await snap(page)).claude.text, /2\.25%\/hr/);
+    assert.match((await snap(page)).claude.text, /2\.25%\/h/);
     w.claudeAt = w.now - 10; w.weeklyReset += DAY; w.limitsStatus = 503;
     await drive(page, hits, ['snapshot']);
     await check('reset while pending cannot reuse previous trend inference', async () => {
-      assert.doesNotMatch((await snap(page)).claude.text, /2\.25%\/hr|limit ~/);
+      assert.doesNotMatch((await snap(page)).claude.text, /recent burn 2\.25%\/h|TIGHT/);
     });
     // Latest metadata remains fresh, but retained full detail is over an hour old.
     await page.clock.setFixedTime(new Date((w.now + 2 * HOUR) * 1000));
@@ -100,7 +100,7 @@ async function retainedProvenance(browser) {
     await drive(page, hits, ['snapshot']);
     await check('fresh metadata cannot revalidate stale retained detail or trends', async () => {
       const value = await snap(page);
-      assert.doesNotMatch(value.claude.text, /2\.25%\/hr|limit ~|est\. window budget|budget left/);
+      assert.doesNotMatch(value.claude.text, /recent burn 2\.25%\/h|TIGHT|est\. window budget|budget left/);
       assert.doesNotMatch(value.codex.text, /est\. window capacity|budget left/);
       assert(value.claude.labels.some(label => /rolling 7d/.test(label)));
     });

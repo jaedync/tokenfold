@@ -25,6 +25,7 @@ from .usage_buckets import normalize_usage_buckets
 from .quota_freshness import quota_window_valid
 # Imported by name (not module-qualified) so tests can patch
 # app.api._bucket_window_start for this route alone.
+from .usage_pace import FIVE_HOUR_S, WEEK_S, tight_epoch, usage_pace
 from .limit_windows import (_bucket_window_start, _iso_to_epoch,
                             _scrub_to_minute_or_none)
 
@@ -89,8 +90,16 @@ def stats(scope: Optional[str] = Query(default=None)):
     return JSONResponse(content=data)
 
 
-def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
+def _bucket_pace(key, pct, resets_at, now):
+    """The shared pace block for one Claude bucket (None when not applicable)."""
+    window_s = FIVE_HOUR_S if key == "five_hour" else WEEK_S
+    return usage_pace(pct, _iso_to_epoch(resets_at), window_s, now)
+
+
+def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None,
+                    now=None):
     """Shared quota-only shape for first paint and enriched responses."""
+    now = time.time() if now is None else now
     extra = usage.get("extra_usage") or {}
 
     # Normalize ONCE (limits[] primary, legacy dicts fallback):
@@ -104,15 +113,18 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
     seven_day = by_key.get("seven_day") or {}
     five_hour = by_key.get("five_hour") or {}
 
-    buckets = [
-        {
+    buckets = []
+    for b in normalized:
+        resets_at = _scrub_to_minute_or_none(b["resets_at"])
+        buckets.append({
             "key": b["key"],
             "label": b["label"],
             "pct": b["utilization"],
-            "resets_at": _scrub_to_minute_or_none(b["resets_at"]),
-        }
-        for b in normalized
-    ]
+            "resets_at": resets_at,
+            # One pace rule (app/usage_pace.py) for every gauge.
+            "pace": _bucket_pace(b["key"], b["utilization"], resets_at, now),
+        })
+    pace_by_key = {b["key"]: b["pace"] for b in buckets}
 
     oauth = {
         "weekly_pct": seven_day.get("utilization", 0),
@@ -122,6 +134,8 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None):
         "five_hour_resets_at":
             _scrub_to_minute_or_none(five_hour.get("resets_at")) or "",
         "buckets": buckets,
+        "weekly_pace": pace_by_key.get("seven_day"),
+        "five_hour_pace": pace_by_key.get("five_hour"),
         "extra_usage": {
             "enabled": extra.get("is_enabled", False),
             "monthly_limit_cents": extra.get("monthly_limit"),
@@ -354,6 +368,13 @@ def _build_rate_limits(scope, conn):
                             if quota_window_valid(observed, now, reset, (reset or 0) - duration):
                                 trends[key] = bucket_trend(conn, key, observed,
                                                            source=history_source)
+                                # Recent burn disagreeing with the window
+                                # average: the template's TIGHT warning.
+                                pace = next((b["pace"] for b in buckets
+                                             if b["key"] == key), None)
+                                trends[key]["tight_epoch"] = tight_epoch(
+                                    pace and pace["pace_state"],
+                                    trends[key]["eta_100_epoch"], reset)
                         if trends:
                             oauth_block["trend"] = trends
                 except Exception as e:

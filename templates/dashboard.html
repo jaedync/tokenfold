@@ -5293,19 +5293,50 @@ function initRateLimits(){
   // ones; see tfWindowTicks). D6: a resets_at already in the past describes
   // an ENDED window (the poller lags the real boundary during idle
   // stretches): return nothing, so the gauge falls back to absolute-pct
-  // coloring with no marker, projection or ticks against stale utilization.
-  // The > 2% deadband on the projection matches barColor's: minutes after a
-  // reset any usage extrapolates to absurd figures.
-  function windowPace(resetIso, periodMs, pct) {
-    var none = { expected: null, projected: null, ticks: [] };
+  // coloring with no marker or ticks against stale utilization. The verdict,
+  // projection and 100% time are NOT computed here: the server sends one
+  // pace block per window (app/usage_pace.py, the same rule as Pi's usage
+  // tool) and paceHtml renders it.
+  function windowPace(resetIso, periodMs) {
+    var none = { expected: null, ticks: [] };
     if(!resetIso || typeof periodMs !== 'number' || !(periodMs > 0)) return none;
     var resetMs = new Date(resetIso).getTime();
     if(isNaN(resetMs) || resetMs <= Date.now()) return none;
     var expected = calcExpectedPct(resetIso, periodMs);
-    var projected = (expected !== null && expected > 2 && pct > 0)
-      ? (pct / expected) * 100 : null;
-    return { expected: expected, projected: projected,
-             ticks: tfWindowTicks(resetMs, periodMs) };
+    return { expected: expected, ticks: tfWindowTicks(resetMs, periodMs) };
+  }
+
+  // Clock time of a SECONDS epoch; adds the weekday when it is not today or
+  // tomorrow-ish (> 18h away) so a weekly 100% time is unambiguous.
+  function fmtClock(epochSeconds) {
+    var d = new Date(epochSeconds * 1000);
+    var far = epochSeconds - Date.now() / 1000 > 18 * 3600;
+    return d.toLocaleString([], far
+      ? { weekday: 'short', hour: 'numeric', minute: '2-digit' }
+      : { hour: 'numeric', minute: '2-digit' });
+  }
+  function fmtSpan(seconds) {
+    var m = Math.max(0, Math.round(seconds / 60));
+    var d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60);
+    if(d > 0) return d + 'd ' + h + 'h';
+    return h > 0 ? h + 'h ' + (m % 60) + 'm' : (m % 60) + 'm';
+  }
+
+  // The ONE pace line every limit gauge shows, from the server's pace block:
+  // verdict word, projection at reset, and the 100% time only when above pace.
+  function paceHtml(pace) {
+    if(!pace || typeof pace.pace_state !== 'string') return '';
+    if(pace.pace_state === 'too_early') return 'too early to tell';
+    var proj = typeof pace.projected_pct === 'number'
+      ? ' · ≈' + Math.round(pace.projected_pct) + '% at reset' : '';
+    if(pace.pace_state !== 'above') return pace.pace_state + ' pace' + proj;
+    var at = '';
+    if(typeof pace.reaches_100_epoch === 'number') {
+      var inS = pace.reaches_100_epoch - Date.now() / 1000;
+      at = inS <= 0 ? ' · 100% reached'
+        : ' · 100% at ' + fmtClock(pace.reaches_100_epoch) + ' (in ' + fmtSpan(inS) + ')';
+    }
+    return '<strong class="proj-warn">above pace</strong>' + proj + at;
   }
 
   // The one gauge card renderer every limit shares (Claude, per-model rows,
@@ -5315,7 +5346,7 @@ function initRateLimits(){
     // A window that is stale, expired or has no valid observation time cannot
     // carry pace inference: no expected marker, no projection.
     var state = opts.state || 'current';
-    if(state !== 'current') { expectedPct = null; opts.projectedPct = null; }
+    if(state !== 'current') { expectedPct = null; opts.pace = null; }
     var clamp = Math.min(pct, 100);
     // fillColor pins a fixed identity color (per-model rows) instead of
     // the pace-reactive palette; the over-expected overflow segment
@@ -5350,16 +5381,8 @@ function initRateLimits(){
     }
 
     var projHtml = '';
-    if(opts.projectedPct !== undefined && opts.projectedPct !== null && expectedPct > 0) {
-      var projRound = Math.round(opts.projectedPct);
-      var projClass = projRound > 100 ? 'proj-warn' : '';
-      // '(window avg)' distinguishes this whole-window linear projection
-      // from the D3 sub-window burn note (trendNoteHtml) below it.
-      projHtml = '<div class="rate-gauge-projection">'
-        + 'Projected by reset: <strong class="' + projClass + '">' + projRound + '%</strong>'
-        + ' (window avg)'
-        + '</div>';
-    }
+    var paceLine = paceHtml(opts.pace);
+    if(paceLine) projHtml = '<div class="rate-gauge-projection">' + paceLine + '</div>';
 
     var statsHtml2 = '';
     if(opts.stats && opts.stats.length) {
@@ -5950,7 +5973,7 @@ function initRateLimits(){
           // to the bare bar with no projection.
           var periodMs = typeof win.window_seconds === 'number' && win.window_seconds > 0
             ? win.window_seconds * 1000 : null;
-          var pace = windowPace(win.resets_at, periodMs, pct);
+          var pace = windowPace(win.resets_at, periodMs);
           var resetMs = win.resets_at ? new Date(win.resets_at).getTime() : NaN;
           var reset = isNaN(resetMs) ? '' : 'resets ' + new Date(resetMs).toLocaleString([], {
             weekday: 'short', hour: 'numeric', minute: '2-digit' });
@@ -5965,7 +5988,7 @@ function initRateLimits(){
           }
           content += buildGauge(esc(win.label || win.key || 'Limit'), pct, esc(reset),
             pace.expected, { key: win.key || ('window' + wi), state: state, observedAgo: fmtAge(observation.age),
-              projectedPct: pace.projected, ticks: pace.ticks,
+              pace: win.pace, ticks: pace.ticks,
               stats: providerStats, detailState: detailState,
               note: providerStats.length > 1 ? 'Approximate API-equivalent capacity from observed Pi usage at the quota sample; not a dollar allowance.' : null });
         }
@@ -6105,36 +6128,25 @@ function initRateLimits(){
       return mins + 'm ago';
     }
 
-    // D3/C4: sub-window burn rate + ETA + pace verdict + reset annotation for
-    // one gauge, built from oauth.trend[bucketKey] (the D2 server block —
-    // absent entirely until limit_readings has accumulated samples, and
-    // per-field null whenever that ONE field can't be computed yet). Every
-    // access below is individually guarded so a partial trend entry still
-    // renders whatever pieces it has, and a missing trendEntry renders
-    // nothing at all — the gauge looks exactly like it does today.
+    // D3/C4: recent burn rate + TIGHT warning + reset annotation for one
+    // gauge, built from oauth.trend[bucketKey] (the D2 server block, absent
+    // until limit_readings has samples; per-field null when ONE field can't
+    // be computed yet). The verdict, projection and 100% time live in
+    // paceHtml; this note only adds the recent rate, labeled as a rate, and
+    // warns (tight_epoch, server-decided) when that rate would hit 100%
+    // before the reset while the window average says on/below pace.
     function buildTrendNote(trendEntry, burnField, burnLabel, windowSeconds) {
       if(!trendEntry) return null;
       var parts = [];
 
       var burn = trendEntry[burnField];
       if(typeof burn === 'number') {
-        parts.push('≈' + burn.toFixed(2) + '%/hr ' + burnLabel);
+        parts.push('recent burn ' + burn.toFixed(2) + '%/h ' + burnLabel);
       }
 
-      if(typeof trendEntry.eta_100_epoch === 'number') {
-        var rel = fmtRelative(trendEntry.eta_100_epoch);
-        if(rel) parts.push('limit ~' + rel);
-      }
-
-      // Pace verdict — 'over' reuses the SAME .proj-warn class the whole-window
-      // projection already uses for its over-100% state (never a new color,
-      // never var(--red) as a fill).
-      if(trendEntry.pace === 'over') {
-        parts.push('<strong class="proj-warn">over pace</strong>');
-      } else if(trendEntry.pace === 'on') {
-        parts.push('on pace');
-      } else if(trendEntry.pace === 'under') {
-        parts.push('under pace');
+      if(typeof trendEntry.tight_epoch === 'number') {
+        parts.push('<strong class="proj-warn">TIGHT: at the recent rate, 100% at '
+          + fmtClock(trendEntry.tight_epoch) + '</strong>');
       }
 
       // C4: annotate a reset that falls inside THIS bucket's current window
@@ -6171,8 +6183,8 @@ function initRateLimits(){
     // Claude gauges come from the shared windowPace read (D6 stale-reset
     // guard included): day lines across the weekly window, hour lines
     // across the 5-hour one. Pace inference exists only for a current window.
-    var weeklyPace = windowPace(oauth.weekly_resets_at, WEEK_MS, wPct);
-    var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS, hPct);
+    var weeklyPace = windowPace(oauth.weekly_resets_at, WEEK_MS);
+    var fiveHourPace = windowPace(oauth.five_hour_resets_at, FIVE_HR_MS);
     var wExpected = weeklyState === 'current' ? weeklyPace.expected : null;
     var hExpected = fiveHourState === 'current' ? fiveHourPace.expected : null;
 
@@ -6200,16 +6212,6 @@ function initRateLimits(){
       var prevFive = previousCells(entry, 'five_hour', fiveHourId, oauth, fiveHourState);
       fiveHourStats = prevFive.cells; fiveHourDetailState = prevFive.state;
     } else {
-    if(wExpected !== null && wExpected > 2) {
-      var diffPct = wPct - wExpected;
-      var diffH = Math.abs(diffPct / 100 * 7 * 24);
-      var overUnder = diffPct >= 0;
-      weeklyStats.push({
-        value: (overUnder ? '+' : '−') + fHM(diffH * 60),
-        label: overUnder ? 'over pace' : 'under pace',
-        color: overUnder ? 'var(--red)' : 'var(--blue)'
-      });
-    }
     // F2: spend/active are anchored to the CURRENT limit window
     // (oauth.limit_window — starts at the natural rollover, or at the last
     // granted reset if Anthropic issued one mid-window). The old rolling-7d
@@ -6309,7 +6311,7 @@ function initRateLimits(){
     gaugeHtml += buildGauge('Weekly Limit', wPct, resetLabelFor(oauth.weekly_resets_at, weeklyState), wExpected, {
       key: 'weekly', state: weeklyState, observedAgo: observedAgo,
       ticks: weeklyPace.ticks,
-      projectedPct: weeklyPace.projected,
+      pace: oauth.weekly_pace,
       stats: weeklyStats,
       detailState: weeklyDetailState,
       note: weeklyNote,
@@ -6320,7 +6322,7 @@ function initRateLimits(){
       key: 'five_hour', state: fiveHourState, observedAgo: observedAgo,
       trendNote: fiveHourTrendNote,
       ticks: fiveHourPace.ticks,
-      projectedPct: fiveHourPace.projected,
+      pace: oauth.five_hour_pace,
       stats: fiveHourStats,
       detailState: fiveHourDetailState
     });
@@ -6364,7 +6366,7 @@ function initRateLimits(){
       // Shared windowPace read (marker, projection, day ticks; D6 guard
       // included); scoped:* limits are always 7-day windows.
       var sbState = windowState(sb.resets_at, observation, Date.now());
-      var sbPace = windowPace(sb.resets_at, WEEK_MS, sbPct);
+      var sbPace = windowPace(sb.resets_at, WEEK_MS);
       var sbId = sb.key + '|' + (sb.resets_at || '');
       var sbStats = [], sbDetailState = 'current';
       if(detail.state === 'current') {
@@ -6382,7 +6384,7 @@ function initRateLimits(){
         esc(sb.label) + ' · 7-Day', sbPct, resetLabelFor(sb.resets_at, sbState), sbState === 'current' ? sbPace.expected : null, {
           key: sb.key, state: sbState, observedAgo: observedAgo,
           fillColor: sbColor,
-          projectedPct: sbPace.projected,
+          pace: sb.pace,
           ticks: sbPace.ticks,
           stats: sbStats,
           detailState: sbDetailState,

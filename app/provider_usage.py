@@ -11,6 +11,7 @@ import sys
 import time
 
 from .quota_freshness import quota_window_valid
+from .usage_pace import usage_pace
 from datetime import datetime, timezone
 
 from .db import get_conn, write_txn
@@ -179,6 +180,7 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
             "pct": pct,
             "resets_at": _minute_iso(reset),
             "window_seconds": duration,
+            "pace": usage_pace(pct, reset, duration, now),
         }
         # Match spend to the exact sample, not now: transcript ingestion may
         # continue for hours after a quota snapshot. Expired/future windows

@@ -22,6 +22,14 @@ async function check(name, action) {
 }
 
 // Mutable fixture world; every route reads it at request time.
+// Test-side mirror of app/usage_pace.py (the server computes this for real).
+function mockPace(pct, reset, windowS, now) {
+  const frac = (windowS - (reset - now)) / windowS, proj = pct / frac;
+  const state = proj > 110 ? 'above' : proj < 90 ? 'below' : 'on';
+  return {pace_state: state, expected_pct: frac * 100, projected_pct: proj,
+    reaches_100_epoch: state === 'above' ? now - frac * windowS + frac * windowS * 100 / pct : null};
+}
+
 function world(now) {
   const w = {
     now, oauthPresent: true, claudeAt: now - 120, claudeSource: null,
@@ -37,10 +45,13 @@ function world(now) {
     const oauth = {
       weekly_pct: w.claude.weekly, weekly_resets_at: iso(w.weeklyReset),
       five_hour_pct: w.claude.five, five_hour_resets_at: iso(w.fiveReset),
+      weekly_pace: mockPace(w.claude.weekly, w.weeklyReset, 7 * DAY, w.now),
+      five_hour_pace: mockPace(w.claude.five, w.fiveReset, 5 * HOUR, w.now),
       buckets: [
         {key: 'five_hour', label: '5-Hour', pct: w.claude.five, resets_at: iso(w.fiveReset)},
         {key: 'seven_day', label: '7-Day', pct: w.claude.weekly, resets_at: iso(w.weeklyReset)},
-        {key: 'scoped:fable', label: 'Fable', pct: w.claude.fable, resets_at: iso(w.fableReset)},
+        {key: 'scoped:fable', label: 'Fable', pct: w.claude.fable, resets_at: iso(w.fableReset),
+          pace: mockPace(w.claude.fable, w.fableReset, 7 * DAY, w.now)},
       ],
       extra_usage: w.extraUsage, updated_at: iso(w.claudeAt), updated_at_epoch: w.claudeAt,
     };
@@ -151,6 +162,7 @@ async function snap(page) {
         detailStates: Array.from(node.querySelectorAll('.rate-gauge-stats[data-detail-state]')).map(s => s.dataset.detailState),
         windowStates: gauges.map(g => g.dataset.windowState || ''),
         markers: node.querySelectorAll('.rate-gauge-marker').length,
+        projections: Array.from(node.querySelectorAll('.rate-gauge-projection')).map(s => s.textContent.trim()),
         text: node.textContent,
       };
     };
@@ -187,6 +199,16 @@ async function personalScenarios(browser, viewport) {
       assert.deepEqual(base.claude.detailStates.filter(s => s !== 'current'), []);
       assert.equal(base.header, 'month to date'); assert.equal(base.headerStale, false);
       assert(base.codex.stats.some(s => /\$235\.73/.test(s)), 'month total');
+    });
+
+    await check(tag + ' each gauge shows one pace verdict and one projection', () => {
+      const lines = base.claude.projections;
+      const five = lines.find(l => /above pace/.test(l));
+      assert(five, lines.join('|'));
+      assert.match(five, /≈\d+% at reset · 100% at .+\(in /);
+      assert(lines.some(l => /^below pace · ≈\d+% at reset$/.test(l)), lines.join('|'));
+      for (const l of lines) assert.equal((l.match(/(above|below|on) pace/g) || []).length <= 1, true, l);
+      assert.doesNotMatch(base.claude.text, /limit ~|over pace|under pace|window avg|Projected by reset/);
     });
 
     // Same percentages, newer observation, detail delayed by a 503.
@@ -326,7 +348,7 @@ async function personalScenarios(browser, viewport) {
       assert.equal(stale.claude.windowStates[1], 'expired');
       assert.match(stale.claude.remaining[1], /window ended/);
       assert.doesNotMatch(stale.claude.remaining[0], /^\d+% remaining$/);
-      assert.doesNotMatch(stale.claude.text, /est\. window budget|budget left|Projected by reset|under pace|over pace/i);
+      assert.doesNotMatch(stale.claude.text, /est\. window budget|budget left|Projected by reset|at reset|above pace|below pace|under pace|over pace/i);
       assert(stale.claude.labels.some(l => /rolling 7d/.test(l)), 'measured rolling spend retained: ' + stale.claude.labels.join('|'));
       assert.equal(stale.claude.markers, 0);
       assert.equal(stale.codex.windowStates[0], 'stale');
@@ -383,7 +405,7 @@ async function pendingObservationAges(browser) {
     await drive(page, hits, ['snapshot']);
     const aged = await snap(page);
     await check('aging pending detail suppresses Claude inference', () => {
-      assert.doesNotMatch(aged.claude.text, /est\. window budget|budget left|under pace|over pace|Projected by reset/i);
+      assert.doesNotMatch(aged.claude.text, /est\. window budget|budget left|under pace|over pace|Projected by reset|at reset|above pace|below pace/i);
     });
     await check('aging pending detail suppresses provider inference', () => {
       assert.doesNotMatch(aged.codex.text, /est\. window capacity|budget left|Projected by reset/i);
