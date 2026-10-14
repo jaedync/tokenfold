@@ -98,11 +98,7 @@ def _sql_in(col, values):
     return f"COALESCE({col},'') IN ({quoted})"
 
 
-_signals = ["COALESCE(plan,'') = 'enterprise'"]
-if ENTERPRISE_ORG_TYPES:
-    _signals.append(_sql_in("org_type", ENTERPRISE_ORG_TYPES))
-if ENTERPRISE_ORG_UUIDS:
-    _signals.append(_sql_in("org_uuid", ENTERPRISE_ORG_UUIDS))
+_enterprise_domains = []
 for _dom in ENTERPRISE_EMAIL_DOMAINS:
     _d = _dom.lstrip("@")
     # LIKE wildcard hardening: '%' and '_' in a configured domain are live SQL
@@ -114,13 +110,27 @@ for _dom in ENTERPRISE_EMAIL_DOMAINS:
         print(f"[config] WARNING: ENTERPRISE_EMAIL_DOMAINS entry {_dom!r} contains "
               f"SQL LIKE wildcard characters (%/_) — ignored (fail-closed)")
         continue
-    _d = _d.replace("'", "''")
-    _signals.append(f"COALESCE(account_email,'') LIKE '%@{_d}'")
+    _enterprise_domains.append(_d)
 
-ENTERPRISE_PRED = (
-    "(COALESCE(account_email,'') NOT IN ('', 'unknown') AND ("
-    + " OR ".join(_signals) + "))"
-)
+
+def enterprise_predicate(alias: str = "") -> str:
+    """Configured scope classification, optionally qualified by a trusted SQL alias."""
+    prefix = f"{alias}." if alias else ""
+    signals = [f"COALESCE({prefix}plan,'') = 'enterprise'"]
+    if ENTERPRISE_ORG_TYPES:
+        signals.append(_sql_in(prefix + "org_type", ENTERPRISE_ORG_TYPES))
+    if ENTERPRISE_ORG_UUIDS:
+        signals.append(_sql_in(prefix + "org_uuid", ENTERPRISE_ORG_UUIDS))
+    for domain in _enterprise_domains:
+        domain = domain.replace("'", "''")
+        signals.append(f"COALESCE({prefix}account_email,'') LIKE '%@{domain}'")
+    return (
+        f"(COALESCE({prefix}account_email,'') NOT IN ('', 'unknown') AND ("
+        + " OR ".join(signals) + "))"
+    )
+
+
+ENTERPRISE_PRED = enterprise_predicate()
 PERSONAL_PRED = "NOT " + ENTERPRISE_PRED
 
 VALID_SCOPES = ("enterprise", "personal")

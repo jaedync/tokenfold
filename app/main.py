@@ -1,5 +1,7 @@
 """FastAPI app entry point."""
 
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,11 +10,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .db import close_conn, get_conn
+from .db import close_conn, get_conn, write_txn
 from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
 from .pricing import load_pricing
 from . import usage_fetcher
+
+logger = logging.getLogger("tokenfold.main")
+# Progress note interval for the one-time all-days rollup rebuild (~75 s on prod).
+BACKFILL_PROGRESS_EVERY = 50
 
 
 @asynccontextmanager
@@ -55,16 +61,42 @@ async def lifespan(app: FastAPI):
 
 
 def _backfill_if_needed():
-    """Populate daily_summary table if it's empty but events exist."""
+    """Rebuild empty or invalidated rollups before serving/warming the cache.
+
+    Each day commits atomically. A failing day is logged and skipped so a bad
+    day cannot crash-loop startup; the pending marker then stays durable, so
+    the next startup retries ALL days even if some rows already exist.
+    """
     conn = get_conn()
-    summary_count = conn.execute("SELECT COUNT(*) FROM daily_summary").fetchone()[0]
-    if summary_count > 0:
-        return  # Already populated
-    event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    if event_count == 0:
-        return  # No data at all
+    pending = conn.execute(
+        "SELECT 1 FROM meta WHERE key='daily_summary_rebuild_pending'"
+    ).fetchone()
+    if not pending and conn.execute("SELECT 1 FROM daily_summary LIMIT 1").fetchone():
+        return
+    with write_txn(conn):
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key,value) "
+            "VALUES('daily_summary_rebuild_pending','1')")
     from .summarizer import summarize_days
-    summarize_days(None)  # Backfill all days
+    days = [r['day'] for r in conn.execute('SELECT DISTINCT day FROM events ORDER BY day')]
+    started, failed = time.monotonic(), []
+    logger.warning("rebuilding daily rollups for %d days before serving", len(days))
+    for i, day in enumerate(days, 1):
+        # Match normal daily ingest: never group requests from unrelated days
+        # together in one all-history accumulator; keep startup memory bounded.
+        try:
+            summarize_days([day])
+        except Exception:
+            logger.exception("daily rollup rebuild failed for %s; retried next startup", day)
+            failed.append(day)
+        if i % BACKFILL_PROGRESS_EVERY == 0:
+            logger.warning("rebuilt %d/%d days (%.0f s)", i, len(days), time.monotonic() - started)
+    if failed:
+        logger.error("daily rollup rebuild incomplete: %d of %d days failed", len(failed), len(days))
+        return
+    with write_txn(conn):
+        conn.execute("DELETE FROM meta WHERE key='daily_summary_rebuild_pending'")
+    logger.warning("daily rollups rebuilt in %.0f s", time.monotonic() - started)
 
 
 # Disable the auto-generated API docs on this confidential dashboard: /docs,

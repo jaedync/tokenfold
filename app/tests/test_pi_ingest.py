@@ -58,6 +58,48 @@ class PiIngestTest(TempDBTestCase):
         tool = self.conn.execute("SELECT * FROM tool_uses").fetchone()
         self.assertTrue(tool["tool_use_id"].startswith("pi:"))
 
+    def test_anthropic_message_id_supports_cross_day_meridian_deduplication(self):
+        message_id = "msg_shared"
+        from app.tests.test_summarizer_pricing import insert_assistant
+        insert_assistant(
+            self.conn, "shadow", "req_shared", day="2026-06-08",
+            ts=1780913600, inp=1_000_000)
+        self.conn.execute(
+            "UPDATE events SET message_id=?, account_email=? WHERE uuid='shadow'",
+            (message_id, "personal@example.com"),
+        )
+        self.conn.commit()
+
+        from app.summarizer import summarize_days
+        summarize_days(["2026-06-08"])
+        stale = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE day='2026-06-08'"
+        ).fetchone()[0]
+        self.assertGreater(stale, 0)
+
+        event = self.event(
+            provider="Anthropic", api="anthropic-messages",
+            model="claude-opus-4-8", request_id=message_id,
+            usage={"input": 1, "cost_total": 1.25})
+        response = self.post([event])
+        self.assertEqual(response.status_code, 200, response.text)
+        pi_row = self.conn.execute(
+            "SELECT request_id, message_id FROM events WHERE source_client='pi-agent'"
+        ).fetchone()
+        self.assertTrue(pi_row["request_id"].endswith(":" + message_id))
+        self.assertEqual(pi_row["message_id"], message_id)
+
+        # The re-roll deleted the stale row: the shadow is Meridian's twin, so
+        # that day has neither cost nor activity of its own.
+        shadow_summary = self.conn.execute(
+            "SELECT cost FROM daily_summary WHERE day='2026-06-08'"
+        ).fetchone()
+        self.assertIsNone(shadow_summary)
+        total = self.conn.execute(
+            "SELECT SUM(cost) FROM daily_summary"
+        ).fetchone()[0]
+        self.assertAlmostEqual(total, 1.25, places=2)
+
     def test_replay_and_fallback_request_id(self):
         e = self.event(request_id=None)
         first = self.post([e]); second = self.post([e])

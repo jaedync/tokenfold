@@ -39,12 +39,14 @@ class ClaudeUsageTest(TempDBTestCase):
         return json.loads(row[0]) if row else None
 
     def test_auth_and_scope_fail_closed_without_writes(self):
+        meta_before = self.conn.execute("SELECT count(*) FROM meta").fetchone()[0]
         self.assertEqual(self.client().post("/api/usage/claude", json=self.payload).status_code, 401)
         for account in ("work", "enterprise"):
             self.assertEqual(self.post({**self.payload, "account_class": account}).status_code, 422)
         with patch.object(app.config, "LOCKED_SCOPE", "enterprise"):
             self.assertEqual(self.post().status_code, 403)
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM meta").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM meta").fetchone()[0], meta_before)
+        self.assertIsNone(self.stored())
         self.assertEqual(self.conn.execute("SELECT count(*) FROM limit_readings").fetchone()[0], 0)
 
     def test_metadata_and_history_keep_observation_and_source(self):

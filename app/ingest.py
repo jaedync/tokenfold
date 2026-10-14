@@ -17,6 +17,9 @@ from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
 from .claude_usage import parse_claude_usage
+from .event_dedupe import (matching_claude_days, matching_pi_days,
+                           record_mirror_sessions, session_days,
+                           sessions_without_reply)
 from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
                      PiIngestRequest, ProviderUsageRequest, ClaudeUsageRequest)
 from .sigheader import decode_header, split_signature
@@ -428,6 +431,8 @@ def ingest(req: IngestRequest):
     accepted = 0
     duplicates = 0
     touched_days: set[str] = set()
+    message_ids: set[str] = set()
+    reply_sessions: set[str] = set()
 
     event_rows = []
     tool_rows = []
@@ -454,6 +459,11 @@ def ingest(req: IngestRequest):
             continue
         event_rows.append(tuple(row[c] for c in EVENT_COLS))
         touched_days.add(row["day"])
+        if isinstance(row["message_id"], str):
+            message_ids.add(row["message_id"])
+        if (row["type"] == "assistant" and row["session_id"]
+                and row["model"] != "<synthetic>"):
+            reply_sessions.add(row["session_id"])
 
         # Extract tool uses from assistant events
         if row["type"] == "assistant" and row["has_tool_use"]:
@@ -467,6 +477,8 @@ def ingest(req: IngestRequest):
 
     # Batch insert — one serialized write transaction (see db.write_txn).
     with write_txn() as conn:
+        # Checked inside the write lock, before this batch's rows land.
+        first_reply = sessions_without_reply(conn, reply_sessions)
         cur = conn.cursor()
         for erow in event_rows:
             try:
@@ -506,11 +518,19 @@ def ingest(req: IngestRequest):
     # connected machine pushes months of historical transcripts, and only
     # re-rolling "today" left those events invisible in the daily rollup
     # (stale daily table / heatmap / month counter) until a manual re-roll.
-    if accepted > 0:
+    marked_days = record_mirror_sessions(message_ids)
+    if accepted > 0 or marked_days:
         from .summarizer import summarize_days
         from .aggregator import trigger_eager_rebuild
         today = datetime.now(TZ).strftime("%Y-%m-%d")
+        if accepted == 0:
+            touched_days = set()
         try:
+            if accepted > 0:
+                touched_days.update(matching_pi_days(get_conn(), message_ids))
+                # A session counts from its first reply, on all of its days.
+                touched_days.update(session_days(get_conn(), first_reply))
+            touched_days.update(marked_days)
             summarize_days(sorted(touched_days | {today}))
             trigger_eager_rebuild()
         except Exception:
@@ -602,7 +622,14 @@ def _pi_event_row(event, machine: str, project_dir: str, session_file: str,
         "org_type": account["org_type"],
         "org_uuid": None,
         "model": model,
-        "message_id": None,
+        # Anthropic's response ID is the stable bridge between Pi's transcript
+        # and the Claude Agent SDK transcript written by Meridian. Keep the raw
+        # msg_* value here; request_id remains namespaced for replay safety.
+        "message_id": (event.request_id
+                       if event.provider
+                       and event.provider.lower() == "anthropic"
+                       and event.request_id
+                       and event.request_id.startswith("msg_") else None),
         "request_id": req_id,
         "stop_reason": event.stop_reason,
         "api_error": None,
@@ -692,21 +719,33 @@ def _store_pi_rows(req: PiIngestRequest, event_rows: list[tuple],
 def ingest_pi(req: PiIngestRequest):
     """Ingest privacy-scrubbed normalized Pi Agent events."""
     event_rows, tool_rows, touched_days = [], [], set()
+    anthropic_message_ids: set[str] = set()
     for event in req.events:
         row, tools = _pi_event_row(event, req.machine, req.project_dir,
                                    req.session_file, req.account_class)
         event_rows.append(tuple(row[c] for c in EVENT_COLS))
         touched_days.add(row["day"])
+        if row["message_id"]:
+            anthropic_message_ids.add(row["message_id"])
         tool_rows.extend(tuple(tool[c] for c in TOOL_COLS) for tool in tools)
     if len(tool_rows) > 20000:
         raise HTTPException(status_code=422, detail="too many tools in batch")
 
     accepted, duplicates = _store_pi_rows(req, event_rows, tool_rows)
-    if accepted > 0:
+    marked_days = record_mirror_sessions(anthropic_message_ids)
+    if accepted > 0 or marked_days:
         from .summarizer import summarize_days
         from .aggregator import trigger_eager_rebuild
         today = datetime.now(TZ).strftime("%Y-%m-%d")
+        if accepted == 0:
+            touched_days = set()
         try:
+            # The shadow can land on the prior local day across midnight.
+            # Query failures, like rollup failures, must not 500 durable ingest.
+            if accepted > 0:
+                touched_days.update(matching_claude_days(
+                    get_conn(), anthropic_message_ids))
+            touched_days.update(marked_days)
             summarize_days(sorted(touched_days | {today}))
             trigger_eager_rebuild()
         except Exception:
