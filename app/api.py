@@ -90,15 +90,33 @@ def stats(scope: Optional[str] = Query(default=None)):
     return JSONResponse(content=data)
 
 
-def _bucket_pace(key, pct, resets_at, now):
-    """The shared pace block for one Claude bucket (None when not applicable)."""
+def _bucket_pace(key, pct, resets_at, now, conn=None, observed=None, source=None):
+    """The shared pace block for one Claude bucket (None when not applicable).
+
+    With a connection, pace runs from the latest granted reset (the same start
+    the spend windows use), so a grant does not dilute the average over usage
+    it voided. A failed lookup falls back to the nominal window: it must never
+    cost the gauge its pace.
+    """
     window_s = FIVE_HOUR_S if key == "five_hour" else WEEK_S
-    return usage_pace(pct, _iso_to_epoch(resets_at), window_s, now)
+    resets_epoch = _iso_to_epoch(resets_at)
+    start = None
+    if conn is not None and resets_epoch is not None:
+        try:
+            start = _bucket_window_start(conn, key, resets_epoch, window_s,
+                                         observed, source=source)
+        except Exception as e:
+            print(f"[rate-limits] pace window start for {key} failed: {e}",
+                  flush=True)
+    return usage_pace(pct, resets_epoch, window_s, now, window_start_epoch=start)
 
 
 def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None,
-                    now=None):
-    """Shared quota-only shape for first paint and enriched responses."""
+                    now=None, conn=None):
+    """Shared quota-only shape for first paint and enriched responses.
+
+    conn (optional) lets pace measure from a granted reset; see _bucket_pace.
+    """
     now = time.time() if now is None else now
     extra = usage.get("extra_usage") or {}
 
@@ -122,7 +140,10 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None,
             "pct": b["utilization"],
             "resets_at": resets_at,
             # One pace rule (app/usage_pace.py) for every gauge.
-            "pace": _bucket_pace(b["key"], b["utilization"], resets_at, now),
+            "pace": _bucket_pace(b["key"], b["utilization"], resets_at, now,
+                                 conn, observed_at_epoch
+                                 if _valid_epoch(observed_at_epoch) else None,
+                                 source),
         })
     pace_by_key = {b["key"]: b["pace"] for b in buckets}
 
@@ -154,11 +175,14 @@ def _oauth_snapshot(usage, updated_at, source=None, observed_at_epoch=None,
         except (ValueError, TypeError):
             pass
 
-    if (isinstance(observed_at_epoch, (float, int))
-            and not isinstance(observed_at_epoch, bool)
-            and math.isfinite(observed_at_epoch) and observed_at_epoch > 0):
+    if _valid_epoch(observed_at_epoch):
         oauth["updated_at_epoch"] = observed_at_epoch
     return oauth, by_key
+
+
+def _valid_epoch(value):
+    return (isinstance(value, (float, int)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0)
 
 
 @router.get("/api/rate-limit-snapshots", dependencies=[Depends(require_dashboard_auth)])
@@ -177,7 +201,7 @@ def rate_limit_snapshots(scope: Optional[str] = Query(default=None)):
                     stored = json.loads(row["value"])
                     budget["oauth"], _ = _oauth_snapshot(
                         stored.get("data", {}), stored.get("updated_at", ""), stored.get("source"),
-                        stored.get("observed_at_epoch"))
+                        stored.get("observed_at_epoch"), conn=conn)
                 except (ValueError, KeyError, TypeError):
                     pass
         return JSONResponse(content={"weekly_budget": budget})
@@ -337,7 +361,8 @@ def _build_rate_limits(scope, conn):
                 updated_at = stored.get("updated_at", "")
 
                 oauth_block, by_key = _oauth_snapshot(usage, updated_at, stored.get("source"),
-                                                     stored.get("observed_at_epoch"))
+                                                     stored.get("observed_at_epoch"),
+                                                     conn=conn)
                 observed = oauth_block.get("updated_at_epoch")
                 history_source = stored.get("source")
                 seven_day = by_key.get("seven_day") or {}

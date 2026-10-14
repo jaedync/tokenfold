@@ -5347,6 +5347,9 @@ function initRateLimits(){
     // carry pace inference: no expected marker, no projection.
     var state = opts.state || 'current';
     if(state !== 'current') { expectedPct = null; opts.pace = null; }
+    // The server's expected % already measures from a granted reset; use it
+    // so the marker and bar color agree with the pace verdict.
+    if(opts.pace && typeof opts.pace.expected_pct === 'number') expectedPct = opts.pace.expected_pct;
     var clamp = Math.min(pct, 100);
     // fillColor pins a fixed identity color (per-model rows) instead of
     // the pace-reactive palette; the over-expected overflow segment

@@ -637,5 +637,36 @@ class TrendEndpointTest(TempDBTestCase):
         self.assertIn("trend", oauth)  # unaffected by the limit_window bug
 
 
+    def test_pace_measures_from_a_granted_reset(self):
+        """A granted reset two days ago turns a 7-day window with one day left
+        into a 3-day window: 70% is then on pace, not below it."""
+        from unittest.mock import patch
+        now = time.time()
+        resets = now + 86400
+        self._seed_oauth(resets, seven=70)
+        granted = now - 2 * 86400
+
+        def start(conn, key, resets_epoch, window_s, observed=None, **kw):
+            nominal = ((resets_epoch // 60) * 60.0) - window_s
+            return granted if key == "seven_day" else nominal
+
+        with patch("app.api._bucket_window_start", side_effect=start):
+            c = self.client()
+            for path in ("/api/rate-limits?scope=personal",
+                         "/api/rate-limit-snapshots?scope=personal"):
+                oauth = c.get(path).json()["weekly_budget"]["oauth"]
+                pace = oauth["weekly_pace"]
+                self.assertEqual(pace["pace_state"], "on", path)
+                self.assertAlmostEqual(pace["projected_pct"], 105.0, delta=0.5)
+
+    def test_pace_falls_back_to_nominal_when_the_start_lookup_fails(self):
+        from unittest.mock import patch
+        now = time.time()
+        self._seed_oauth(now + 86400, seven=70)
+        with patch("app.api._bucket_window_start", side_effect=RuntimeError("boom")):
+            oauth = self.client().get("/api/rate-limit-snapshots?scope=personal").json()[
+                "weekly_budget"]["oauth"]
+        self.assertEqual(oauth["weekly_pace"]["pace_state"], "below")
+
 if __name__ == "__main__":
     unittest.main()

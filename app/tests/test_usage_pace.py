@@ -84,3 +84,40 @@ class TightTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrantedResetPaceTest(unittest.TestCase):
+    """After a granted mid-window reset the window effectively restarts at the
+    grant: 100% must last from the grant to the unchanged resets_at."""
+
+    RESET = NOW + 86400            # one day left in a 7-day window
+
+    def test_granted_start_shortens_the_window(self):
+        granted = NOW - 2 * 86400  # grant two days ago -> 3-day effective window
+        p = usage_pace(70, self.RESET, WEEK_S, NOW, window_start_epoch=granted)
+        self.assertAlmostEqual(p["elapsed_fraction"], 2 / 3)
+        self.assertEqual(p["expected_pct"], 66.7)
+        self.assertEqual(p["projected_pct"], 105.0)
+        self.assertEqual(p["pace_state"], "on")
+        # The nominal window would call the same usage "below" (81.7%).
+        self.assertEqual(usage_pace(70, self.RESET, WEEK_S, NOW)["pace_state"], "below")
+
+    def test_reaches_100_counts_from_the_grant(self):
+        granted = NOW - 86400      # 2-day effective window, half elapsed
+        p = usage_pace(80, self.RESET, WEEK_S, NOW, window_start_epoch=granted)
+        self.assertEqual(p["pace_state"], "above")
+        # 80% in one day -> 100% at grant + 1.25 days
+        self.assertEqual(p["reaches_100_epoch"], ((granted + 1.25 * 86400) // 60) * 60)
+
+    def test_start_outside_the_window_falls_back_to_nominal(self):
+        nominal = usage_pace(70, self.RESET, WEEK_S, NOW)
+        for start in (self.RESET - WEEK_S - 3600,   # before the nominal start
+                      NOW + 60,                     # in the future
+                      None, float("nan"), "x"):
+            self.assertEqual(usage_pace(70, self.RESET, WEEK_S, NOW,
+                                        window_start_epoch=start), nominal, start)
+
+    def test_fresh_grant_is_too_early(self):
+        p = usage_pace(2, self.RESET, WEEK_S, NOW, window_start_epoch=NOW - 600)
+        self.assertEqual(p["pace_state"], "too_early")
+

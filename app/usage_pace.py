@@ -1,12 +1,12 @@
 """The one pace rule for every limit gauge. No routes.
 
 Port of pi-extras' lib/usage-pace.ts (the Pi `usage` tool), so the dashboard
-and Pi give the same verdict for the same window. The window start is
-resets_at - window length, exactly as Pi computes it. A granted mid-window
-reset (see limit_windows._bucket_window_start) would move the true start
-later; it is NOT used here because Pi has no such history, and the first-paint
-snapshot has no connection to look it up. Spend and cost windows still anchor
-on the granted reset; only the pace fraction uses the nominal window.
+and Pi give the same verdict for the same window. The window normally starts
+at resets_at - window length. A granted mid-window reset (see
+limit_windows._bucket_window_start) voids earlier usage while resets_at stays
+put, so callers that know the grant pass window_start_epoch: the window then
+runs from the grant to resets_at, and 100% must last that shorter span. Without
+it, the average is diluted over the full window and reads low after a grant.
 """
 
 import math
@@ -32,8 +32,20 @@ def _round1(value):
     return math.floor(value * 10 + 0.5) / 10
 
 
-def usage_pace(used_pct, resets_at_epoch, window_s, now):
+def _effective_start(resets_at_epoch, window_s, now, window_start_epoch):
+    """Granted start when it falls inside the nominal window and not in the
+    future; otherwise the nominal start."""
+    nominal = resets_at_epoch - window_s
+    if _num(window_start_epoch) and nominal < window_start_epoch <= now:
+        return window_start_epoch
+    return nominal
+
+
+def usage_pace(used_pct, resets_at_epoch, window_s, now, window_start_epoch=None):
     """Pace of one limit window, or None when the rule does not apply.
+
+    window_start_epoch: the granted-reset start of the current window, when
+    known; ignored unless it lies inside the nominal window.
 
     Returns pace_state ('above'|'on'|'below'|'too_early'), elapsed_fraction,
     expected_pct and, once there is enough evidence, projected_pct (the
@@ -46,10 +58,11 @@ def usage_pace(used_pct, resets_at_epoch, window_s, now):
         return None
     if used_pct < 0 or window_s <= 0 or resets_at_epoch <= now:
         return None
-    elapsed = window_s - (resets_at_epoch - now)
+    start = _effective_start(resets_at_epoch, window_s, now, window_start_epoch)
+    elapsed = now - start
     if elapsed < 0:
         return None
-    fraction = elapsed / window_s
+    fraction = elapsed / (resets_at_epoch - start)
     out = {"elapsed_fraction": fraction,
            "expected_pct": _round1(100 * fraction),
            "projected_pct": None, "reaches_100_epoch": None,
