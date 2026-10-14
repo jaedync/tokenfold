@@ -442,6 +442,38 @@ class MeridianPiAccountingTest(TempDBTestCase):
         self.assertEqual(find_mirror_sessions(self.conn, {'msg_other'},
                                               since_epoch=self.now - 86400), set())
 
+    def test_recent_pi_message_ids_use_time_index_and_bound_the_sweep(self):
+        from app.event_dedupe import RECENT_PI_MESSAGES_SQL, recent_pi_message_ids
+        self.reset()
+        self.post(self.pi_session())
+        plan = '\n'.join(r['detail'] for r in self.conn.execute(
+            'EXPLAIN QUERY PLAN ' + RECENT_PI_MESSAGES_SQL, (0,)))
+        self.assertIn('USING INDEX idx_events_billable_ts (ts_epoch>?)', plan)
+        self.assertEqual(recent_pi_message_ids(self.conn, self.now - 86400), {'msg_turn'})
+        self.assertEqual(recent_pi_message_ids(self.conn, self.now + 86400), set())
+
+    def test_hourly_sweep_checks_only_recent_pi_message_ids(self):
+        from app import aggregator, event_dedupe
+        self.reset()
+        self.post(self.pi_session())
+        self.post(self.sdk_session('sdk-mirror', ['msg_turn']))
+        self.conn.execute('DELETE FROM pi_mirror_sessions')
+        self.conn.commit()
+        calls = []
+        real = event_dedupe.find_mirror_sessions
+
+        def spy(conn, ids=None, **kw):
+            calls.append((ids, kw))
+            return real(conn, ids, **kw)
+
+        with patch.object(aggregator, '_schedule_periodic_sweep'), \
+                patch.object(aggregator, '_last_full_sweep', 0.0), \
+                patch('app.event_dedupe.find_mirror_sessions', spy):
+            aggregator._run_periodic_sweep()
+        self.assertEqual(self.mirrors(), ['sdk-mirror'])
+        # Never an unbounded all-history or SDK-side time scan.
+        self.assertEqual(calls, [({'msg_turn'}, {'since_epoch': None})])
+
     def test_twin_found_later_rerolls_earlier_days_of_the_session(self):
         self.reset()
         self.post(self.pi_session())

@@ -122,6 +122,23 @@ def counts_as_activity(alias: str = 'events') -> str:
             f"WHERE reply.session_id={alias}.session_id AND {_REPLY.format(a='reply')})))")
 
 
+# Predicate text matches idx_events_billable_ts (type='assistant' AND
+# request_id IS NOT NULL) so the ts_epoch bound is an index range scan. A bound
+# on SDK rows has no such path: idx_events_claude_message covers every Claude
+# Code assistant row. INDEXED BY pins it: left alone the planner prefers the
+# partial Pi message index, which walks every Pi row ever stored.
+RECENT_PI_MESSAGES_SQL = (
+    "SELECT DISTINCT message_id FROM events INDEXED BY idx_events_billable_ts "
+    "WHERE type='assistant' "
+    "AND request_id IS NOT NULL AND ts_epoch >= ? AND source_client='pi-agent' "
+    "AND LOWER(provider)='anthropic' AND message_id IS NOT NULL")
+
+
+def recent_pi_message_ids(conn: sqlite3.Connection, since_epoch: float) -> set[str]:
+    """Anthropic response IDs of Pi rows since ``since_epoch`` (hourly repair)."""
+    return {row[0] for row in conn.execute(RECENT_PI_MESSAGES_SQL, (since_epoch,))}
+
+
 def find_mirror_sessions(conn: sqlite3.Connection,
                          message_ids: set[str] | None = None, *,
                          since_epoch: float | None = None) -> set[str]:

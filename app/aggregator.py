@@ -1631,8 +1631,12 @@ def _run_periodic_sweep():
         today = datetime.now(TZ)
         days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
         # Repairs a Meridian twin mark that ingest logged and skipped.
-        from .event_dedupe import record_mirror_sessions
-        extra = record_mirror_sessions(since_epoch=_time.time() - 7 * 86400)
+        # Starts from recent Pi rows (time-indexed), then looks up their SDK
+        # twins by message ID, so cost does not grow with Claude Code history.
+        from .db import get_conn
+        from .event_dedupe import record_mirror_sessions, recent_pi_message_ids
+        recent_ids = recent_pi_message_ids(get_conn(), _time.time() - 7 * 86400)
+        extra = record_mirror_sessions(recent_ids)
         summarize_days(days + sorted(extra - set(days)))
         trigger_eager_rebuild()
     except Exception:
