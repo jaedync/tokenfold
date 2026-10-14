@@ -257,6 +257,25 @@ class MeridianPiAccountingTest(TempDBTestCase):
                     self.assertAlmostEqual(compute_window_cost(
                         self.conn, self.now-7*86400, self.now, scope='personal'), expected)
 
+    def test_zero_token_sdk_twin_of_unpriced_pi_row_counts_one_api_call(self):
+        for pi_first in (False, True):
+            with self.subTest(pi_first=pi_first):
+                self.reset()
+                route, body = self.sdk()
+                event = {**body['events'][0], 'timestamp': self.after}
+                event['message'] = {**event['message'], 'usage': {'input_tokens': 0}}
+                sdk = (route, {**body, 'events': [event]})
+                pi_route, pi_body = self.pi()
+                pi_event = {**pi_body['events'][0], 'usage': {'input': 1_000_000}}
+                pi = (pi_route, {**pi_body, 'events': [pi_event]})
+                for payload in ([pi, sdk] if pi_first else [sdk, pi]):
+                    self.post(payload)
+                from app.event_dedupe import canonical_assistant_predicate
+                survivors = self.conn.execute(
+                    "SELECT source_client FROM events WHERE type='assistant' AND "
+                    + canonical_assistant_predicate()).fetchall()
+                self.assertEqual([r[0] for r in survivors], ['pi-agent'])
+
     def test_message_lookup_uses_indexes_and_bounded_batches(self):
         from app.event_dedupe import canonical_assistant_predicate, matching_claude_days
         self.post(self.sdk())

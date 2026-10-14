@@ -42,14 +42,31 @@ def canonical_assistant_predicate(alias: str = 'events') -> str:
     Without a match, existing standalone source pricing is unchanged. Aliases
     are internal trusted names.
     """
-    sdk = (
-        f"{alias}.source_client='claude-code' AND {alias}.message_id GLOB 'msg_?*' "
-        f"AND ({alias}.provider IS NULL OR LOWER({alias}.provider)='anthropic') "
-        "AND EXISTS (SELECT 1 FROM events AS canonical_pi WHERE "
+    sdk_has_cost_twin = (
+        "EXISTS (SELECT 1 FROM events AS canonical_pi WHERE "
         f"{_billable('canonical_pi')} AND canonical_pi.source_client='pi-agent' "
         "AND LOWER(canonical_pi.provider)='anthropic' "
         f"AND {_positive_reported_cost('canonical_pi')} "
         f"AND {_same_response('canonical_pi', alias)})"
+    )
+    # An SDK row with no tokens and no server-tool use adds no cost, so it
+    # yields to any billable Pi row of the response: otherwise both survive
+    # and api_calls counts the request twice. An SDK row with a blank or
+    # '<unknown>' model but real tokens is kept, since it may be the only
+    # cost evidence when Pi has none (a known api_calls double count).
+    sdk_is_empty_copy = (
+        f"(COALESCE({alias}.input_tokens,0) + COALESCE({alias}.output_tokens,0) "
+        f"+ COALESCE({alias}.cache_creation_tokens,0) + COALESCE({alias}.cache_read_tokens,0)) = 0 "
+        f"AND COALESCE({alias}.web_search_requests,0) = 0 "
+        "AND EXISTS (SELECT 1 FROM events AS empty_pi WHERE "
+        f"{_billable('empty_pi')} AND empty_pi.source_client='pi-agent' "
+        "AND LOWER(empty_pi.provider)='anthropic' "
+        f"AND {_same_response('empty_pi', alias)})"
+    )
+    sdk = (
+        f"{alias}.source_client='claude-code' AND {alias}.message_id GLOB 'msg_?*' "
+        f"AND ({alias}.provider IS NULL OR LOWER({alias}.provider)='anthropic') "
+        f"AND ({sdk_has_cost_twin} OR ({sdk_is_empty_copy}))"
     )
     pi = (
         f"{alias}.source_client='pi-agent' AND LOWER({alias}.provider)='anthropic' "
