@@ -112,12 +112,13 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
   }
 
   // ms until a feed's data needs a refetch: 0 for none, old, another scope's
-  // or other params.
+  // or other params. doneKey, not paramsKey: an aborted read set paramsKey
+  // but the store still holds the answer to the params before it.
   function freshFor(f) {
     const cur = store.get()[f.key];
     if (!cur || cur.status !== 'ok' || f.gen !== gen || !f.last) return 0;
     const p = params(f);
-    if (p === null || JSON.stringify(p) !== f.paramsKey) return 0;
+    if (p === null || JSON.stringify(p) !== f.doneKey) return 0;
     return Math.max(0, f.last + (f.spec.intervalMs || FRESH_MS) - Date.now());
   }
 

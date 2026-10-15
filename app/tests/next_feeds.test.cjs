@@ -330,6 +330,27 @@ async function check(name, page, fn) {
       rel.forEach((r) => r());
     });
 
+    await check('a read aborted by a view switch does not make old data count as fresh', page, async () => {
+      // The period changes (new params), the view goes before the answer; back
+      // on the view, the data in the store is still for the old params.
+      const t = setup();
+      t.store.set('from', 1);
+      const spec = {endpoint: 'p', intervalMs: 60000, params: (s) => ({from: s.from})};
+      let rel = t.feeds.want('p', spec);
+      await tick();
+      await t.answer('p', 'one');
+      t.store.set('from', 2);
+      await tick();
+      must(t.open('p').length === 1, 'no read for the new params');
+      rel();
+      await tick();
+      rel = t.feeds.want('p', spec);
+      await tick();
+      must(t.open('p').length === 1, 'the data for the old params counted as fresh');
+      must(t.open('p')[0].params.from === 2, 'the read is not for the new params');
+      rel();
+    });
+
     if (errors.length) failures.push('page errors: ' + errors.join('; '));
   } finally {
     await browser.close();
