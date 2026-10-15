@@ -71,6 +71,9 @@ class LimitRateRouteTest(_Base):
         self.assertAlmostEqual(fam["usd_per_point"], 24.0, delta=1.5)
         for key in ("active", "factor", "until", "tz", "hours", "next_start"):
             self.assertIn(key, body["peak"])
+        # The browser marks peak hours with the server's threshold.
+        from app.limit_peak import PEAK_MIN_FACTOR
+        self.assertEqual(body["peak"]["min_factor"], PEAK_MIN_FACTOR)
         self.assertEqual(body["period_start"] % 60, 0)
 
     def test_cached_in_memory_and_meta(self):
@@ -154,6 +157,7 @@ class LimitRateRouteTest(_Base):
         self.assertEqual(set(body), KEYS)
         self.assertEqual(body["fit_quality"]["status"], "not_available_for_scope")
         self.assertEqual(body["families"], [])
+        self.assertIn("min_factor", body["peak"])
 
     def test_invalid_scope_400(self):
         self.assertEqual(self.get("scope=bogus").status_code, 400)

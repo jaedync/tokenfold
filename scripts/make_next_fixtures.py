@@ -314,7 +314,7 @@ def limit_rate_payload():
                 {"family": "fable", "usd_per_point": 13.6, "lo": 12.0, "hi": 25.8, "spend_usd": 131.0},
                 {"family": "haiku", "usd_per_point": None, "lo": None, "hi": None, "spend_usd": 18.0,
                  "note": "not enough data"}],
-            "peak": {"active": False, "factor": 1.37, "until": None,
+            "peak": {"active": False, "factor": 1.37, "until": None, "min_factor": 1.15,
                      "next_start": datetime(2026, 10, 16, 5, tzinfo=PEAK_TZ).timestamp(),
                      "tz": "America/Los_Angeles",
                      "hours": peak_hours()},

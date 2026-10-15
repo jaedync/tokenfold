@@ -84,6 +84,7 @@
   "active": false,
   "factor": 1.37,
   "until": null,
+  "min_factor": 1.15,
   "next_start": 1792152000.0,
   "tz": "America/Los_Angeles",
   "hours": [

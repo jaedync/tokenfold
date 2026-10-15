@@ -120,7 +120,7 @@ Typical = median over the last 28 days of cumulative spend at this local hour (a
  "families": [{"family": "opus", "usd_per_point": 24.7, "lo": 23.9, "hi": 25.6, "spend_usd": 2100.0},
               {"family": "fable", "usd_per_point": null, "lo": null, "hi": null, "spend_usd": 40.0, "note": "not enough data"}],
  "peak": {"active": true, "factor": 1.37, "until": 0, "tz": "America/Los_Angeles",
-          "hours": [{"dow": 1, "hour": 5, "factor": 1.23}]},
+          "hours": [{"dow": 1, "hour": 5, "factor": 1.23}], "min_factor": 1.15},
  "cache_read_weight": {"value": 0.5, "lo": 0.4, "hi": 0.65}}
 ```
 Port the method in `~/.cache/limit-xray/` (read `REPORT.md`, `lib.py`, `fit.py`): deduped

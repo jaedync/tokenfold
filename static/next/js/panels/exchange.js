@@ -10,6 +10,8 @@ import { feedLine, staleNote } from '../panel.js';
 const CAUSE = { granted_reset: 'granted reset', rate_change: 'rate change' };
 const BUCKET = { seven_day: '7-day', five_hour: '5-hour' };
 const HOUR = 3600;
+// Fallback for a payload without peak.min_factor: app/limit_peak.py PEAK_MIN_FACTOR.
+const PEAK_MIN_FACTOR = 1.15;
 
 // Day of week (0 = Monday, as the server) and hour of `epoch` in time zone `tz`.
 function zonedParts(epoch, tz) {
@@ -60,6 +62,9 @@ function peakBlock(d, now) {
   const peak = d.peak;
   if (!peak) return h('div', { class: 'ex-block' }, h('div', { class: 'kicker' }, 'Peak hours'), h('p', { class: 'ex-text' }, 'No peak data.'));
   const cells = new Map((peak.hours || []).map((c) => [`${c.dow}:${c.hour}`, c.factor]));
+  // The server's peak rule (limit_peak.PEAK_MIN_FACTOR), so a red hour here
+  // is an hour the server counts as peak.
+  const minFactor = f.missing(peak.min_factor) ? PEAK_MIN_FACTOR : peak.min_factor;
   const midnight = f.localMidnight(now);
   const curHour = Math.floor((now - midnight) / HOUR);
   const strip = Array.from({ length: 24 }, (_, i) => {
@@ -68,7 +73,7 @@ function peakBlock(d, now) {
     const factor = cells.get(`${z.dow}:${z.hour}`);
     const known = !f.missing(factor);
     const height = known ? Math.max(8, Math.min(100, (factor - 0.6) / 0.9 * 100)) : 100;
-    const cls = [known ? (factor >= 1.1 ? 'pk' : '') : 'nd', i === curHour ? 'cur' : ''].join(' ').trim();
+    const cls = [known ? (factor >= minFactor ? 'pk' : '') : 'nd', i === curHour ? 'cur' : ''].join(' ').trim();
     return h('i', { class: cls || null, style: { height: `${height}%` }, title: `${f.hourShort(t)}: ${known ? `×${factor.toFixed(2)}` : 'no data'}` });
   });
   const status = peak.active

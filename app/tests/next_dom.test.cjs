@@ -171,6 +171,20 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('exchange: peak hours use the server threshold', async () => {
+      const flat = (min) => (name, body) => {
+        if (name !== 'limit-rate') return null;
+        return {...body, peak: {...body.peak, min_factor: min, hours: body.peak.hours.map(c => ({...c, factor: 1.12}))}};
+      };
+      for (const [min, want] of [[1.15, 0], [1.1, 24]]) {
+        const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: flat(min)});
+        await page.waitForSelector('.p-exchange .hours i');
+        assert.equal(await page.locator('.p-exchange .hours i.pk').count(), want, `min_factor ${min}`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      }
+    });
+
     // ---------------------------------------------------------- Runway polish
     // A too-early binding window: the server has no forecast yet.
     const tooEarly = (name, body) => {

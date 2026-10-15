@@ -26,7 +26,7 @@ from .api import _resolve_scope
 from .auth import require_dashboard_auth
 from . import db
 from .db import read_conn
-from .limit_peak import PEAK_TZ, peak_state
+from .limit_peak import PEAK_MIN_FACTOR, PEAK_TZ, peak_state
 from .limit_rate_analysis import analyze
 from .limit_rate_data import load_granted, load_readings, load_requests
 from .quota_history import active_history_source
@@ -176,7 +176,7 @@ def empty_payload(status: str, note: str, now: float) -> dict:
         "usd_per_point": {"seven_day": dict(band), "five_hour": dict(band)},
         "steps": [], "families": [],
         "peak": {"active": False, "factor": None, "until": None, "tz": PEAK_TZ,
-                 "hours": [], "next_start": None},
+                 "hours": [], "next_start": None, "min_factor": PEAK_MIN_FACTOR},
         "cache_read_weight": dict(band, family=None),
     }
 
@@ -186,7 +186,10 @@ def _serve(entry: dict, now: float) -> dict:
     peak = out.get("peak") or {}
     out["peak"] = {"active": False, "factor": peak.get("factor"), "until": None,
                    "tz": peak.get("tz", PEAK_TZ), "hours": peak.get("hours") or [],
-                   "next_start": None}
+                   "next_start": None,
+                   # A cell at this factor or more is a peak hour (the browser
+                   # marks the hours with the server's rule).
+                   "min_factor": PEAK_MIN_FACTOR}
     try:
         out["peak"].update(peak_state(peak, now))
     except Exception:
