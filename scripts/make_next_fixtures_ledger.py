@@ -18,6 +18,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from app.ledger_build import session_label  # noqa: E402
 OUT = ROOT / "static" / "next" / "fixtures"
 TZ = ZoneInfo("America/Chicago")
 H, D, MIN = 3600, 86400, 60
@@ -154,7 +156,9 @@ def session(idx, machine, start, end, t, live=False, quiet=False):
         tools["Task"] = sum(1 for r in runs if r["parent"] is None)
     agent = sum(r["cost_usd"] for r in runs)
     title = None if quiet or rng.random() < 0.25 else rng.choice(TITLES)
-    return {"id": sid, "machine": machine, "project": rng.choice(projects), "title": title,
+    project = rng.choice(projects)
+    return {"id": sid, "machine": machine, "project": project, "title": title,
+            "label": session_label(title, project, round(start), runs),
             "client": "pi-agent" if pi else "claude-code", "start": round(start),
             "end": round(end), "active_s": active,
             "prompts": rng.randint(0, 1) if quiet else max(1, int(active / 60 / 8 * rng.uniform(0.5, 1.5))),

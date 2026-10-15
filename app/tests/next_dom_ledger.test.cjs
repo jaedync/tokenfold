@@ -146,6 +146,17 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
       await context.close();
     });
 
+    await check('biggest sessions: an untitled session takes the server label', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
+      await ready(page);
+      const names = await page.locator('.lt-title').allInnerTexts();
+      assert.ok(names.length > 0);
+      assert.ok(!names.some((n) => /Untitled/.test(n)), names.join(' | '));
+      assert.ok(names.some((n) => /^Subagents: /.test(n)), names.join(' | '));
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('drawer: opens with detail, traps focus, walks prev/next, Esc returns focus', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
       await ready(page);

@@ -2,7 +2,7 @@
 // session drawer.
 import { h, fill, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
-import { derive, matched, sessionName, clientName, projectLabel } from './ledger-model.js';
+import { derive, matched, sessionName, nameShowsProject, clientName, projectLabel } from './ledger-model.js';
 import { colorsFor, swatch, money, plural, openSession, keepFocus } from './ledger-kit.js';
 
 const FEW = 8, MANY = 24;
@@ -40,7 +40,7 @@ export default {
       setText(sub, all.length ? `${shown.length} of ${f.int(all.length)} · by cost` : '');
       keepFocus(list, () => fill(list, shown.length ? shown.map(({ s: x, cost }) => {
         const subs = x.runs.length;
-        const meta = [sessionName(x) === x.project ? null : projectLabel(x.project), x.machine, clientName(x.client),
+        const meta = [nameShowsProject(x) ? null : projectLabel(x.project), x.machine, clientName(x.client),
           today ? f.clock(x.start) : f.dateShort(x.start), f.shortDur(x.end - x.start)].filter(Boolean).join(' · ');
         return h('li', { class: 'lt-item' }, h('button', { type: 'button', class: 'lt-btn', 'data-sid': x.id },
           swatch(c.color(x.model).fill, { class: 'swatch lt-sw' }),

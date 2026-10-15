@@ -147,7 +147,9 @@ pure-Python NNLS for ≤ 8 features is fine. Show a family only with ≥ $100 sp
 For the browser pivots, each `/api/ledger` session row also carries `orch_models{model: usd}`
 (orchestrator cost by model), `tool_calls{name: calls}` and `tokens{input, output, cache_read,
 cache_write}`, all inside the window; the payload adds `model_providers{model: provider}` for
-the provider-grouped legend.
+the provider-grouped legend. `label` is the session's list name: its `title`, else
+"Subagents: <names of the 3 most expensive runs> + N more", else "<project> · <local start>"
+(project `~` reads "Home folder"); never an invented title. Pi stores no session title.
 Pivots (project/model/machine/tool/day) are computed in the browser from `/api/ledger`. If the
 payload for 30 days is over ~2 MB or ~1 s on the production copy, add a `/api/ledger/pivot`
 and say so. Twins are already excluded by the canonical predicates; use them.

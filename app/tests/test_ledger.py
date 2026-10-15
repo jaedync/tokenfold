@@ -294,6 +294,26 @@ class TwinAndPiLineageTest(LedgerTestBase):
         self.assertAlmostEqual(o['agent_cost_usd'], 0.75)
         self.assertEqual([r['label'] for r in o['runs']], ['lonely'])
 
+    def test_untitled_session_gets_a_label_from_its_subagents(self):
+        sessions = self.by_suffix(self.ledger())
+        p = sessions['P1']
+        self.assertIsNone(p['title'])           # Pi stores no title: never invent one
+        # Most expensive run first.
+        self.assertEqual(p['label'], 'Subagents: be-ledger, deep-dive')
+        self.assertEqual(sessions['O1']['label'], 'lonely')
+
+    def test_session_label_helper(self):
+        from app.aggregator import TZ
+        from app.ledger_build import session_label
+        runs = [{'label': n, 'cost_usd': c} for n, c in
+                (('a', 1.0), ('b', 5.0), (None, 9.0), ('c', 3.0), ('d', 0.5))]
+        start = datetime(2026, 10, 13, 14, 5, tzinfo=TZ).timestamp()
+        self.assertEqual(session_label('Real title', '~', start, runs), 'Real title')
+        self.assertEqual(session_label(None, '~', start, runs), 'Subagents: b, c, a + 1 more')
+        self.assertEqual(session_label(None, '~', start, []), 'Home folder · Tue 13 Oct, 14:05')
+        self.assertEqual(session_label(None, 'api', start, []), 'api · Tue 13 Oct, 14:05')
+        self.assertIsNone(session_label(None, None, None, []))
+
     def test_unknown_parent_is_a_miss_without_probing_child_files(self):
         import app.pi_lineage as lineage
         lineage._LINKS.clear()

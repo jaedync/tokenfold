@@ -12,7 +12,9 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 
-from .aggregator import _summary_model_identity, canonical_machine
+from datetime import datetime
+
+from .aggregator import TZ, _summary_model_identity, canonical_machine
 from .ledger_days import billable_threads
 from .ledger_query import (activity, billable_groups, group_cost, mixed_scope,
                            project_names, run_tool_counts, titles, tool_names)
@@ -20,6 +22,32 @@ from .pi_lineage import PiLineage, account_class, agent_name
 from .pricing import display_model_for_row
 
 PI = "pi-agent"
+HOME_PROJECT = "~"
+LABEL_RUNS = 3
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+           "Nov", "Dec")
+
+
+def session_label(title, project, start, runs) -> str | None:
+    """A name for the session list that never invents a title.
+
+    Pi stores no session title (and Claude Code has none until its AI title
+    arrives), so an untitled session is named by facts it holds: the names
+    of its most expensive subagents, else its project and local start time.
+    """
+    if title:
+        return title
+    named = sorted((r for r in runs if r.get("label")), key=lambda r: -r["cost_usd"])
+    if named:
+        shown = ", ".join(r["label"] for r in named[:LABEL_RUNS])
+        more = len(named) - LABEL_RUNS
+        return f"Subagents: {shown}" + (f" + {more} more" if more > 0 else "")
+    parts = ["Home folder" if project == HOME_PROJECT else project]
+    if start is not None:
+        t = datetime.fromtimestamp(start, TZ)
+        parts.append(f"{_DAYS[t.weekday()]} {t.day} {_MONTHS[t.month - 1]}, {t:%H:%M}")
+    return " · ".join(p for p in parts if p) or None
 
 
 def _thread() -> dict:
@@ -226,4 +254,9 @@ def build_sessions(conn, pred: str, scope: str, start: float, end: float,
     sessions = assemble(conn, tree, act, (start, end))
     names = project_names(s["project"] for s in sessions)
     sessions.sort(key=lambda s: (-(s["end"] or 0), s["id"]))
-    return [{**s, "project": names.get(s["project"], s["project"])} for s in sessions]
+    out = []
+    for s in sessions:
+        project = names.get(s["project"], s["project"])
+        label = session_label(s["title"], project, s["start"], s["runs"])
+        out.append({**s, "project": project, "label": label})
+    return out

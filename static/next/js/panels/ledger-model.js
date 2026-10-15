@@ -91,7 +91,7 @@ function normSession(raw) {
   const tools = {};
   for (const [k, v] of Object.entries(raw.tool_calls || {})) tools[toolName(k)] = (tools[toolName(k)] || 0) + v;
   const s = {
-    id: raw.id, machine: raw.machine || 'unknown', project: raw.project || '—', title: raw.title || null,
+    id: raw.id, machine: raw.machine || 'unknown', project: raw.project || '—', title: raw.title || null, label: raw.label || null,
     client: raw.client, start: raw.start, end: Math.max(raw.end || raw.start, raw.start), live: Boolean(raw.live),
     prompts: raw.prompts || 0, active: raw.active_s || 0, cost: raw.cost_usd || 0,
     orch: raw.orch_cost_usd || 0, agent: raw.agent_cost_usd || 0, model, runs, parts, tools,
@@ -118,7 +118,14 @@ export const clientName = (c) => ({ 'claude-code': 'Claude Code', 'pi-agent': 'P
 // nothing; such a session (and one with no project) takes its client's name.
 export const HOME_PROJECT = '~';
 export const projectLabel = (p) => (p === HOME_PROJECT ? '~ (home folder)' : p);
-export const sessionName = (s) => s.title || (s.project && s.project !== HOME_PROJECT ? s.project : `Untitled ${clientName(s.client) || 'agent'} session`);
+// The server's label names an untitled session by its facts (its subagents,
+// else its project and start); an older server sends none.
+export const sessionName = (s) => s.title || s.label || (s.project && s.project !== HOME_PROJECT ? s.project : `Untitled ${clientName(s.client) || 'agent'} session`);
+// True when the name already says the project, so a meta line can leave it out.
+export const nameShowsProject = (s) => {
+  const name = sessionName(s);
+  return name === s.project || name.startsWith(`${s.project} · `) || (s.project === HOME_PROJECT && name.startsWith('Home folder · '));
+};
 
 // ---------------------------------------------------------------- filters
 // Same dimension = OR, across dimensions = AND. skip: a pivot's own dimension.
