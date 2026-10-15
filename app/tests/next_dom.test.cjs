@@ -104,11 +104,11 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
-    await check('views: tabs switch to a placeholder view and back', async () => {
+    await check('views: tabs switch to Ledger and back', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
       await page.waitForSelector('.p-hero .verdict-word');
       await page.click('[data-view-link="ledger"]');
-      await page.waitForSelector('[data-panel="ledger-placeholder"]');
+      await page.waitForSelector('[data-panel="ledger-stats"]');
       assert.equal(await page.getAttribute('[data-view-link="ledger"]', 'aria-current'), 'page');
       assert.equal(await page.locator('[data-panel="hero"]').count(), 0);
       await page.click('[data-view-link="runway"]');

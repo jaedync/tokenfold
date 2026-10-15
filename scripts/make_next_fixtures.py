@@ -330,7 +330,7 @@ def limit_rate_unavailable():
             "families": [], "peak": None, "cache_read_weight": None}
 
 
-# ---------------------------------------------------------------- history, ledger, session
+# ---------------------------------------------------------------- history
 def window_history_payload():
     windows, end = [], SEVEN_RESET - 7 * D
     peaks = [71, 84, 96, 100, 88, 79, 92, 100, 97, 85, 94]
@@ -343,72 +343,6 @@ def window_history_payload():
                         "usd_per_point": per_point})
         end = start
     return {"windows": list(reversed(windows))}
-
-
-PROJECTS = ["api-server", "infra", "site", "bench", "agent-tools", "dashboard", "notes"]
-MACHINES = ["devbox", "laptop", "homelab", "gpu-box", "vm-01"]
-TITLES = ["Add session drawer", "Fix flaky ingest test", "Tune cache headers", "Bench decode speed",
-          "Refactor pricing table", "Write release notes", "Migrate cron to timer", "Trim log noise"]
-
-
-def run(i, start, model, cost):
-    length = rng.randint(120, 1800)
-    return {"id": f"agent-{i:04x}", "parent": None, "model": model, "start": start,
-            "end": start + length, "cost_usd": round(cost, 2), "tools": rng.randint(4, 60),
-            "label": rng.choice(["Search the repo", "Run the tests", "Review the diff",
-                                 "Bench decode speed", "Read the logs"])}
-
-
-def ledger_payload():
-    frm, to = floor_min(NOW - 30 * D), NOW
-    daily = []
-    for n in range(30, -1, -1):
-        day = datetime.fromtimestamp(NOW - n * D, TZ).date().isoformat()
-        scale = 0.3 if datetime.fromtimestamp(NOW - n * D, TZ).weekday() >= 5 else 1.0
-        daily.append({"day": day, "by_model": {
-            "Opus 5.5": round(rng.uniform(150, 260) * scale, 2),
-            "Fable 5.1": round(rng.uniform(30, 110) * scale, 2),
-            "Sonnet 5.5": round(rng.uniform(10, 50) * scale, 2),
-            "DeepSeek V4": round(rng.uniform(4, 16) * scale, 2)}})
-    sessions = []
-    for i in range(24):
-        start = floor_min(NOW - rng.uniform(0.2, 29) * D)
-        active = rng.randint(600, 4 * H)
-        model = rng.choice(["Opus 5.5", "Opus 5.5", "Fable 5.1", "Sonnet 5.5"])
-        runs = [run(i * 16 + k, start + k * 300, rng.choice(["Sonnet 5.5", "Haiku 5.5", "Opus 5.5"]),
-                    rng.uniform(0.5, 9)) for k in range(rng.randint(0, 5))]
-        orch = round(rng.uniform(4, 120), 2)
-        agent = round(sum(r["cost_usd"] for r in runs), 2)
-        sessions.append({"id": f"s-{i:04x}", "machine": rng.choice(MACHINES),
-                         "project": rng.choice(PROJECTS), "title": rng.choice(TITLES),
-                         "client": rng.choice(["claude-code", "claude-code", "pi-agent"]),
-                         "start": start, "end": start + active + rng.randint(0, H),
-                         "active_s": active, "prompts": rng.randint(2, 40), "model": model,
-                         "cost_usd": round(orch + agent, 2), "orch_cost_usd": orch,
-                         "agent_cost_usd": agent, "runs": runs, "live": i == 0})
-    sessions.sort(key=lambda s: -s["start"])
-    totals = {"cost_usd": round(sum(s["cost_usd"] for s in sessions), 2),
-              "sessions": len(sessions), "runs": sum(len(s["runs"]) for s in sessions),
-              "active_s": sum(s["active_s"] for s in sessions),
-              "agent_active_s": sum(r["end"] - r["start"] for s in sessions for r in s["runs"]),
-              "prompts": sum(s["prompts"] for s in sessions)}
-    return {"from": frm, "to": to, "daily": daily, "sessions": sessions, "totals": totals}
-
-
-def session_payload(ledger):
-    s = dict(ledger["sessions"][0])
-    prompts = sorted(s["start"] + rng.randint(0, s["active_s"]) for _ in range(s["prompts"]))
-    cost = s["cost_usd"]
-    return {**s, "prompt_times": prompts,
-            "models": [{"model": s["model"], "cost_usd": s["orch_cost_usd"],
-                        "share": round(s["orch_cost_usd"] / cost, 3) if cost else None},
-                       {"model": "Sonnet 5.5", "cost_usd": s["agent_cost_usd"],
-                        "share": round(s["agent_cost_usd"] / cost, 3) if cost else None}],
-            "tools": [{"name": "Bash", "calls": 41, "errors": 3}, {"name": "Read", "calls": 66, "errors": 0},
-                      {"name": "Edit", "calls": 23, "errors": 1}, {"name": "Grep", "calls": 18, "errors": 0}],
-            "tokens": {"input": 18_400, "output": 412_000, "cache_read": 61_200_000,
-                       "cache_write": 1_830_000},
-            "file_edits": 23, "served_model": {"state": "as_asked"}}
 
 
 def main():
@@ -425,9 +359,7 @@ def main():
     write("limit-rate", limit_rate_payload())
     write("limit-rate-work", limit_rate_unavailable())
     write("window-history", window_history_payload())
-    ledger = ledger_payload()
-    write("ledger", ledger)
-    write("session", session_payload(ledger))
+    # ledger.json and session.json: scripts/make_next_fixtures_ledger.py
     assert not math.isnan(personal["windows"][0]["usd_left"])
 
 
