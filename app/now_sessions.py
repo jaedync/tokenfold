@@ -84,6 +84,7 @@ def _rollup_sql(n_ids: int, bounds: list) -> str:
     return (
         "SELECT session_id, model, provider, source_client, speed, inference_geo, "
         f"{era} AS era, (first_ts >= ?) AS recent, MAX(is_main) AS is_main, "
+        "MAX(agent_id) AS agent_id, "
         "MIN(first_ts) AS first_ts, MAX(last_ts) AS last_ts, MAX(is_ent) AS is_ent, "
         "SUM(inp) AS inp, SUM(outp) AS outp, SUM(cc) AS cc, SUM(cr) AS cr, "
         "SUM(c5m) AS c5m, SUM(c1h) AS c1h, SUM(ws) AS ws, "
@@ -94,7 +95,7 @@ def _rollup_sql(n_ids: int, bounds: list) -> str:
         "FROM ("
         "  SELECT session_id, model, provider, source_client, request_id, "
         "  MIN(ts_epoch) AS first_ts, MAX(ts_epoch) AS last_ts, "
-        "  MAX(agent_id IS NULL AND is_sidechain=0) AS is_main, "
+        "  MAX(agent_id IS NULL AND is_sidechain=0) AS is_main, MAX(agent_id) AS agent_id, "
         f"  MAX({enterprise_predicate()}) AS is_ent, "
         "  MAX(speed) AS speed, MAX(inference_geo) AS inference_geo, "
         "  MAX(input_tokens) AS inp, MAX(output_tokens) AS outp, "
@@ -132,7 +133,8 @@ def _is_anthropic(r) -> bool:
 
 def session_rollups(conn, event_ids, now: float, scope: str) -> dict[str, dict]:
     """events session id -> {cost, cost_recent, anthropic_recent, first_ts,
-    last_ts, enterprise, client, model, provider} over the whole session.
+    last_ts, enterprise, client, model, provider, agent_name} over the whole
+    session. agent_name is a Pi subagent's run name (namespaced agent_id).
 
     cost_recent covers the last BURN_WINDOW_S. model is the newest
     main-thread model (newest of any thread when there is none)."""
@@ -147,7 +149,7 @@ def session_rollups(conn, event_ids, now: float, scope: str) -> dict[str, dict]:
             "cost": 0.0, "cost_recent": 0.0, "anthropic_recent": 0.0,
             "first_ts": r["first_ts"], "last_ts": r["last_ts"],
             "enterprise": False, "_newest": (-1, 0.0), "client": None,
-            "model": None, "provider": None})
+            "model": None, "provider": None, "agent_name": None})
         cost = _row_cost(r, scope == "enterprise")
         agg["cost"] += cost
         if r["recent"]:
@@ -157,6 +159,8 @@ def session_rollups(conn, event_ids, now: float, scope: str) -> dict[str, dict]:
         agg["first_ts"] = min(agg["first_ts"], r["first_ts"])
         agg["last_ts"] = max(agg["last_ts"], r["last_ts"])
         agg["enterprise"] = agg["enterprise"] or bool(r["is_ent"])
+        if r["source_client"] == "pi-agent" and (r["agent_id"] or "").count(":") >= 2:
+            agg["agent_name"] = r["agent_id"].split(":", 2)[2]
         rank = (r["is_main"] or 0, r["last_ts"])
         if rank > agg["_newest"]:
             agg.update(_newest=rank, client=r["source_client"],

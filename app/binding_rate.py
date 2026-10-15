@@ -29,9 +29,10 @@ from .usage_pace import MIN_USED_PCT, WEEK_S, usage_pace
 _CACHE = BackgroundCache(ttl=120, wait_s=0.05)
 
 
-def binding_rate(scope: str, now: float | None = None) -> dict | None:
+def binding_rate(scope: str, now: float | None = None,
+                 wait_s: float | None = None) -> dict | None:
     """{"bucket", "usd_per_point"} or None (not ready, not applicable)."""
-    return _CACHE.get(scope, lambda: build_binding_rate(scope, now))
+    return _CACHE.get(scope, lambda: build_binding_rate(scope, now), wait_s)
 
 
 def build_binding_rate(scope: str, now: float | None = None) -> dict | None:

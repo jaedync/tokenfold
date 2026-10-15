@@ -25,7 +25,8 @@ class BackgroundCache:
         self._entries: dict = {}          # key -> (monotonic_ts, value)
         self._inflight: dict = {}         # key -> Thread
 
-    def get(self, key, build):
+    def get(self, key, build, wait_s: float | None = None):
+        """wait_s overrides the instance wait (0 = start the build, never wait)."""
         with self._lock:
             entry = self._entries.get(key)
             if entry and time.monotonic() - entry[0] < self.ttl:
@@ -38,7 +39,7 @@ class BackgroundCache:
                 thread.start()
         if entry is not None:
             return entry[1]                 # stale but usable
-        thread.join(self.wait_s)
+        thread.join(self.wait_s if wait_s is None else wait_s)
         with self._lock:
             entry = self._entries.get(key)
         return entry[1] if entry else None

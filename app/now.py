@@ -166,6 +166,10 @@ def _machines(known, recent, directory, rows, now) -> tuple[list[dict], set]:
 def build_now(scope: str, snap: dict, now: float) -> dict:
     live = {sid: s for sid, s in snap["sessions"].items() if not s.get("ending")}
     today = datetime.fromtimestamp(now, _tz()).strftime("%Y-%m-%d")
+    # Start the slow background builds first so they overlap the joins
+    # below; the second read after the joins then waits at most wait_s.
+    _safe("prime directory", lambda: now_machines.directory(scope, wait_s=0), None)
+    _safe("prime binding rate", lambda: binding_rate(scope, wait_s=0), None)
     with read_conn() as conn:
         ids = _safe("pi id lookup", lambda: now_sessions.resolve_event_sessions(conn, live, now),
                     {sid: [sid] for sid in live})
@@ -190,6 +194,9 @@ def build_now(scope: str, snap: dict, now: float) -> dict:
         if not _in_scope(agg, machine, scope, known):
             continue
         title = next((titles[i] for i in ids.get(sid, [sid]) if i in titles), None)
+        # Pi subagent sessions have no AI title, but their run name
+        # ("ui-review-b0") says what they do.
+        title = title or (agg or {}).get("agent_name")
         rows.append(_session_row(sid, s, agg, title, rate, now))
     rows.sort(key=_sort_key)
 

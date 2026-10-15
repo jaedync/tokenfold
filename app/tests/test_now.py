@@ -86,6 +86,14 @@ class NowEndpointTests(TempDBTestCase):
         self.assertAlmostEqual(s["cost_usd"], 2.5, places=6)
         self.assertEqual(s["model"], "Opus 4.8")
 
+    def test_pi_subagent_run_name_is_the_fallback_title(self):
+        insert_event(self.conn, "p1", session="pi:abc:child-1",
+                     ts=self.now - 300, client="pi-agent", provider="anthropic",
+                     reported_total=1.0, agent_id="pi:abc:ui-review-b0")
+        agent_state.update("child-1", "workstation", "dev", "working", now=self.now - 10)
+        [s] = self._get()["sessions"]
+        self.assertEqual(s["title"], "ui-review-b0")
+
     def test_scope_follows_the_session_events(self):
         insert_event(self.conn, "w1", session="sid-w", ts=self.now - 60,
                      inp=1000, account=WORK)

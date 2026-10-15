@@ -89,9 +89,9 @@ def build_directory(scope: str, now: float | None = None) -> dict:
                 "last_ingest": last_ingests(conn)}
 
 
-def directory(scope: str) -> dict | None:
+def directory(scope: str, wait_s: float | None = None) -> dict | None:
     """Background-cached 30-day directory; None until the first build lands."""
-    return _DIRECTORY.get(scope, lambda: build_directory(scope))
+    return _DIRECTORY.get(scope, lambda: build_directory(scope), wait_s)
 
 
 def clear_cache() -> None:
