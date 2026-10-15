@@ -252,6 +252,25 @@ class NextModulePreloadTest(TempDBTestCase):
             self.assertEqual(module_graph(root, "js/main.js"),
                              ["js/a.js", "js/main.js", "js/sub/b.js", "js/sub/side.js", "vendor/x.js"])
 
+    def test_an_import_outside_the_folder_is_skipped_not_an_error(self):
+        # A path out of static/next (or a symlink to one) must not raise: the
+        # graph runs at import time (STATIC_VERSION) and on every page view.
+        import tempfile
+        from app.next_page import module_graph
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside.js"
+            outside.write_text("export const o = 1;")
+            root = Path(tmp) / "static"
+            (root / "js").mkdir(parents=True)
+            (root / "js" / "main.js").write_text(
+                "import { o } from '../../outside.js';\nimport { a } from './a.js';\n"
+                "import { l } from './link.js';\nimport './bad.js';\n")
+            (root / "js" / "a.js").write_text("export const a = 1;")
+            (root / "js" / "bad.js").write_bytes(b"\xff\xfe not utf-8")
+            (root / "js" / "link.js").symlink_to(outside)
+            self.assertEqual(module_graph(root, "js/main.js"), ["js/a.js", "js/main.js"])
+            self.assertEqual(module_graph(root, "../outside.js"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

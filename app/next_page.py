@@ -80,10 +80,17 @@ def module_graph(folder, *entries):
         path = (root / rel).resolve()
         if not path.is_file() or root not in path.parents:
             continue
+        try:
+            source = _COMMENT_RE.sub("", path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue  # not a module the browser can load; never fail the page
         seen.add(rel)
-        source = _COMMENT_RE.sub("", path.read_text(encoding="utf-8"))
         for spec in _IMPORT_RE.findall(source):
-            todo.append((path.parent / spec).resolve().relative_to(root).as_posix())
+            target = (path.parent / spec).resolve()
+            # An import out of the folder (or a symlink out of it) is not a
+            # static file this app serves: skip it, check before relative_to.
+            if root in target.parents:
+                todo.append(target.relative_to(root).as_posix())
     return sorted(seen)
 
 
