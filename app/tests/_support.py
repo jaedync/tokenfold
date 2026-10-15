@@ -62,10 +62,12 @@ class TempDBTestCase(unittest.TestCase):
         import app.bg_cache as _bg
         import app.limit_rate as _lr
         import app.prewarm as _pw
+        import app.read_cache as _rc
         _agg.join_rebuild(5.0)
         _lr.join_refresh(5.0)
         _pw.join(5.0)
         _bg.join_all(5.0)
+        _rc.join_all(5.0)
         with _agg._cache_lock:
             _agg._warm_scopes.clear()
         self._db.close_conn()

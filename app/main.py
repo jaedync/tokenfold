@@ -77,7 +77,7 @@ def _stop_background(timeout_s: float) -> None:
     connection closes. A sqlite3 connection closed under a running statement
     crashes the process. After begin_shutdown() a late thread's write is
     skipped (db.background_write) and get_conn() never reopens the DB."""
-    from . import aggregator, bg_cache, limit_rate, prewarm
+    from . import aggregator, bg_cache, limit_rate, prewarm, read_cache
     begin_shutdown()
     deadline = time.monotonic() + timeout_s
 
@@ -88,6 +88,7 @@ def _stop_background(timeout_s: float) -> None:
     prewarm.join(left())
     aggregator.join_rebuild(left())
     bg_cache.join_all(left())
+    read_cache.join_all(left())
 
 
 def _backfill_if_needed():

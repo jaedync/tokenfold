@@ -256,6 +256,31 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertEqual(self.session('nope').status_code, 404)
 
 
+class LedgerStaleWhileRevalidateTest(LedgerTestBase):
+    """A poll past the cache ttl gets the cached body at once; one background
+    build brings the next poll up to date."""
+
+    def test_an_expired_ledger_is_served_while_it_rebuilds(self):
+        import app.ledger as ledger
+        from app import read_cache
+        t = self.t0
+        self.cc('a.jsonl', [self.cc_user('u1', 'a', t), self.cc_reply('a1', 'a', t + 10, 'r1')])
+        first = self.ledger()
+        self.assertEqual(len(first['sessions']), 1)
+        self.cc('b.jsonl', [self.cc_user('u2', 'b', t + 20), self.cc_reply('b1', 'b', t + 30, 'r2')])
+        with ledger._cache._lock:
+            for key, (ts, value) in list(ledger._cache._entries.items()):
+                ledger._cache._entries[key] = (ts - ledger._cache.ttl - 1, value)
+        builds = []
+        real = ledger.build_ledger
+        with patch('app.ledger.build_ledger', side_effect=lambda *a, **k: builds.append(1) or real(*a, **k)):
+            stale = self.ledger()
+            read_cache.join_all(10)
+        self.assertEqual(len(stale['sessions']), 1, 'the poll waited for the rebuild')
+        self.assertEqual(builds, [1])
+        self.assertEqual(len(self.ledger()['sessions']), 2)
+
+
 class LiveSnapshotThreadTest(LedgerTestBase):
     """agent_state.snapshot() prunes the shared session dict, which only the
     event loop may change: the ledger routes must take it there."""

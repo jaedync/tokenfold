@@ -29,7 +29,9 @@ from .read_cache import ReadCache
 from .pricing import display_model
 
 router = APIRouter()
-_timeline_cache = ReadCache()
+# The Lab polls on SSE bumps: past the ttl a read gets the cached body at
+# once and one background build refreshes it (read_cache stale_s).
+_timeline_cache = ReadCache(stale_s=900)
 TZ = ZoneInfo(TZ_NAME)
 
 DAYS_DEFAULT = 30

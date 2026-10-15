@@ -38,7 +38,12 @@ DEFAULT_DAYS = 30
 # 92 days of sessions is ~3 s cold on the 2026-10-15 production copy; longer
 # ranges belong to the History view's rollups, not this per-session read.
 MAX_SPAN_S = 92 * 86400
-_cache = ReadCache(ttl=30, max_entries=16)
+# A value up to 15 min past its ttl may be served while it rebuilds; older
+# (nobody polled for that long) waits for the build.
+STALE_S = 900
+# Polled every 2 min: past the ttl a poll gets the cached body at once and
+# one background build refreshes it (read_cache stale_s).
+_cache = ReadCache(ttl=30, max_entries=16, stale_s=STALE_S)
 
 
 def parse_range(from_: Optional[str], to: Optional[str], now: float) -> tuple[float, float]:
