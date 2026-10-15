@@ -287,6 +287,21 @@ async function check(name, page, fn) {
       must(t.open('a').length === 0, 'a fresh answer was read again');
     });
 
+    await check('a bump never moves a sooner read later', page, async () => {
+      // A bump soon after a read waits out the gap; a stale read-again or a
+      // poll due before that must still happen on time.
+      const t = setup({staleRetryMs: 40, bumpGapMs: 400});
+      t.feeds.want('a', {endpoint: 'a', intervalMs: 60000, bump: true});
+      t.feeds.want('p', {endpoint: 'p', intervalMs: 60, bump: true});
+      await tick();
+      await t.answer('a', 1, {stale: true});
+      await t.answer('p', 1);
+      t.feeds.bump();
+      await tick(100);
+      must(t.open('a').length === 1, 'the bump moved the stale read-again later');
+      must(t.open('p').length === 1, 'the bump moved the poll later');
+    });
+
     if (errors.length) failures.push('page errors: ' + errors.join('; '));
   } finally {
     await browser.close();

@@ -39,7 +39,7 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
       // the generation and params of the last answer (data or error).
       // staleRead: a stale answer was read again already (cleared by a bump or a fresh answer).
       f = { key, spec, users: 0, timer: null, ctrl: null, failures: 0, last: 0, paramsKey: null, pending: false,
-        once: false, gen: -1, doneGen: -1, doneKey: null, staleRead: false };
+        once: false, gen: -1, doneGen: -1, doneKey: null, staleRead: false, due: 0 };
       feeds.set(key, f);
     }
     return f;
@@ -51,7 +51,15 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
 
   function schedule(f, delayMs) {
     clearTimeout(f.timer);
+    f.due = Date.now() + Math.max(0, delayMs);
     f.timer = setTimeout(() => run(f), Math.max(0, delayMs));
+  }
+
+  // Schedule a read, but keep a timer that fires sooner (a poll or a stale
+  // read-again is not pushed back by a bump).
+  function scheduleBy(f, delayMs) {
+    if (f.timer && f.due <= Date.now() + delayMs) return;
+    schedule(f, delayMs);
   }
 
   async function run(f) {
@@ -185,7 +193,7 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     for (const f of feeds.values()) {
       if (!f.users || !f.spec.bump) continue;
       f.staleRead = false;
-      schedule(f, Math.max(0, f.last + bumpGapMs - Date.now()));
+      scheduleBy(f, Math.max(0, f.last + bumpGapMs - Date.now()));
     }
   }
 
