@@ -30,6 +30,7 @@ async function check(name, page, fn, arg) {
       const u = new URL(route.request().url());
       if (u.pathname === '/') return route.fulfill({contentType: 'text/html', body: '<!doctype html><body><div id="root"></div></body>', headers: {'Content-Security-Policy': CSP}});
       if (u.pathname === '/dom.js') return route.fulfill({path: path.join(ROOT, 'static', 'next', 'js', 'dom.js')});
+      if (u.pathname.startsWith('/js/')) return route.fulfill({path: path.join(ROOT, 'static', 'next', u.pathname)});
       return route.fulfill({status: 404, body: ''});
     });
     await page.goto(ORIGIN + '/');
@@ -135,6 +136,21 @@ async function check(name, page, fn, arg) {
       input.focus(); input.value = '42';
       patch(root, h('input', {value: '1'}));
       window.must(input.value === '42', `value ${input.value}`);
+    });
+
+    await check('an SVG node from ledger-kit svg() runs the handler of the newest render', page, async () => {
+      // One module graph: svg() and patch() must share dom.js's handler table.
+      const {patch} = await import('/js/dom.js');
+      const {svg} = await import('/js/panels/ledger-kit.js');
+      const root = window.fresh();
+      const hits = [];
+      const draw = (n) => svg('svg', {width: 10, height: 10}, svg('rect', {width: 10, height: 10, onclick: () => hits.push(n)}));
+      patch(root, draw(1));
+      const rect = root.querySelector('rect');
+      patch(root, draw(2));
+      window.must(root.querySelector('rect') === rect, 'the rect was replaced');
+      rect.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+      window.must(JSON.stringify(hits) === '[2]', `handlers ran: ${hits}`);
     });
 
     // Keyed rows that move keep focus, selection and inner scroll, with the
