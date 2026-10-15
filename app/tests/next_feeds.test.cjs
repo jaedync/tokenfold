@@ -302,6 +302,34 @@ async function check(name, page, fn) {
       must(t.open('p').length === 1, 'the bump moved the poll later');
     });
 
+    await check('a feed that waits for another feed reads after a view switch during a scope switch', page, async () => {
+      // The ledger period feed needs the 30-day data. A scope switch starts its
+      // read, a view switch aborts it and drops the data; back on the view, the
+      // period feed has no params until the 30-day data is in again.
+      const t = setup();
+      const dep = {endpoint: 'p', intervalMs: 60000, params: (s) => (s.l && s.l.data ? {from: 1} : null)};
+      const want = () => [t.feeds.want('l', {endpoint: 'l', intervalMs: 60000}), t.feeds.want('p', dep)];
+      let rel = want();
+      await tick();
+      await t.answer('l', 1);
+      await tick();
+      await t.answer('p', 1);
+      t.store.set('scope', 'enterprise');
+      t.feeds.reset();
+      await tick();
+      must(t.open('p').length === 1, 'the scope switch did not read the period again');
+      rel.forEach((r) => r());
+      await tick();
+      rel = want();
+      await tick();
+      await t.answer('l', 2);
+      await tick();
+      must(t.open('p').length === 1, 'the period feed never reads again');
+      await t.answer('p', 2);
+      must(t.store.get().p.data === 2, 'the period data is not in');
+      rel.forEach((r) => r());
+    });
+
     if (errors.length) failures.push('page errors: ' + errors.join('; '));
   } finally {
     await browser.close();

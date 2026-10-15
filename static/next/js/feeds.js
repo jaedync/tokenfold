@@ -67,7 +67,10 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     if (!f.users && !f.once) return;
     if (!visible()) { f.pending = true; return; }
     const p = params(f);
-    if (p === null) { f.once = false; return; }  // not ready: a dependency (e.g. the binding window) is unknown
+    // Not ready: a dependency (e.g. the binding window) is unknown. No read
+    // has these params now, so the store watch below reads once they come
+    // (an aborted read could have left the same params key).
+    if (p === null) { f.once = false; f.paramsKey = null; return; }
     if (f.ctrl) f.ctrl.abort();
     const ctrl = new AbortController();
     f.ctrl = ctrl;
