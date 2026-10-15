@@ -102,6 +102,9 @@ def page_scope(requested, cookie_scope):
 CSP = "default-src 'self'; style-src 'self'; img-src 'self' data:"
 
 
+# / is the dashboard; /next stays as an alias so bookmarks from before the
+# swap keep working. The classic page lives at /classic (app/dashboard.py).
+@router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 @router.get("/next", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 def next_dashboard(request: Request, scope: Optional[str] = None):
     effective = page_scope(scope, request.cookies.get("tf_scope"))
@@ -114,8 +117,8 @@ def next_dashboard(request: Request, scope: Optional[str] = None):
         "version": version,
         "static_base": STATIC_PREFIX + version,
     })
-    # The security middleware sets no-store only on / and /api/*; this page
-    # is behind the same auth, so a shared cache must not keep it either.
+    # The security middleware sets no-store too; set here as well, so the
+    # /next alias is covered whatever the middleware matches.
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Content-Security-Policy"] = CSP
     return response

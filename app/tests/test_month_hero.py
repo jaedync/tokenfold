@@ -248,19 +248,19 @@ class MonthHeroPayloadTest(TempDBTestCase):
     def test_page_renders_hero_from_month_hero(self):
         """The hero JS must read D.month_hero, not D.month_cost."""
         self._seed()
-        html = self.client().get("/").text
+        html = self.client().get("/classic").text
         self.assertIn("D.month_hero", html)
         self.assertIn('"month_hero"', html)
 
     def test_page_has_headroom_element(self):
         self._seed()
-        html = self.client().get("/").text
+        html = self.client().get("/classic").text
         self.assertIn("monthCostHeadroom", html)
 
     def test_page_labels_the_estimate_as_estimated(self):
         """An unbacked figure must say so. That is the whole point of the fix."""
         self._seed()
-        html = self.client().get("/").text
+        html = self.client().get("/classic").text
         self.assertIn("estimated · raw API pricing", html)
 
 

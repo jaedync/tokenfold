@@ -261,7 +261,7 @@ class ChipRenderTest(TempDBTestCase):
         import app.aggregator as agg
         summarize_days(None)
         agg._cached_data.clear()
-        r = self.client().get("/")
+        r = self.client().get("/classic")
         self.assertEqual(r.status_code, 200)
         return r.text
 

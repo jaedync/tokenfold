@@ -11,7 +11,7 @@ export function placeholder({ id, title, lead, items = [] }) {
     mount(el, ctx) {
       const head = panelHead(title);
       el.setAttribute('aria-labelledby', head.id);
-      const scopeLink = h('a', { class: 'btn', href: `/?scope=${encodeURIComponent(ctx.store.get().scope)}` },
+      const scopeLink = h('a', { class: 'btn', href: `/classic?scope=${encodeURIComponent(ctx.store.get().scope)}` },
         'Open the classic dashboard ', h('span', { 'aria-hidden': 'true' }, '→'));
       el.append(head.el, h('div', { class: 'placeholder' },
         h('p', null, lead),

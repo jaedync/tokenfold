@@ -208,7 +208,7 @@ class MonthCostUIWiringTest(TempDBTestCase):
         """Dashboard HTML must contain the monthCostValue element id."""
         self._seed_enterprise()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         self.assertIn("monthCostValue", html,
                       "monthCostValue element id must be present in page")
 
@@ -216,7 +216,7 @@ class MonthCostUIWiringTest(TempDBTestCase):
         """Dashboard HTML must contain 'MONTH TO DATE' label text."""
         self._seed_enterprise()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         self.assertIn("MONTH TO DATE", html,
                       "MONTH TO DATE label must appear in page")
 
@@ -224,7 +224,7 @@ class MonthCostUIWiringTest(TempDBTestCase):
         """Dashboard HTML must contain the prefers-reduced-motion guard string."""
         self._seed_enterprise()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         self.assertIn("prefers-reduced-motion", html,
                       "prefers-reduced-motion guard must be present in page JS")
 
@@ -232,7 +232,7 @@ class MonthCostUIWiringTest(TempDBTestCase):
         """Embedded JS must reference D.month_cost for the animated counter."""
         self._seed_enterprise()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         self.assertIn("month_cost", html,
                       "month_cost must be referenced in page JS")
 
@@ -240,7 +240,7 @@ class MonthCostUIWiringTest(TempDBTestCase):
         """The embedded data_json blob must contain month_cost and month_label."""
         self._seed_enterprise()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         # The embedded data has both keys
         self.assertIn('"month_cost"', html,
                       '"month_cost" key must appear in embedded data_json')
@@ -254,9 +254,9 @@ class MonthCostUIWiringTest(TempDBTestCase):
         agg._cached_data.clear()
         c = self.client()
         # enterprise default scope
-        html_ent = c.get("/?scope=enterprise").text
+        html_ent = c.get("/classic?scope=enterprise").text
         # personal scope
-        html_per = c.get("/?scope=personal").text
+        html_per = c.get("/classic?scope=personal").text
         # Both pages must have month_cost in embedded JSON; values differ
         self.assertIn('"month_cost"', html_ent)
         self.assertIn('"month_cost"', html_per)

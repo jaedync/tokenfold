@@ -8,7 +8,7 @@ static HTML with a simulator). The quality bar is the Kiln dashboard
 
 ## Owner decisions (fixed)
 
-- Views: **Runway** (landing), **Ledger**, **History**, **Lab**. Built at `/next`, next to `/`.
+- Views: **Runway** (landing), **Ledger**, **History**, **Lab**. Built at `/next`, next to `/`. At release `/` serves it, `/next` stays an alias and the old dashboard moves to `/classic`.
 - One forecast everywhere: the server pace block (`app/usage_pace.py`, measured from a granted
   reset). TIGHT only from `trend[bucket].tight_epoch`. Never compute another projection or
   time-to-limit in the browser.

@@ -1,6 +1,6 @@
 # Tokenfold `/next` front end
 
-The new dashboard at `/next`. Plain ES modules, no build step, no CDN. The
+The dashboard at `/` (`/next` is an alias; the old one is at `/classic`). Plain ES modules, no build step, no CDN. The
 contract for the endpoints is `docs/ux-2026-10/BUILD.md`. The visual spec is the
 approved Runway mockup (`.ux/mockups/runway/index.html`).
 
@@ -9,7 +9,7 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | Path | Purpose |
 |------|---------|
 | `templates/next.html` | Jinja shell: masthead, live bar, `<main id="view">`, footer. Sets `data-scope`, `data-scope-locked`, `data-owner`, `data-view`, `data-version`, `data-static` on `<body>`. |
-| `app/next_page.py` | `GET /next`: dashboard auth, scope precedence as `/` (lock > `?scope=` > `tf_scope` cookie > default). Also serves `static/next` under `/static/next-<version>/` (see Cache busting). |
+| `app/next_page.py` | `GET /` and `GET /next`: dashboard auth, scope precedence as `/classic` (lock > `?scope=` > `tf_scope` cookie > default). Also serves `static/next` under `/static/next-<version>/` (see Cache busting). |
 | `css/tokenfold.css` | Tokens, atoms, layout, then one section per panel. |
 | `js/main.js` | Boot, hash router (`#runway`, `#ledger`, `#history`, `#lab`), scope switch, tab title, SSE bump. |
 | `js/api.js` | `getJSON(name, params, {scope, mock, signal})`, the endpoint table `ENDPOINTS`, `backoffMs()`. |

@@ -148,7 +148,7 @@ class DashboardScopeTest(TempDBTestCase):
         now = time.time()
         self._seed_both(now)
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         self.assertIn("header-enterprise-band", html)
         self.assertIn("ENTERPRISE", html)
         self.assertNotIn("Acme", html, "org name must not be rendered")
@@ -158,13 +158,13 @@ class DashboardScopeTest(TempDBTestCase):
         now = time.time()
         self._seed_both(now)
         c = self.client()
-        html = c.get("/?scope=personal").text
+        html = c.get("/classic?scope=personal").text
         self.assertIn("PERSONAL", html)
 
     def test_dashboard_bad_scope_falls_back_no_403(self):
         """?scope=bogus (bad value) must NOT return 403 — soft-fail to default."""
         c = self.client()
-        resp = c.get("/?scope=bogus")
+        resp = c.get("/classic?scope=bogus")
         self.assertEqual(resp.status_code, 200)
 
     def test_dashboard_locked_enterprise_ignores_personal_param(self):
@@ -174,7 +174,7 @@ class DashboardScopeTest(TempDBTestCase):
         import app.config as cfg
         with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
             c = self.client()
-            resp = c.get("/?scope=personal")
+            resp = c.get("/classic?scope=personal")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("ENTERPRISE", resp.text)
 

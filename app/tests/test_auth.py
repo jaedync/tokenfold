@@ -15,7 +15,7 @@ from unittest.mock import patch
 import app.config
 from app.tests._support import TempDBTestCase
 
-HUMAN_ROUTES = ["/", "/api/stats", "/api/stats/version", "/api/rate-limits"]
+HUMAN_ROUTES = ["/", "/classic", "/api/stats", "/api/stats/version", "/api/rate-limits"]
 
 
 class DashboardAuthEnforcedTest(TempDBTestCase):

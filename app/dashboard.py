@@ -66,7 +66,9 @@ def build_install_command(base_url, key):
     return f"curl -fsSL {base_url}/install.sh | bash -s -- --token {shlex.quote(key)}"
 
 
-@router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
+# The classic dashboard. Since the /next release, / serves the new one
+# (app/next_page.py); this page stays for what the new one does not show yet.
+@router.get("/classic", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 def dashboard(request: Request, scope: Optional[str] = None):
     # Soft-fail: a bookmarked bad/forbidden ?scope= shouldn't 403 the whole page;
     # it just serves the allowed scope. API routes do hard-fail (400/403).

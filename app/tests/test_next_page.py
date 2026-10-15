@@ -1,8 +1,9 @@
-"""GET /next: the new dashboard shell.
+"""GET / (and its alias /next): the dashboard shell.
 
-Covers dashboard auth, the scope precedence shared with GET / (lock > ?scope=
-> tf_scope cookie > default, soft-fail on a bad scope), escaping of the owner
-name and the no-store header on the authenticated page.
+Covers dashboard auth, the scope precedence shared with GET /classic (lock >
+?scope= > tf_scope cookie > default, soft-fail on a bad scope), escaping of
+the owner name, the no-store header on the authenticated page, and the swap
+that moved the old dashboard to /classic.
 """
 import base64
 import re
@@ -53,6 +54,42 @@ class NextPageAuthTest(TempDBTestCase):
         response = self.client().get("/next")
         self.assertEqual(response.headers.get("content-security-policy"),
                          "default-src 'self'; style-src 'self'; img-src 'self' data:")
+
+
+class HomeSwapTest(TempDBTestCase):
+    """/ serves the new dashboard; the old one moved to /classic; /next stays
+    as an alias so bookmarks keep working."""
+
+    def test_root_serves_the_new_dashboard(self):
+        response = self.client().get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-view-link="runway"', response.text)
+        self.assertEqual(response.headers.get("cache-control"), "private, no-store")
+        self.assertEqual(response.headers.get("content-security-policy"),
+                         "default-src 'self'; style-src 'self'; img-src 'self' data:")
+
+    def test_next_is_an_alias_of_root(self):
+        response = self.client().get("/next")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-view-link="runway"', response.text)
+
+    def test_classic_serves_the_old_dashboard(self):
+        response = self.client().get("/classic")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Human Prompts", response.text)
+        self.assertNotIn('data-view-link="runway"', response.text)
+        self.assertEqual(response.headers.get("cache-control"), "private, no-store")
+
+    def test_classic_requires_auth_when_password_set(self):
+        with patch.object(self._config, "DASHBOARD_PASSWORD", "secret"):
+            for path in ("/", "/classic"):
+                response = self.client().get(path)
+                self.assertEqual(response.status_code, 401, path)
+
+    def test_new_page_links_to_classic_with_its_scope(self):
+        html = self.client().get("/?scope=enterprise").text
+        self.assertIn('href="/classic?scope=enterprise"', html)
+        self.assertNotRegex(html, r'href="/(\?[^"]*)?"')
 
 
 class NextPageScopeTest(TempDBTestCase):

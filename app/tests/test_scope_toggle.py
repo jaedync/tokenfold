@@ -38,7 +38,7 @@ class ScopeToggleUnlockedTest(TempDBTestCase):
         """Default / (unlocked) renders scope-toggle with both scope buttons."""
         with patch.object(cfg, "LOCKED_SCOPE", None):
             c = self.client()
-            html = c.get("/").text
+            html = c.get("/classic").text
         self.assertIn('class="scope-toggle"', html)
         self.assertIn('data-scope="enterprise"', html)
         self.assertIn('data-scope="personal"', html)
@@ -48,7 +48,7 @@ class ScopeToggleUnlockedTest(TempDBTestCase):
         """Default scope is enterprise — enterprise button carries scope-btn--active."""
         with patch.object(cfg, "LOCKED_SCOPE", None):
             c = self.client()
-            html = c.get("/").text
+            html = c.get("/classic").text
         active = _active_scope(html)
         self.assertEqual(active, "enterprise",
                          f"Expected enterprise button to be active, got: {active!r}")
@@ -57,7 +57,7 @@ class ScopeToggleUnlockedTest(TempDBTestCase):
         """/?scope=personal marks personal button scope-btn--active and shows PERSONAL badge."""
         with patch.object(cfg, "LOCKED_SCOPE", None):
             c = self.client()
-            html = c.get("/?scope=personal").text
+            html = c.get("/classic?scope=personal").text
         self.assertIn("PERSONAL", html)
         active = _active_scope(html)
         self.assertEqual(active, "personal",
@@ -71,7 +71,7 @@ class ScopeToggleLockedTest(TempDBTestCase):
         """Locked instance: toggle absent, but ENTERPRISE badge present."""
         with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
             c = self.client()
-            html = c.get("/").text
+            html = c.get("/classic").text
         self.assertNotIn('class="scope-toggle"', html)
         self.assertIn("ENTERPRISE", html)
 
@@ -79,7 +79,7 @@ class ScopeToggleLockedTest(TempDBTestCase):
         """Locked instance: /?scope=personal soft-fails to ENTERPRISE; toggle still absent."""
         with patch.object(cfg, "LOCKED_SCOPE", "enterprise"):
             c = self.client()
-            resp = c.get("/?scope=personal")
+            resp = c.get("/classic?scope=personal")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("ENTERPRISE", resp.text)
         self.assertNotIn('class="scope-toggle"', resp.text)
@@ -92,14 +92,14 @@ class ScopeToggleJSWiringTest(TempDBTestCase):
         """TF_LOCKED constant is emitted in the page."""
         with patch.object(cfg, "LOCKED_SCOPE", None):
             c = self.client()
-            html = c.get("/").text
+            html = c.get("/classic").text
         self.assertIn("TF_LOCKED", html)
 
     def test_localstorage_guard_present(self):
         """The tf_scope localStorage key string is present (persistence wiring shipped)."""
         with patch.object(cfg, "LOCKED_SCOPE", None):
             c = self.client()
-            html = c.get("/").text
+            html = c.get("/classic").text
         self.assertIn("tf_scope", html)
         self.assertIn("localStorage.getItem", html)
 
@@ -137,25 +137,25 @@ class ScopeCookieTest(TempDBTestCase):
     def test_cookie_selects_scope(self):
         # default is enterprise, so asserting personal proves the cookie acted
         c = self.client()
-        r = c.get("/", cookies={"tf_scope": "personal"})
+        r = c.get("/classic", cookies={"tf_scope": "personal"})
         self.assertEqual(r.status_code, 200)
         self.assertIn("const TF_SCOPE = 'personal'", r.text)
 
     def test_url_param_beats_cookie(self):
         c = self.client()
-        r = c.get("/?scope=enterprise", cookies={"tf_scope": "personal"})
+        r = c.get("/classic?scope=enterprise", cookies={"tf_scope": "personal"})
         self.assertIn("const TF_SCOPE = 'enterprise'", r.text)
 
     def test_invalid_cookie_falls_back(self):
         c = self.client()
-        r = c.get("/", cookies={"tf_scope": "garbage-value"})
+        r = c.get("/classic", cookies={"tf_scope": "garbage-value"})
         self.assertEqual(r.status_code, 200)
         self.assertIn("const TF_SCOPE = 'enterprise'", r.text)  # falls to default
 
     def test_locked_ignores_cookie(self):
         with patch.object(cfg, "LOCKED_SCOPE", "personal"):
             c = self.client()
-            r = c.get("/", cookies={"tf_scope": "enterprise"})
+            r = c.get("/classic", cookies={"tf_scope": "enterprise"})
         self.assertIn("const TF_SCOPE = 'personal'", r.text)
 
     def test_setscope_writes_cookie(self):

@@ -59,8 +59,8 @@
 
 <footer class="foot">
   <span>Sources: Claude quota feed (every 2 min), Pi provider snapshots, live agent state, event ingest.</span>
-  <span>{% if owner %}{{ owner }} · {% endif %}<a href="/{{ '?scope=' ~ scope }}">Classic dashboard</a></span>
-  <noscript><span>This dashboard needs JavaScript. Use the <a href="/">classic dashboard</a>.</span></noscript>
+  <span>{% if owner %}{{ owner }} · {% endif %}<a href="/classic?scope={{ scope }}">Classic dashboard</a></span>
+  <noscript><span>This dashboard needs JavaScript. Use the <a href="/classic">classic dashboard</a>.</span></noscript>
 </footer>
 
 <script type="module" src="{{ static_base }}/js/main.js"></script>

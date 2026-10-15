@@ -41,7 +41,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
     -> app/ingest.py (privacy-safe normalization, source/provider metadata, namespaced IDs, dedup)
     -> SQLite events + tool_uses tables (WAL mode; Pi reported costs remain distinct from Claude pricing)
     -> app/aggregator.py (thread-safe cached rebuild on invalidation)
-    -> GET / (HTML dashboard) or GET /api/stats (JSON)
+    -> GET / (dashboard: Runway, Ledger, History, Lab; alias /next), GET /classic (old dashboard) or GET /api/stats (JSON)
 ```
 
 `/api/ingest/pi` requires `X-API-Key`, a dotfleet `work`/`personal` account class, and bounded, typed, privacy-scrubbed events. The class maps to separate synthetic rollup identities so work and personal Pi usage cannot merge. Pi costs use reported component/total fields and group by provider/model. `/api/usage` remains Anthropic OAuth quota ingestion only; Pi data never enters that path.
@@ -54,7 +54,8 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/ingest.py` | POST /api/ingest (Claude), POST /api/ingest/pi (Pi Agent), and POST /api/provider-usage - typed normalization, namespaced dedup, tool extraction |
 | `app/aggregator.py` | Core stats engine - session-by-session SQL aggregation with in-memory cache |
 | `app/pricing.py` | Model pricing (static + dynamic from LiteLLM GitHub, 24h DB cache) |
-| `app/dashboard.py` | GET / - Jinja2 HTML rendering with number formatting |
+| `app/next_page.py` | GET / and its alias GET /next - the dashboard shell (`templates/next.html`, `static/next/`, see `static/next/README.md`), CSP, hashed static path |
+| `app/dashboard.py` | GET /classic - the old Jinja2 dashboard with number formatting |
 | `app/api.py` | GET /api/stats - JSON passthrough of aggregator output |
 | `app/db.py` | SQLite schema, WAL pragmas, connection management |
 | `app/notify.py` | POST /api/notify - notification relay to Home Assistant |

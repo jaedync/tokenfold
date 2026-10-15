@@ -23,9 +23,9 @@ class FooterTokenRevealTest(TempDBTestCase):
              patch.object(app.config, "DASHBOARD_PASSWORD", password):
             c = self.client()
             if password:
-                r = c.get("/", auth=("admin", password))
+                r = c.get("/classic", auth=("admin", password))
             else:
-                r = c.get("/")
+                r = c.get("/classic")
         self.assertEqual(r.status_code, 200)
         return r.text
 
