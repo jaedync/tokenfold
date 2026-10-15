@@ -11,13 +11,13 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="shortcut icon" href="/static/favicon.ico">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
-<link rel="preload" href="/static/next/fonts/archivo-black-latin-400.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/static/next/fonts/dm-sans-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/next/vendor/uplot/uPlot.min.css?v={{ version }}">
-<link rel="stylesheet" href="/static/next/css/tokenfold.css?v={{ version }}">
-<link rel="modulepreload" href="/static/next/js/main.js?v={{ version }}">
+<link rel="preload" href="{{ static_base }}/fonts/archivo-black-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{{ static_base }}/fonts/dm-sans-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ static_base }}/vendor/uplot/uPlot.min.css">
+<link rel="stylesheet" href="{{ static_base }}/css/tokenfold.css">
+<link rel="modulepreload" href="{{ static_base }}/js/main.js">
 </head>
-<body data-scope="{{ scope }}" data-scope-locked="{{ '1' if scope_locked else '0' }}" data-owner="{{ owner }}" data-view="{{ default_view }}" data-version="{{ version }}">
+<body data-scope="{{ scope }}" data-scope-locked="{{ '1' if scope_locked else '0' }}" data-owner="{{ owner }}" data-view="{{ default_view }}" data-version="{{ version }}" data-static="{{ static_base }}">
 <a class="skip" href="#view">Skip to content</a>
 
 <header class="masthead">
@@ -61,6 +61,6 @@
   <noscript><span>This dashboard needs JavaScript. Use the <a href="/">classic dashboard</a>.</span></noscript>
 </footer>
 
-<script type="module" src="/static/next/js/main.js?v={{ version }}"></script>
+<script type="module" src="{{ static_base }}/js/main.js"></script>
 </body>
 </html>
