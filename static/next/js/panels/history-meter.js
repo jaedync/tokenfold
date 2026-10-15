@@ -70,7 +70,7 @@ export default {
   mount(el) {
     const head = panelHead('Billing meter');
     el.setAttribute('aria-labelledby', head.id);
-    const lead = h('p', { class: 'panel-sub hl-lead' }, 'Anthropic\'s own billing meter for this month, against the monthly budget. The meter is the billed amount; the measured figure is the Tokenfold estimate at list price.');
+    const lead = h('p', { class: 'panel-sub hl-lead' }, 'Anthropic\'s own billing meter for this month, against the monthly budget. The meter is the billed amount; the measured figure is the Tokenfold estimate at list price. Work usage has no quota windows: this meter is the limit.');
     const state = h('div');
     const out = h('div', { class: 'mt-body' });
     el.append(head.el, lead, state, out);

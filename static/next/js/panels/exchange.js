@@ -110,6 +110,9 @@ export default {
 
     let seen = null, seenMinute = null, seenScope = null;
     function update(s) {
+      // Only the personal subscription has limit points: no rate can exist for work.
+      el.hidden = s.scope === 'enterprise';
+      if (el.hidden) return;
       const now = nowFrom(s);
       // Redraw only for new data or a new minute: a 5 s poll elsewhere must not reset hover titles.
       if (s.limitRate === seen && Math.floor(now / 60) === seenMinute && s.scope === seenScope) return;

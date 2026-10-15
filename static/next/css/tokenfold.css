@@ -126,6 +126,10 @@ a.lb-wait { text-decoration: none; }
 .p-rail { grid-column: 5 / span 5; grid-row: 2; }
 .p-now { grid-column: 10 / span 3; grid-row: 1 / span 2; }
 .p-today, .p-exchange, .p-wide { grid-column: 1 / -1; }
+/* Work scope: no other windows (the rail hides), so Now takes the rail's place
+ * and the chart its full column. */
+.grid:has(> .p-rail[hidden]) .p-chart { grid-column: 5 / -1; }
+.grid:has(> .p-rail[hidden]) .p-now { grid-column: 5 / -1; grid-row: 2; }
 .p-now, .p-today, .p-hero, .p-rail, .p-exchange { container-type: inline-size; }
 
 /* ================= hero: the binding window ================= */
@@ -362,6 +366,8 @@ a.lb-wait { text-decoration: none; }
   .p-chart { grid-column: 6 / -1; grid-row: 1; }
   .p-rail { grid-column: 6 / -1; grid-row: 2; }
   .p-now { grid-column: 1 / -1; grid-row: auto; }
+  .grid:has(> .p-rail[hidden]) .p-chart { grid-column: 6 / -1; }
+  .grid:has(> .p-rail[hidden]) .p-now { grid-column: 6 / -1; grid-row: 2; }
 }
 @media (max-width: 1100px) {
   .masthead { grid-template-columns: 1fr auto; }
@@ -371,6 +377,8 @@ a.lb-wait { text-decoration: none; }
   .p-rail { grid-column: 7 / -1; grid-row: 1; }
   .p-chart { grid-column: 1 / -1; grid-row: 2; }
   .p-now { grid-column: 1 / -1; grid-row: auto; }
+  .grid:has(> .p-rail[hidden]) .p-chart { grid-column: 1 / -1; }
+  .grid:has(> .p-rail[hidden]) .p-now { grid-column: 7 / -1; grid-row: 1; }
 }
 @media (max-width: 700px) {
   :root { --pad: 16px; --rule: 3px; }
@@ -395,7 +403,8 @@ a.lb-wait { text-decoration: none; }
   .lb-wait .lb-label .long, .lb-burn .lb-label, .lb-burn .b-usd { display: none; }
   .lb-burn .lb-val { min-width: 0; }
   /* Phone order follows the DOM: hero, Now, other windows, chart, Today, Exchange rate. */
-  .p-hero, .p-rail, .p-chart, .p-now { grid-column: 1 / -1; grid-row: auto; }
+  .p-hero, .p-rail, .p-chart, .p-now,
+  .grid:has(> .p-rail[hidden]) .p-chart, .grid:has(> .p-rail[hidden]) .p-now { grid-column: 1 / -1; grid-row: auto; }
   .p-hero::after { width: 28px; height: 28px; }
   .hero-v { font-size: 112px; }
   .plot { height: 240px; }

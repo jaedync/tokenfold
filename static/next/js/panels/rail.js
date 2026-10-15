@@ -1,6 +1,6 @@
 // Other windows: every limit window except the binding one, tightest server
-// forecast first. Work scope has one meter and no other windows, so the rail
-// says so in one line.
+// forecast first. Work scope has one meter and no other windows, so the panel
+// hides there (the hero says the meter is the limit) and Now takes its place.
 import { h, fill, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom, otherWindows } from '../select.js';
@@ -53,6 +53,8 @@ export default {
     el.append(head.el, state, list, foot);
 
     function update(s) {
+      el.hidden = s.scope === 'enterprise';
+      if (el.hidden) return;
       const now = nowFrom(s);
       const runway = dataOf(s.runway);
       const line = feedLine(s.runway, 'the limit feed');
@@ -62,9 +64,7 @@ export default {
       sub.hidden = !rows.length;
       if (!rows.length) {
         fill(list);
-        fill(foot, runway.windows.some((w) => w.kind === 'month')
-          ? 'Work scope has no quota windows. The billing meter is the limit.'
-          : 'No other window has data.');
+        fill(foot, 'No other window has data.');
         return;
       }
       fill(list, rows.map((w) => row(w, now)));

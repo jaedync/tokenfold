@@ -88,8 +88,24 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.click('[data-scope="enterprise"]');
       await page.waitForFunction(() => /Billing meter/i.test(document.querySelector('#hero-k').textContent));
       assert.match(await text(page, '.p-hero .verdict-word'), /over budget pace/i);
-      assert.match(await text(page, '.p-rail'), /no quota windows/i);
       assert.match(await page.evaluate(() => location.search), /scope=enterprise/);
+      // No quota windows and no exchange rate in work: those panels hide, the hero says why.
+      assert.match(await text(page, '.p-hero .short'), /billing meter is the limit/i);
+      assert.equal(await page.locator('[data-panel="rail"]').isHidden(), true);
+      assert.equal(await page.locator('[data-panel="exchange"]').isHidden(), true);
+      // Now takes the rail's place beside the hero: no empty grid cell.
+      const box = (id) => page.evaluate((id) => {
+        const r = document.querySelector(`[data-panel="${id}"]`).getBoundingClientRect();
+        return {top: r.top, left: r.left, right: r.right};
+      }, id);
+      const hero = await box('hero'), now = await box('now');
+      assert.equal(now.top, hero.top, 'Now is not beside the hero');
+      assert.ok(now.left > hero.right, 'Now is not right of the hero');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      // Back to personal: both panels return.
+      await page.click('button[data-scope="personal"]');
+      await page.waitForSelector('[data-panel="rail"]:not([hidden]) .rw');
+      assert.equal(await page.locator('[data-panel="exchange"]').isHidden(), false);
       assert.deepEqual(errors, []);
       await context.close();
     });

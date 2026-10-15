@@ -1,7 +1,9 @@
 // Runway (landing view): "can I keep working, and what burns my limit now?"
 // Panel order in the DOM is the phone reading order: hero, Now, other
 // windows, chart, Today, Exchange rate. The desktop grid places them by area
-// (css: .p-hero, .p-now, .p-rail, .p-chart, .p-today, .p-exchange).
+// (css: .p-hero, .p-now, .p-rail, .p-chart, .p-today, .p-exchange). The work
+// scope has no quota windows and no exchange rate: those two panels hide
+// and Now takes the rail's place.
 import hero from '../panels/hero.js';
 import now from '../panels/now.js';
 import rail from '../panels/rail.js';
@@ -18,7 +20,7 @@ export default {
     now: { endpoint: 'now', intervalMs: 5000 },
     runway: { endpoint: 'runway', intervalMs: 30000, bump: true },
     today: { endpoint: 'today', intervalMs: 60000, bump: true },
-    limitRate: { endpoint: 'limitRate', bump: true },
+    limitRate: { endpoint: 'limitRate', bump: true, params: (s) => (s.scope === 'enterprise' ? null : {}) },
     // Waits for the binding window, then refetches when it changes.
     trajectory: {
       endpoint: 'trajectory', bump: true, intervalMs: 120000,

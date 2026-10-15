@@ -204,7 +204,8 @@ export default {
         fact('Allowance', f.missing(b.per_workday_left_usd) ? f.DASH : `${f.usd(b.per_workday_left_usd)} / workday`, 'for the rest of the month'),
         fact('Meter', f.age(now - w.observed_at), 'Anthropic billing meter'));
       burn.hidden = true;
-      short.hidden = true;
+      short.hidden = false;
+      fill(short, h('p', { class: 'burn-none' }, 'The billing meter is the limit. Work usage has no quota windows.'));
       fill(note, h('b', null, 'Work dollars on the meter are billed dollars.'),
         ' Session and daily figures are list-price estimates (≈) until the meter catches up.');
     }

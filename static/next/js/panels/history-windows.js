@@ -96,13 +96,9 @@ export default {
       if (!changed(seen, key)) return;
       seen = key;
       seg.select(bucket);
-      seg.el.hidden = s.scope === 'enterprise';
-      if (s.scope === 'enterprise') {
-        setText(lead, '');
-        fill(state, stateLine('Limit windows are not available for this scope.', 'Work usage has a monthly budget. See the billing meter.'));
-        fill(body);
-        return;
-      }
+      // Work usage has no limit windows (the billing meter panel is its limit).
+      el.hidden = s.scope === 'enterprise';
+      if (el.hidden) return;
       setText(lead, `Each card is one ended Claude ${bucket === 'five_hour' ? '5-hour' : '7-day'} window: its peak, whether it hit the limit, and its spend. Spend counts the Claude requests inside the window; per point divides it by the points used.`);
       const line = feedLine(feed, 'the window history');
       fill(state, line, staleNote(feed, nowFrom(s)));

@@ -102,7 +102,7 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await context.close();
     });
 
-    await check('history work scope: billing meter shows, limit windows say not available, value hides', async () => {
+    await check('history work scope: billing meter shows and says it is the limit, limit windows and value hide', async () => {
       const {page, errors, context, fixtures} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#history'});
       await page.waitForSelector('.wc');
       fixtures.length = 0;
@@ -110,7 +110,8 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await page.waitForSelector('.p-history-meter .mt-big');
       assert.match(await text(page, '.p-history-meter .mt-big'), /\$992/);
       assert.match(await text(page, '.p-history-meter'), /of \$2,000 budget/);
-      assert.match(await text(page, '.p-history-windows .p-state'), /not available for this scope/);
+      assert.match(await text(page, '.p-history-meter .hl-lead'), /this meter is the limit/);
+      assert.equal(await page.locator('[data-panel="history-windows"]').isHidden(), true);
       assert.equal(await page.locator('[data-panel="history-value"]').isHidden(), true);
       await page.waitForSelector('.p-history-months .mo-col');
       assert.equal(fixtures.some(n => n.startsWith('window-history')), false, 'work scope asked for limit windows');
