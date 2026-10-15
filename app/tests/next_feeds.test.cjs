@@ -152,6 +152,49 @@ async function check(name, page, fn) {
       must(!s.switching, 'nothing to wait for, but switching is set');
     });
 
+    await check('a feed released during a switch never shows old scope data when it comes back', page, async () => {
+      const t = setup();
+      const releaseA = t.feeds.want('a', {endpoint: 'a'});
+      t.feeds.want('b', {endpoint: 'b'});
+      await tick();
+      await t.answer('a', {v: 'personal'}); await t.answer('b', {v: 'personal'});
+      t.store.set('scope', 'enterprise');
+      t.feeds.reset();
+      await tick();
+      // A view switch before a answers: a loses its user.
+      releaseA();
+      let s = t.store.get();
+      must(!(s.a && s.a.data), `a released feed kept old scope data: ${JSON.stringify(s.a)}`);
+      await t.answer('b', {v: 'work'});
+      must(!t.store.get().switching, 'switching did not end');
+      t.feeds.want('a', {endpoint: 'a'});
+      s = t.store.get();
+      must(s.a.status === 'loading' && s.a.data === null, `old scope data came back: ${JSON.stringify(s.a)}`);
+      await tick();
+      await t.answer('a', {v: 'work'});
+      must(t.store.get().a.data.v === 'work', 'the new data is not in');
+    });
+
+    await check('the end of a switch clears every feed of an old generation, with or without users', page, async () => {
+      const t = setup({switchHoldMs: 50});
+      // A prefetched feed, no users: its read is in flight when the scope changes.
+      t.feeds.want('a', {endpoint: 'a'});
+      t.feeds.prefetch('p', {endpoint: 'p'});
+      await tick();
+      await t.answer('a', 1); await t.answer('p', {v: 'personal'});
+      const releaseB = t.feeds.want('b', {endpoint: 'b'});
+      await tick();
+      await t.answer('b', {v: 'personal'});
+      t.store.set('scope', 'enterprise');
+      t.feeds.reset();
+      await tick();
+      releaseB();
+      await tick(80);
+      const s = t.store.get();
+      must(!s.switching, 'still switching');
+      for (const k of ['a', 'b', 'p']) must(!(s[k] && s[k].data), `${k} kept old scope data: ${JSON.stringify(s[k])}`);
+    });
+
     await check('a slow switch stops holding the old content after switchHoldMs', page, async () => {
       const t = setup({switchHoldMs: 50});
       t.feeds.want('a', {endpoint: 'a'});

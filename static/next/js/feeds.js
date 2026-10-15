@@ -114,13 +114,23 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     finishSwitch();
   }
 
-  // After the hold, a feed still without new-scope data says "Loading".
+  // Data of an older scope generation leaves the store: a feed with no
+  // users keeps nothing on screen, so its old data could only show later,
+  // under the new scope.
+  function dropOld(f) {
+    const cur = store.get()[f.key];
+    if (f.gen !== gen && cur && cur.data !== null) store.set(f.key, LOADING);
+  }
+
+  // After the hold, a feed still without new-scope data says "Loading". Every
+  // feed of an older generation drops its data, with or without users.
   function finishSwitch() {
     clearTimeout(holdTimer);
     holdTimer = null;
     if (!store.get().switching) return;
     for (const f of feeds.values()) {
       if (f.users && f.doneGen !== gen) store.set(f.key, LOADING);
+      else dropOld(f);
     }
     store.set('switching', false);
   }
@@ -130,6 +140,7 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     const f = feedFor(key, spec);
     f.spec = spec;
     f.users += 1;
+    if (!store.get().switching) dropOld(f);
     // A read in flight (a prefetch) carries on and starts the polling.
     if (f.users === 1 && !f.ctrl) schedule(f, freshFor(f));
     return () => {
@@ -139,6 +150,7 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
       if (f.ctrl) f.ctrl.abort();
       f.ctrl = null;
       f.timer = null;
+      dropOld(f);
       settle();
     };
   }

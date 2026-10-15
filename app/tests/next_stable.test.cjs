@@ -16,7 +16,10 @@ const CSP = process.env.TOKENFOLD_CSP_NEXT || '';
 const FIXTURES = path.join(ROOT, 'static', 'next', 'fixtures');
 const START = new Date('2026-10-14T12:00:00-05:00');
 const failures = [];
+// TOKENFOLD_ONLY=<regex> runs only the checks whose name matches.
+const ONLY = process.env.TOKENFOLD_ONLY ? new RegExp(process.env.TOKENFOLD_ONLY) : null;
 async function check(name, action) {
+  if (ONLY && !ONLY.test(name)) return;
   try { await action(); console.log('ok - ' + name); }
   catch (error) { failures.push(name + ': ' + error.message); console.log('FAIL - ' + name + '\n  ' + error.message); }
 }
@@ -54,7 +57,7 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal', bo
     const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
     if (fixture && fs.existsSync(path.join(FIXTURES, fixture[1] + '.json'))) {
       // A held fixture answers when the check calls page.__release().
-      if (hold && hold.test(fixture[1]) && page.__holding) await new Promise((resolve) => page.__held.push(resolve));
+      if (page.__hold && page.__hold.test(fixture[1])) await new Promise((resolve) => page.__held.push({name: fixture[1], resolve}));
       const n = (counts[fixture[1]] = (counts[fixture[1]] || 0) + 1);
       const body = JSON.parse(fs.readFileSync(path.join(FIXTURES, fixture[1] + '.json'), 'utf8'));
       return route.fulfill({json: n === 1 ? body : drift(body, null, n)});
@@ -63,13 +66,21 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal', bo
       const text = fs.readFileSync(path.join(ROOT, pathname), 'utf8');
       return route.fulfill({contentType: 'text/javascript', body: `${text}\ndocument.addEventListener('tf:bump', () => feeds.bump());\n`});
     }
-    if (holdStatic && holdStatic.test(pathname) && page.__holding) await new Promise((resolve) => page.__held.push(resolve));
+    if (holdStatic && holdStatic.test(pathname) && page.__holding) await new Promise((resolve) => page.__held.push({name: pathname, resolve}));
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     return route.fulfill({status: 404, body: ''});
   });
   page.__held = [];
   page.__holding = true;
-  page.__release = () => { page.__holding = false; for (const r of page.__held.splice(0)) r(); };
+  page.__hold = hold;
+  page.__release = () => { page.__holding = false; page.__hold = null; for (const r of page.__held.splice(0)) r.resolve(); };
+  // Keep holding only the fixtures that match `re`; answer the others.
+  page.__holdOnly = (re) => {
+    page.__hold = re;
+    const keep = page.__held.filter((r) => re.test(r.name));
+    for (const r of page.__held.filter((x) => !keep.includes(x))) r.resolve();
+    page.__held = keep;
+  };
   await page.clock.install({time: START});
   await page.goto(ORIGIN + url, {waitUntil});
   if (scope === 'enterprise') {
@@ -305,6 +316,70 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       assert.deepEqual(errors, []);
       await context.close();
     });
+
+    // Today of the personal fixture names a machine the work fixture does not
+    // have ("devbox"). Leave the view during the switch, let the switch end
+    // while today of the work scope still waits, come back: the personal
+    // today must never show while the view is not busy. Again with the tab
+    // hidden, where the idle prefetch does not run.
+    for (const hidden of [false, true]) {
+      await check(`runway 1440${hidden ? ' hidden tab' : ''}: a view switch during a scope switch never shows old scope data`, async () => {
+        const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway', hold: /-work$/});
+        await settle(page);
+        assert.match(await page.locator('.p-today').innerText(), /devbox/, 'the personal fixture changed');
+        await page.evaluate(() => {
+          const w = window.__leak = {seen: 0, texts: []};
+          const look = () => {
+            const work = document.querySelector('button[data-scope="enterprise"]').getAttribute('aria-pressed') === 'true';
+            const busy = document.getElementById('view').getAttribute('aria-busy') === 'true';
+            const today = document.querySelector('#view .p-today');
+            if (work && !busy && today && /devbox/.test(today.innerText)) { w.seen += 1; w.texts.push(today.innerText.slice(0, 80)); }
+          };
+          new MutationObserver(look).observe(document.getElementById('view'), {childList: true, subtree: true, characterData: true, attributes: true});
+        });
+        await page.click('button[data-scope="enterprise"]');
+        await page.clock.runFor(200);
+        await page.waitForTimeout(30);
+        await page.click('[data-view-link="ledger"]');
+        await page.clock.runFor(200);
+        await page.waitForTimeout(30);
+        // Every work read answers but today's.
+        page.__holdOnly(/^today-work$/);
+        for (let i = 0; i < 100; i += 1) {
+          await page.clock.runFor(50);
+          await page.waitForTimeout(5);
+          if (await page.evaluate(() => !document.getElementById('view').hasAttribute('aria-busy'))) break;
+        }
+        assert.equal(await page.evaluate(() => document.getElementById('view').getAttribute('aria-busy')), null, 'the switch did not end');
+        if (hidden) {
+          await page.evaluate(() => {
+            Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+            document.dispatchEvent(new Event('visibilitychange'));
+          });
+        }
+        await page.clock.runFor(5000);
+        await page.waitForTimeout(30);
+        await page.click('[data-view-link="runway"]');
+        await page.clock.runFor(200);
+        await page.waitForTimeout(30);
+        assert.doesNotMatch(await page.locator('.p-today').innerText(), /devbox/, 'the personal today shows in the work scope');
+        if (hidden) {
+          await page.evaluate(() => {
+            delete document.hidden;
+            document.dispatchEvent(new Event('visibilitychange'));
+          });
+        }
+        page.__release();
+        await settle(page);
+        const text = await page.locator('.p-today').innerText();
+        assert.doesNotMatch(text, /devbox/, 'the personal today shows in the work scope');
+        assert.match(text, /laptop/, 'the work today did not show');
+        const leak = await page.evaluate(() => window.__leak);
+        assert.equal(leak.seen, 0, `old scope data showed: ${leak.texts.join(' / ')}`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
 
     const EARLY = {
       runway: {personal: ['now', 'runway', 'today', 'limit-rate'], enterprise: ['now-work', 'runway-work', 'today-work']},
