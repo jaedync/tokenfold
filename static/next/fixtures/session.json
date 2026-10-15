@@ -1,0 +1,117 @@
+{
+ "id": "s-0011",
+ "machine": "vm-01",
+ "project": "dashboard",
+ "title": "Refactor pricing table",
+ "client": "pi-agent",
+ "start": 1792001700.0,
+ "end": 1792014494.0,
+ "active_s": 9441,
+ "prompts": 33,
+ "model": "Opus 5.5",
+ "cost_usd": 80.08,
+ "orch_cost_usd": 63.32,
+ "agent_cost_usd": 16.76,
+ "runs": [
+  {
+   "id": "agent-0110",
+   "parent": null,
+   "model": "Opus 5.5",
+   "start": 1792001700.0,
+   "end": 1792002416.0,
+   "cost_usd": 8.48,
+   "tools": 50,
+   "label": "Run the tests"
+  },
+  {
+   "id": "agent-0111",
+   "parent": null,
+   "model": "Sonnet 5.5",
+   "start": 1792002000.0,
+   "end": 1792003744.0,
+   "cost_usd": 8.28,
+   "tools": 21,
+   "label": "Bench decode speed"
+  }
+ ],
+ "live": false,
+ "prompt_times": [
+  1792002275.0,
+  1792002318.0,
+  1792002467.0,
+  1792002783.0,
+  1792002828.0,
+  1792002900.0,
+  1792003055.0,
+  1792003959.0,
+  1792004064.0,
+  1792004267.0,
+  1792004343.0,
+  1792004424.0,
+  1792004695.0,
+  1792004957.0,
+  1792004972.0,
+  1792005181.0,
+  1792005348.0,
+  1792005834.0,
+  1792005960.0,
+  1792006182.0,
+  1792006611.0,
+  1792006907.0,
+  1792008230.0,
+  1792008347.0,
+  1792009270.0,
+  1792009407.0,
+  1792009450.0,
+  1792009782.0,
+  1792009838.0,
+  1792010015.0,
+  1792010320.0,
+  1792010689.0,
+  1792011120.0
+ ],
+ "models": [
+  {
+   "model": "Opus 5.5",
+   "cost_usd": 63.32,
+   "share": 0.791
+  },
+  {
+   "model": "Sonnet 5.5",
+   "cost_usd": 16.76,
+   "share": 0.209
+  }
+ ],
+ "tools": [
+  {
+   "name": "Bash",
+   "calls": 41,
+   "errors": 3
+  },
+  {
+   "name": "Read",
+   "calls": 66,
+   "errors": 0
+  },
+  {
+   "name": "Edit",
+   "calls": 23,
+   "errors": 1
+  },
+  {
+   "name": "Grep",
+   "calls": 18,
+   "errors": 0
+  }
+ ],
+ "tokens": {
+  "input": 18400,
+  "output": 412000,
+  "cache_read": 61200000,
+  "cache_write": 1830000
+ },
+ "file_edits": 23,
+ "served_model": {
+  "state": "as_asked"
+ }
+}

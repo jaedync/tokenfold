@@ -1,0 +1,86 @@
+{
+ "day": "2026-10-15",
+ "spend_usd": 412.3,
+ "typical_by_now_usd": 268.0,
+ "typical_day_usd": 365.0,
+ "prompts": 84,
+ "active_s": 20000,
+ "by_model": [
+  {
+   "model": "Opus 5.5",
+   "family": "opus",
+   "provider": "anthropic",
+   "usd": 236.0,
+   "tokens": 9676000
+  },
+  {
+   "model": "Fable 5.1",
+   "family": "fable",
+   "provider": "anthropic",
+   "usd": 98.0,
+   "tokens": 4018000
+  },
+  {
+   "model": "Sonnet 5.5",
+   "family": "sonnet",
+   "provider": "anthropic",
+   "usd": 41.0,
+   "tokens": 1681000
+  },
+  {
+   "model": "DeepSeek V4",
+   "family": "deepseek",
+   "provider": "opencode-go",
+   "usd": 14.0,
+   "tokens": 574000
+  },
+  {
+   "model": "GLM-5",
+   "family": "glm",
+   "provider": "opencode-go",
+   "usd": 9.0,
+   "tokens": 369000
+  },
+  {
+   "model": "GPT-6",
+   "family": "gpt",
+   "provider": "openai-codex",
+   "usd": 8.3,
+   "tokens": 340300
+  },
+  {
+   "model": "Haiku 5.5",
+   "family": "haiku",
+   "provider": "anthropic",
+   "usd": 6.0,
+   "tokens": 246000
+  }
+ ],
+ "by_machine": [
+  {
+   "machine": "devbox",
+   "usd": 171.0,
+   "working": 2
+  },
+  {
+   "machine": "laptop",
+   "usd": 118.0,
+   "working": 1
+  },
+  {
+   "machine": "homelab",
+   "usd": 74.0,
+   "working": 1
+  },
+  {
+   "machine": "gpu-box",
+   "usd": 38.0,
+   "working": 1
+  },
+  {
+   "machine": "vm-01",
+   "usd": 11.3,
+   "working": 0
+  }
+ ]
+}

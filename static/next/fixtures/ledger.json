@@ -1,0 +1,1293 @@
+{
+ "from": 1789501440.0,
+ "to": 1792093450.0,
+ "daily": [
+  {
+   "day": "2026-09-15",
+   "by_model": {
+    "Opus 5.5": 183.67,
+    "Fable 5.1": 30.68,
+    "Sonnet 5.5": 36.83,
+    "DeepSeek V4": 13.19
+   }
+  },
+  {
+   "day": "2026-09-16",
+   "by_model": {
+    "Opus 5.5": 241.99,
+    "Fable 5.1": 50.85,
+    "Sonnet 5.5": 22.76,
+    "DeepSeek V4": 4.65
+   }
+  },
+  {
+   "day": "2026-09-17",
+   "by_model": {
+    "Opus 5.5": 246.21,
+    "Fable 5.1": 51.2,
+    "Sonnet 5.5": 24.95,
+    "DeepSeek V4": 13.77
+   }
+  },
+  {
+   "day": "2026-09-18",
+   "by_model": {
+    "Opus 5.5": 238.5,
+    "Fable 5.1": 72.13,
+    "Sonnet 5.5": 14.1,
+    "DeepSeek V4": 9.26
+   }
+  },
+  {
+   "day": "2026-09-19",
+   "by_model": {
+    "Opus 5.5": 72.25,
+    "Fable 5.1": 28.34,
+    "Sonnet 5.5": 11.34,
+    "DeepSeek V4": 3.13
+   }
+  },
+  {
+   "day": "2026-09-20",
+   "by_model": {
+    "Opus 5.5": 55.99,
+    "Fable 5.1": 27.23,
+    "Sonnet 5.5": 3.39,
+    "DeepSeek V4": 2.25
+   }
+  },
+  {
+   "day": "2026-09-21",
+   "by_model": {
+    "Opus 5.5": 163.85,
+    "Fable 5.1": 90.58,
+    "Sonnet 5.5": 37.65,
+    "DeepSeek V4": 12.5
+   }
+  },
+  {
+   "day": "2026-09-22",
+   "by_model": {
+    "Opus 5.5": 242.11,
+    "Fable 5.1": 32.84,
+    "Sonnet 5.5": 38.0,
+    "DeepSeek V4": 6.56
+   }
+  },
+  {
+   "day": "2026-09-23",
+   "by_model": {
+    "Opus 5.5": 191.25,
+    "Fable 5.1": 90.67,
+    "Sonnet 5.5": 18.3,
+    "DeepSeek V4": 13.01
+   }
+  },
+  {
+   "day": "2026-09-24",
+   "by_model": {
+    "Opus 5.5": 210.44,
+    "Fable 5.1": 109.0,
+    "Sonnet 5.5": 39.18,
+    "DeepSeek V4": 10.93
+   }
+  },
+  {
+   "day": "2026-09-25",
+   "by_model": {
+    "Opus 5.5": 174.69,
+    "Fable 5.1": 32.43,
+    "Sonnet 5.5": 45.85,
+    "DeepSeek V4": 4.53
+   }
+  },
+  {
+   "day": "2026-09-26",
+   "by_model": {
+    "Opus 5.5": 68.45,
+    "Fable 5.1": 29.08,
+    "Sonnet 5.5": 3.05,
+    "DeepSeek V4": 3.67
+   }
+  },
+  {
+   "day": "2026-09-27",
+   "by_model": {
+    "Opus 5.5": 75.94,
+    "Fable 5.1": 16.43,
+    "Sonnet 5.5": 9.29,
+    "DeepSeek V4": 4.74
+   }
+  },
+  {
+   "day": "2026-09-28",
+   "by_model": {
+    "Opus 5.5": 175.37,
+    "Fable 5.1": 93.97,
+    "Sonnet 5.5": 22.12,
+    "DeepSeek V4": 14.13
+   }
+  },
+  {
+   "day": "2026-09-29",
+   "by_model": {
+    "Opus 5.5": 214.0,
+    "Fable 5.1": 99.16,
+    "Sonnet 5.5": 25.51,
+    "DeepSeek V4": 5.87
+   }
+  },
+  {
+   "day": "2026-09-30",
+   "by_model": {
+    "Opus 5.5": 184.22,
+    "Fable 5.1": 76.54,
+    "Sonnet 5.5": 23.73,
+    "DeepSeek V4": 15.73
+   }
+  },
+  {
+   "day": "2026-10-01",
+   "by_model": {
+    "Opus 5.5": 253.42,
+    "Fable 5.1": 46.45,
+    "Sonnet 5.5": 29.83,
+    "DeepSeek V4": 10.2
+   }
+  },
+  {
+   "day": "2026-10-02",
+   "by_model": {
+    "Opus 5.5": 251.73,
+    "Fable 5.1": 109.7,
+    "Sonnet 5.5": 27.24,
+    "DeepSeek V4": 10.37
+   }
+  },
+  {
+   "day": "2026-10-03",
+   "by_model": {
+    "Opus 5.5": 69.3,
+    "Fable 5.1": 31.27,
+    "Sonnet 5.5": 13.95,
+    "DeepSeek V4": 1.68
+   }
+  },
+  {
+   "day": "2026-10-04",
+   "by_model": {
+    "Opus 5.5": 60.11,
+    "Fable 5.1": 16.6,
+    "Sonnet 5.5": 4.28,
+    "DeepSeek V4": 3.45
+   }
+  },
+  {
+   "day": "2026-10-05",
+   "by_model": {
+    "Opus 5.5": 151.81,
+    "Fable 5.1": 44.74,
+    "Sonnet 5.5": 28.45,
+    "DeepSeek V4": 13.9
+   }
+  },
+  {
+   "day": "2026-10-06",
+   "by_model": {
+    "Opus 5.5": 203.31,
+    "Fable 5.1": 51.76,
+    "Sonnet 5.5": 37.45,
+    "DeepSeek V4": 11.63
+   }
+  },
+  {
+   "day": "2026-10-07",
+   "by_model": {
+    "Opus 5.5": 225.12,
+    "Fable 5.1": 44.73,
+    "Sonnet 5.5": 11.69,
+    "DeepSeek V4": 11.57
+   }
+  },
+  {
+   "day": "2026-10-08",
+   "by_model": {
+    "Opus 5.5": 200.36,
+    "Fable 5.1": 66.97,
+    "Sonnet 5.5": 11.19,
+    "DeepSeek V4": 6.73
+   }
+  },
+  {
+   "day": "2026-10-09",
+   "by_model": {
+    "Opus 5.5": 159.04,
+    "Fable 5.1": 102.85,
+    "Sonnet 5.5": 41.32,
+    "DeepSeek V4": 8.19
+   }
+  },
+  {
+   "day": "2026-10-10",
+   "by_model": {
+    "Opus 5.5": 77.11,
+    "Fable 5.1": 19.72,
+    "Sonnet 5.5": 4.7,
+    "DeepSeek V4": 2.84
+   }
+  },
+  {
+   "day": "2026-10-11",
+   "by_model": {
+    "Opus 5.5": 75.53,
+    "Fable 5.1": 15.46,
+    "Sonnet 5.5": 10.37,
+    "DeepSeek V4": 3.84
+   }
+  },
+  {
+   "day": "2026-10-12",
+   "by_model": {
+    "Opus 5.5": 208.11,
+    "Fable 5.1": 35.66,
+    "Sonnet 5.5": 16.45,
+    "DeepSeek V4": 11.79
+   }
+  },
+  {
+   "day": "2026-10-13",
+   "by_model": {
+    "Opus 5.5": 222.12,
+    "Fable 5.1": 34.89,
+    "Sonnet 5.5": 26.08,
+    "DeepSeek V4": 7.74
+   }
+  },
+  {
+   "day": "2026-10-14",
+   "by_model": {
+    "Opus 5.5": 197.37,
+    "Fable 5.1": 44.57,
+    "Sonnet 5.5": 47.12,
+    "DeepSeek V4": 9.03
+   }
+  },
+  {
+   "day": "2026-10-15",
+   "by_model": {
+    "Opus 5.5": 150.28,
+    "Fable 5.1": 61.09,
+    "Sonnet 5.5": 42.34,
+    "DeepSeek V4": 7.76
+   }
+  }
+ ],
+ "sessions": [
+  {
+   "id": "s-0011",
+   "machine": "vm-01",
+   "project": "dashboard",
+   "title": "Refactor pricing table",
+   "client": "pi-agent",
+   "start": 1792001700.0,
+   "end": 1792014494.0,
+   "active_s": 9441,
+   "prompts": 33,
+   "model": "Opus 5.5",
+   "cost_usd": 80.08,
+   "orch_cost_usd": 63.32,
+   "agent_cost_usd": 16.76,
+   "runs": [
+    {
+     "id": "agent-0110",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1792001700.0,
+     "end": 1792002416.0,
+     "cost_usd": 8.48,
+     "tools": 50,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-0111",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1792002000.0,
+     "end": 1792003744.0,
+     "cost_usd": 8.28,
+     "tools": 21,
+     "label": "Bench decode speed"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0003",
+   "machine": "laptop",
+   "project": "infra",
+   "title": "Add session drawer",
+   "client": "claude-code",
+   "start": 1791979380.0,
+   "end": 1791994772.0,
+   "active_s": 13848,
+   "prompts": 40,
+   "model": "Opus 5.5",
+   "cost_usd": 51.73,
+   "orch_cost_usd": 30.56,
+   "agent_cost_usd": 21.17,
+   "runs": [
+    {
+     "id": "agent-0030",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791979380.0,
+     "end": 1791980381.0,
+     "cost_usd": 1.26,
+     "tools": 24,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-0031",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791979680.0,
+     "end": 1791979979.0,
+     "cost_usd": 7.11,
+     "tools": 47,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-0032",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791979980.0,
+     "end": 1791981069.0,
+     "cost_usd": 2.49,
+     "tools": 20,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-0033",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791980280.0,
+     "end": 1791980751.0,
+     "cost_usd": 4.65,
+     "tools": 22,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-0034",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791980580.0,
+     "end": 1791981548.0,
+     "cost_usd": 5.66,
+     "tools": 20,
+     "label": "Bench decode speed"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0000",
+   "machine": "vm-01",
+   "project": "dashboard",
+   "title": "Refactor pricing table",
+   "client": "claude-code",
+   "start": 1791909300.0,
+   "end": 1791913082.0,
+   "active_s": 1428,
+   "prompts": 40,
+   "model": "Sonnet 5.5",
+   "cost_usd": 93.25,
+   "orch_cost_usd": 78.39,
+   "agent_cost_usd": 14.86,
+   "runs": [
+    {
+     "id": "agent-0000",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791909300.0,
+     "end": 1791910109.0,
+     "cost_usd": 5.53,
+     "tools": 16,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0001",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791909600.0,
+     "end": 1791910622.0,
+     "cost_usd": 5.51,
+     "tools": 18,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0002",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791909900.0,
+     "end": 1791910344.0,
+     "cost_usd": 3.82,
+     "tools": 8,
+     "label": "Review the diff"
+    }
+   ],
+   "live": true
+  },
+  {
+   "id": "s-0004",
+   "machine": "homelab",
+   "project": "infra",
+   "title": "Refactor pricing table",
+   "client": "claude-code",
+   "start": 1791779460.0,
+   "end": 1791790102.0,
+   "active_s": 9512,
+   "prompts": 18,
+   "model": "Sonnet 5.5",
+   "cost_usd": 78.47,
+   "orch_cost_usd": 70.46,
+   "agent_cost_usd": 8.01,
+   "runs": [
+    {
+     "id": "agent-0040",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791779460.0,
+     "end": 1791780043.0,
+     "cost_usd": 1.45,
+     "tools": 28,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0041",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791779760.0,
+     "end": 1791781445.0,
+     "cost_usd": 3.09,
+     "tools": 51,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0042",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791780060.0,
+     "end": 1791781270.0,
+     "cost_usd": 3.47,
+     "tools": 6,
+     "label": "Review the diff"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0005",
+   "machine": "homelab",
+   "project": "infra",
+   "title": "Trim log noise",
+   "client": "claude-code",
+   "start": 1791777900.0,
+   "end": 1791790470.0,
+   "active_s": 9261,
+   "prompts": 18,
+   "model": "Opus 5.5",
+   "cost_usd": 120.39,
+   "orch_cost_usd": 95.23,
+   "agent_cost_usd": 25.16,
+   "runs": [
+    {
+     "id": "agent-0050",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791777900.0,
+     "end": 1791778923.0,
+     "cost_usd": 5.15,
+     "tools": 8,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-0051",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791778200.0,
+     "end": 1791779981.0,
+     "cost_usd": 3.72,
+     "tools": 20,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0052",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791778500.0,
+     "end": 1791779227.0,
+     "cost_usd": 4.35,
+     "tools": 44,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0053",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791778800.0,
+     "end": 1791780310.0,
+     "cost_usd": 5.7,
+     "tools": 24,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0054",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791779100.0,
+     "end": 1791779601.0,
+     "cost_usd": 6.24,
+     "tools": 57,
+     "label": "Search the repo"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-000c",
+   "machine": "devbox",
+   "project": "agent-tools",
+   "title": "Write release notes",
+   "client": "claude-code",
+   "start": 1791749280.0,
+   "end": 1791760198.0,
+   "active_s": 9031,
+   "prompts": 30,
+   "model": "Sonnet 5.5",
+   "cost_usd": 110.82,
+   "orch_cost_usd": 110.82,
+   "agent_cost_usd": 0,
+   "runs": [],
+   "live": false
+  },
+  {
+   "id": "s-0008",
+   "machine": "devbox",
+   "project": "dashboard",
+   "title": "Trim log noise",
+   "client": "claude-code",
+   "start": 1791643680.0,
+   "end": 1791655244.0,
+   "active_s": 10431,
+   "prompts": 23,
+   "model": "Fable 5.1",
+   "cost_usd": 15.74,
+   "orch_cost_usd": 12.44,
+   "agent_cost_usd": 3.3,
+   "runs": [
+    {
+     "id": "agent-0080",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791643680.0,
+     "end": 1791644425.0,
+     "cost_usd": 3.3,
+     "tools": 51,
+     "label": "Search the repo"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0015",
+   "machine": "gpu-box",
+   "project": "agent-tools",
+   "title": "Refactor pricing table",
+   "client": "pi-agent",
+   "start": 1791616080.0,
+   "end": 1791632663.0,
+   "active_s": 13894,
+   "prompts": 5,
+   "model": "Opus 5.5",
+   "cost_usd": 47.19,
+   "orch_cost_usd": 47.19,
+   "agent_cost_usd": 0,
+   "runs": [],
+   "live": false
+  },
+  {
+   "id": "s-0016",
+   "machine": "homelab",
+   "project": "notes",
+   "title": "Fix flaky ingest test",
+   "client": "claude-code",
+   "start": 1791511260.0,
+   "end": 1791516327.0,
+   "active_s": 1621,
+   "prompts": 37,
+   "model": "Fable 5.1",
+   "cost_usd": 113.28,
+   "orch_cost_usd": 113.28,
+   "agent_cost_usd": 0,
+   "runs": [],
+   "live": false
+  },
+  {
+   "id": "s-0013",
+   "machine": "vm-01",
+   "project": "bench",
+   "title": "Write release notes",
+   "client": "claude-code",
+   "start": 1791511140.0,
+   "end": 1791525102.0,
+   "active_s": 13624,
+   "prompts": 39,
+   "model": "Opus 5.5",
+   "cost_usd": 108.77,
+   "orch_cost_usd": 105.44,
+   "agent_cost_usd": 3.33,
+   "runs": [
+    {
+     "id": "agent-0130",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791511140.0,
+     "end": 1791511686.0,
+     "cost_usd": 3.33,
+     "tools": 39,
+     "label": "Review the diff"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-000f",
+   "machine": "homelab",
+   "project": "dashboard",
+   "title": "Trim log noise",
+   "client": "claude-code",
+   "start": 1791469020.0,
+   "end": 1791481056.0,
+   "active_s": 10303,
+   "prompts": 10,
+   "model": "Sonnet 5.5",
+   "cost_usd": 53.1,
+   "orch_cost_usd": 38.58,
+   "agent_cost_usd": 14.52,
+   "runs": [
+    {
+     "id": "agent-00f0",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791469020.0,
+     "end": 1791470337.0,
+     "cost_usd": 8.2,
+     "tools": 18,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-00f1",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791469320.0,
+     "end": 1791470984.0,
+     "cost_usd": 6.32,
+     "tools": 57,
+     "label": "Review the diff"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0017",
+   "machine": "vm-01",
+   "project": "bench",
+   "title": "Tune cache headers",
+   "client": "pi-agent",
+   "start": 1791269280.0,
+   "end": 1791273247.0,
+   "active_s": 3747,
+   "prompts": 22,
+   "model": "Sonnet 5.5",
+   "cost_usd": 56.87,
+   "orch_cost_usd": 48.21,
+   "agent_cost_usd": 8.66,
+   "runs": [
+    {
+     "id": "agent-0170",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791269280.0,
+     "end": 1791270198.0,
+     "cost_usd": 5.01,
+     "tools": 22,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-0171",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791269580.0,
+     "end": 1791270334.0,
+     "cost_usd": 2.84,
+     "tools": 59,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0172",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791269880.0,
+     "end": 1791270948.0,
+     "cost_usd": 0.81,
+     "tools": 38,
+     "label": "Run the tests"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0009",
+   "machine": "vm-01",
+   "project": "dashboard",
+   "title": "Tune cache headers",
+   "client": "pi-agent",
+   "start": 1791228180.0,
+   "end": 1791230462.0,
+   "active_s": 2112,
+   "prompts": 33,
+   "model": "Opus 5.5",
+   "cost_usd": 83.65,
+   "orch_cost_usd": 72.81,
+   "agent_cost_usd": 10.84,
+   "runs": [
+    {
+     "id": "agent-0090",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791228180.0,
+     "end": 1791229439.0,
+     "cost_usd": 6.39,
+     "tools": 60,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-0091",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791228480.0,
+     "end": 1791229833.0,
+     "cost_usd": 4.45,
+     "tools": 33,
+     "label": "Run the tests"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0007",
+   "machine": "laptop",
+   "project": "bench",
+   "title": "Refactor pricing table",
+   "client": "claude-code",
+   "start": 1791009720.0,
+   "end": 1791013112.0,
+   "active_s": 2377,
+   "prompts": 27,
+   "model": "Opus 5.5",
+   "cost_usd": 109.96,
+   "orch_cost_usd": 84.44,
+   "agent_cost_usd": 25.52,
+   "runs": [
+    {
+     "id": "agent-0070",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791009720.0,
+     "end": 1791010778.0,
+     "cost_usd": 3.07,
+     "tools": 40,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-0071",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791010020.0,
+     "end": 1791011101.0,
+     "cost_usd": 2.48,
+     "tools": 23,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0072",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791010320.0,
+     "end": 1791011051.0,
+     "cost_usd": 7.16,
+     "tools": 13,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-0073",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1791010620.0,
+     "end": 1791011979.0,
+     "cost_usd": 5.31,
+     "tools": 18,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0074",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1791010920.0,
+     "end": 1791011237.0,
+     "cost_usd": 7.5,
+     "tools": 40,
+     "label": "Read the logs"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0001",
+   "machine": "vm-01",
+   "project": "site",
+   "title": "Write release notes",
+   "client": "claude-code",
+   "start": 1790999940.0,
+   "end": 1791011629.0,
+   "active_s": 11123,
+   "prompts": 8,
+   "model": "Opus 5.5",
+   "cost_usd": 61.37,
+   "orch_cost_usd": 44.39,
+   "agent_cost_usd": 16.98,
+   "runs": [
+    {
+     "id": "agent-0010",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790999940.0,
+     "end": 1791000609.0,
+     "cost_usd": 8.28,
+     "tools": 51,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0011",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791000240.0,
+     "end": 1791001392.0,
+     "cost_usd": 3.41,
+     "tools": 10,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0012",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1791000540.0,
+     "end": 1791002237.0,
+     "cost_usd": 5.29,
+     "tools": 27,
+     "label": "Run the tests"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-000a",
+   "machine": "gpu-box",
+   "project": "agent-tools",
+   "title": "Fix flaky ingest test",
+   "client": "claude-code",
+   "start": 1790941680.0,
+   "end": 1790951703.0,
+   "active_s": 9756,
+   "prompts": 40,
+   "model": "Sonnet 5.5",
+   "cost_usd": 74.69,
+   "orch_cost_usd": 38.77,
+   "agent_cost_usd": 35.92,
+   "runs": [
+    {
+     "id": "agent-00a0",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790941680.0,
+     "end": 1790942205.0,
+     "cost_usd": 7.14,
+     "tools": 54,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-00a1",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1790941980.0,
+     "end": 1790943183.0,
+     "cost_usd": 5.65,
+     "tools": 37,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-00a2",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790942280.0,
+     "end": 1790942974.0,
+     "cost_usd": 6.89,
+     "tools": 34,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-00a3",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790942580.0,
+     "end": 1790944199.0,
+     "cost_usd": 7.46,
+     "tools": 32,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-00a4",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790942880.0,
+     "end": 1790944116.0,
+     "cost_usd": 8.78,
+     "tools": 7,
+     "label": "Search the repo"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0010",
+   "machine": "homelab",
+   "project": "notes",
+   "title": "Refactor pricing table",
+   "client": "claude-code",
+   "start": 1790826540.0,
+   "end": 1790836074.0,
+   "active_s": 6595,
+   "prompts": 35,
+   "model": "Sonnet 5.5",
+   "cost_usd": 53.95,
+   "orch_cost_usd": 46.57,
+   "agent_cost_usd": 7.38,
+   "runs": [
+    {
+     "id": "agent-0100",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790826540.0,
+     "end": 1790827567.0,
+     "cost_usd": 7.38,
+     "tools": 22,
+     "label": "Bench decode speed"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-000d",
+   "machine": "homelab",
+   "project": "notes",
+   "title": "Bench decode speed",
+   "client": "pi-agent",
+   "start": 1790823360.0,
+   "end": 1790836919.0,
+   "active_s": 13481,
+   "prompts": 13,
+   "model": "Opus 5.5",
+   "cost_usd": 86.51,
+   "orch_cost_usd": 85.42,
+   "agent_cost_usd": 1.09,
+   "runs": [
+    {
+     "id": "agent-00d0",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790823360.0,
+     "end": 1790824993.0,
+     "cost_usd": 1.09,
+     "tools": 4,
+     "label": "Read the logs"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0012",
+   "machine": "devbox",
+   "project": "dashboard",
+   "title": "Trim log noise",
+   "client": "claude-code",
+   "start": 1790664240.0,
+   "end": 1790675014.0,
+   "active_s": 10283,
+   "prompts": 29,
+   "model": "Sonnet 5.5",
+   "cost_usd": 84.27,
+   "orch_cost_usd": 70.76,
+   "agent_cost_usd": 13.51,
+   "runs": [
+    {
+     "id": "agent-0120",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1790664240.0,
+     "end": 1790664985.0,
+     "cost_usd": 6.42,
+     "tools": 26,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0121",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1790664540.0,
+     "end": 1790666111.0,
+     "cost_usd": 2.4,
+     "tools": 30,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-0122",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790664840.0,
+     "end": 1790666429.0,
+     "cost_usd": 4.69,
+     "tools": 34,
+     "label": "Read the logs"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0014",
+   "machine": "devbox",
+   "project": "api-server",
+   "title": "Fix flaky ingest test",
+   "client": "pi-agent",
+   "start": 1790609580.0,
+   "end": 1790611721.0,
+   "active_s": 2074,
+   "prompts": 31,
+   "model": "Opus 5.5",
+   "cost_usd": 103.6,
+   "orch_cost_usd": 97.06,
+   "agent_cost_usd": 6.54,
+   "runs": [
+    {
+     "id": "agent-0140",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790609580.0,
+     "end": 1790610141.0,
+     "cost_usd": 1.14,
+     "tools": 26,
+     "label": "Bench decode speed"
+    },
+    {
+     "id": "agent-0141",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790609880.0,
+     "end": 1790611650.0,
+     "cost_usd": 5.4,
+     "tools": 19,
+     "label": "Read the logs"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0006",
+   "machine": "laptop",
+   "project": "agent-tools",
+   "title": "Add session drawer",
+   "client": "pi-agent",
+   "start": 1790557320.0,
+   "end": 1790569837.0,
+   "active_s": 10211,
+   "prompts": 27,
+   "model": "Sonnet 5.5",
+   "cost_usd": 94.83,
+   "orch_cost_usd": 94.83,
+   "agent_cost_usd": 0,
+   "runs": [],
+   "live": false
+  },
+  {
+   "id": "s-000e",
+   "machine": "laptop",
+   "project": "notes",
+   "title": "Bench decode speed",
+   "client": "pi-agent",
+   "start": 1790435460.0,
+   "end": 1790444305.0,
+   "active_s": 5530,
+   "prompts": 11,
+   "model": "Opus 5.5",
+   "cost_usd": 87.13,
+   "orch_cost_usd": 78.51,
+   "agent_cost_usd": 8.62,
+   "runs": [
+    {
+     "id": "agent-00e0",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790435460.0,
+     "end": 1790436894.0,
+     "cost_usd": 1.47,
+     "tools": 59,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-00e1",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790435760.0,
+     "end": 1790437079.0,
+     "cost_usd": 7.15,
+     "tools": 30,
+     "label": "Run the tests"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-0002",
+   "machine": "homelab",
+   "project": "infra",
+   "title": "Write release notes",
+   "client": "claude-code",
+   "start": 1790147160.0,
+   "end": 1790150525.0,
+   "active_s": 1907,
+   "prompts": 36,
+   "model": "Sonnet 5.5",
+   "cost_usd": 100.67,
+   "orch_cost_usd": 83.17,
+   "agent_cost_usd": 17.5,
+   "runs": [
+    {
+     "id": "agent-0020",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1790147160.0,
+     "end": 1790148415.0,
+     "cost_usd": 1.14,
+     "tools": 44,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-0021",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790147460.0,
+     "end": 1790148452.0,
+     "cost_usd": 7.55,
+     "tools": 45,
+     "label": "Review the diff"
+    },
+    {
+     "id": "agent-0022",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790147760.0,
+     "end": 1790148060.0,
+     "cost_usd": 8.06,
+     "tools": 45,
+     "label": "Run the tests"
+    },
+    {
+     "id": "agent-0023",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790148060.0,
+     "end": 1790148753.0,
+     "cost_usd": 0.75,
+     "tools": 48,
+     "label": "Search the repo"
+    }
+   ],
+   "live": false
+  },
+  {
+   "id": "s-000b",
+   "machine": "vm-01",
+   "project": "notes",
+   "title": "Migrate cron to timer",
+   "client": "pi-agent",
+   "start": 1790099700.0,
+   "end": 1790115776.0,
+   "active_s": 13607,
+   "prompts": 22,
+   "model": "Opus 5.5",
+   "cost_usd": 42.76,
+   "orch_cost_usd": 23.42,
+   "agent_cost_usd": 19.34,
+   "runs": [
+    {
+     "id": "agent-00b0",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790099700.0,
+     "end": 1790101493.0,
+     "cost_usd": 7.92,
+     "tools": 19,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-00b1",
+     "parent": null,
+     "model": "Sonnet 5.5",
+     "start": 1790100000.0,
+     "end": 1790101275.0,
+     "cost_usd": 5.12,
+     "tools": 49,
+     "label": "Search the repo"
+    },
+    {
+     "id": "agent-00b2",
+     "parent": null,
+     "model": "Opus 5.5",
+     "start": 1790100300.0,
+     "end": 1790101905.0,
+     "cost_usd": 3.94,
+     "tools": 34,
+     "label": "Read the logs"
+    },
+    {
+     "id": "agent-00b3",
+     "parent": null,
+     "model": "Haiku 5.5",
+     "start": 1790100600.0,
+     "end": 1790101240.0,
+     "cost_usd": 2.36,
+     "tools": 33,
+     "label": "Search the repo"
+    }
+   ],
+   "live": false
+  }
+ ],
+ "totals": {
+  "cost_usd": 1913.08,
+  "sessions": 24,
+  "runs": 57,
+  "active_s": 195197,
+  "agent_active_s": 60750.0,
+  "prompts": 627
+ }
+}

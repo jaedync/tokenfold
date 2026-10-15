@@ -1,0 +1,43 @@
+{
+ "day": "2026-10-15",
+ "spend_usd": 143.0,
+ "typical_by_now_usd": 92.0,
+ "typical_day_usd": 147.0,
+ "prompts": 31,
+ "active_s": 9400,
+ "by_model": [
+  {
+   "model": "Opus 5.5",
+   "family": "opus",
+   "provider": "anthropic",
+   "usd": 118.4,
+   "tokens": 4854400
+  },
+  {
+   "model": "Sonnet 5.5",
+   "family": "sonnet",
+   "provider": "anthropic",
+   "usd": 21.7,
+   "tokens": 889700
+  },
+  {
+   "model": "Haiku 5.5",
+   "family": "haiku",
+   "provider": "anthropic",
+   "usd": 2.9,
+   "tokens": 118900
+  }
+ ],
+ "by_machine": [
+  {
+   "machine": "laptop",
+   "usd": 126.5,
+   "working": 1
+  },
+  {
+   "machine": "vm-01",
+   "usd": 16.5,
+   "working": 0
+  }
+ ]
+}

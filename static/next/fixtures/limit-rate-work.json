@@ -1,0 +1,18 @@
+{
+ "generated_at": 1792091940.0,
+ "period_start": null,
+ "fit_quality": {
+  "r2": null,
+  "intervals": 0,
+  "status": "not_available_for_scope",
+  "note": "Work scope has no subscription windows."
+ },
+ "usd_per_point": {
+  "seven_day": null,
+  "five_hour": null
+ },
+ "steps": [],
+ "families": [],
+ "peak": null,
+ "cache_read_weight": null
+}

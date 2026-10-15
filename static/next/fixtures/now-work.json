@@ -1,0 +1,83 @@
+{
+ "generated_at": 1792093450.0,
+ "scope": "enterprise",
+ "live": {
+  "working": 1,
+  "waiting": 1,
+  "idle": 1,
+  "subagents": 2,
+  "machines_online": 2,
+  "machines_total": 2,
+  "newest_data_age_s": 6,
+  "burn_usd_per_h": {
+   "m30": 19.0,
+   "h1": 17.67
+  }
+ },
+ "sessions": [
+  {
+   "id": "w-1a20",
+   "machine": "vm-01",
+   "project": "infra",
+   "title": null,
+   "state": "waiting",
+   "state_since": 1792093300.0,
+   "waiting_reason": "permission",
+   "model": "Sonnet 5.5",
+   "family": "sonnet",
+   "client": "claude-code",
+   "subagents": 0,
+   "cost_usd": 3.85,
+   "burn_usd_per_h": 0.0,
+   "share_of_binding_pct_per_h": 0.0
+  },
+  {
+   "id": "w-2b31",
+   "machine": "laptop",
+   "project": "api-server",
+   "title": null,
+   "state": "working",
+   "state_since": 1792090620.0,
+   "waiting_reason": null,
+   "model": "Opus 5.5",
+   "family": "opus",
+   "client": "claude-code",
+   "subagents": 2,
+   "cost_usd": 22.6,
+   "burn_usd_per_h": 19.0,
+   "share_of_binding_pct_per_h": 0.7723577235772358
+  },
+  {
+   "id": "w-3c42",
+   "machine": "laptop",
+   "project": "dashboard",
+   "title": null,
+   "state": "idle",
+   "state_since": 1792091400.0,
+   "waiting_reason": null,
+   "model": "Haiku 5.5",
+   "family": "haiku",
+   "client": "claude-code",
+   "subagents": 0,
+   "cost_usd": 0.62,
+   "burn_usd_per_h": 0.0,
+   "share_of_binding_pct_per_h": 0.0
+  }
+ ],
+ "machines": [
+  {
+   "name": "vm-01",
+   "last_event": 1792093442.0,
+   "last_ingest": 1792093410.0,
+   "working": 0,
+   "waiting": 1
+  },
+  {
+   "name": "laptop",
+   "last_event": 1792093442.0,
+   "last_ingest": 1792093410.0,
+   "working": 1,
+   "waiting": 0
+  }
+ ]
+}
