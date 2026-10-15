@@ -416,27 +416,22 @@ def _migrate(conn) -> None:
     # Pi copies: ingest keys and flags its own rows. Each start keys and flags
     # the Pi rows that code without the key wrote, in the same commit as the
     # durable rebuild obligation for the days that changed.
+    # The first start after the upgrade keys all Pi history this way; only
+    # the days of flagged rows (and each next day) change: 13 of 266 days on
+    # production.
     from .event_dedupe import mark_pi_copies
-    copy_days = mark_pi_copies(conn)
+    queue_rollup_days(conn, mark_pi_copies(conn))
     conn.execute(_PI_UNKEYED_INDEX)
-    pi_copy_version = conn.execute(
-        "SELECT value FROM meta WHERE key='pi_copy_dedupe_version'").fetchone()
-    if pi_copy_version is not None and pi_copy_version[0] == '1':
-        queue_rollup_days(conn, copy_days)
-    else:
-        conn.execute("DELETE FROM daily_summary")
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) "
-            "VALUES('pi_copy_dedupe_version','1')")
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) "
-            "VALUES('daily_summary_rebuild_pending','1')")
 
     # Startup-only exception to the write_txn rule: this runs inside
     # _init_lock before the connection is published to any other thread, so
     # nothing can race it in-process. (Two OS processes migrating at once are
     # serialized by SQLite's own file locks + busy_timeout.)
     conn.commit()
+    # A migration can leave a WAL of hundreds of MB (the first Pi copy pass:
+    # about 500 MB on production). Return that disk now; journal_size_limit
+    # alone keeps 64 MiB until the next checkpoint.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def get_conn() -> sqlite3.Connection:

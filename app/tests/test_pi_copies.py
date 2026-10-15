@@ -327,35 +327,79 @@ class PiCopyTest(_PiCopyBase):
         self.assertIn('SEARCH first_seen USING INDEX idx_events_pi_copy_key '
                       '(pi_copy_key=? AND rowid<?)', plan)
 
-    def test_migration_flags_history_and_rebuilds_rollups_once(self):
-        from app import db, main, summarizer
-        base = self.baseline()
+    def _pre_release_state(self):
+        """Orig and copy ingested as code without the key wrote them: no
+        keys, no flags, rollups that count both, startup rebuild done."""
+        from app import summarizer
         self.post(self.pi('orig', 'proj-a/s1.jsonl', pi_events(self.t0)))
         self.post(self.pi('copy', 'proj-b/s1.jsonl', pi_events(self.t0, ids='x-')))
         ingested = self.conn.execute(
             'SELECT uuid, pi_copy_key, pi_copy FROM events ORDER BY uuid').fetchall()
-        # Pre-release state: no keys, no flags, rollups that count both.
         self.conn.execute('UPDATE events SET pi_copy_key=NULL, pi_copy=NULL')
         self.conn.execute('UPDATE tool_uses SET pi_copy=NULL')
-        self.conn.execute("DELETE FROM meta WHERE key='pi_copy_dedupe_version'")
+        self.conn.execute("DELETE FROM meta WHERE key='daily_summary_rebuild_pending'")
         self.conn.commit()
         summarizer.summarize_days(sorted({r[0] for r in self.conn.execute(
             'SELECT DISTINCT day FROM events')}))
         self.assertAlmostEqual(self.conn.execute(
             'SELECT SUM(cost) FROM daily_summary').fetchone()[0], 2 * 1.85)
+        return ingested
+
+    def _stale_days(self):
+        """Days of flagged rows and each next day (its active-time seed)."""
+        flagged = {datetime.strptime(r[0], '%Y-%m-%d') for r in self.conn.execute(
+            'SELECT day FROM events WHERE pi_copy=1')}
+        return sorted(d.strftime('%Y-%m-%d') for d in
+                      flagged | {d + timedelta(days=1) for d in flagged})
+
+    def _meta(self, key):
+        row = self.conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+        return row and row[0]
+
+    def test_migration_flags_history_and_rebuilds_rollups_once(self):
+        import os
+        from app import db, main
+        base = self.baseline()
+        ingested = self._pre_release_state()
         db._migrate(self.conn)
-        self.assertEqual(self.conn.execute(
-            "SELECT value FROM meta WHERE key='daily_summary_rebuild_pending'").fetchone()[0], '1')
+        # Only the days of flagged rows are queued; other rollups stay.
+        self.assertIsNone(self._meta('daily_summary_rebuild_pending'))
+        self.assertEqual(json.loads(self._meta(db.ROLLUP_DAYS_KEY)), self._stale_days())
+        # The checkpoint after the commit empties the WAL.
+        self.assertEqual(os.path.getsize(self.db_path + '-wal'), 0)
         # The migration derives the same keys and flags from stored rows.
         self.assertEqual([tuple(r) for r in ingested], [tuple(r) for r in self.conn.execute(
             'SELECT uuid, pi_copy_key, pi_copy FROM events ORDER BY uuid')])
         main._backfill_if_needed()
+        self.assertIsNone(self._meta(db.ROLLUP_DAYS_KEY))
         self.assertEqual(self.metrics(), base)
         self.assertEqual(self.survivors(), ['orig'])
         # A second start neither re-flags nor re-queues a rebuild.
         db._migrate(self.conn)
-        self.assertIsNone(self.conn.execute(
-            "SELECT value FROM meta WHERE key='daily_summary_rebuild_pending'").fetchone())
+        self.assertIsNone(self._meta('daily_summary_rebuild_pending'))
+        self.assertIsNone(self._meta(db.ROLLUP_DAYS_KEY))
+        self.assertEqual(self.metrics(), base)
+
+    def test_meridian_migration_still_rebuilds_every_day(self):
+        from app import db, main, summarizer
+        base = self.baseline()
+        self._pre_release_state()
+        self.conn.execute("DELETE FROM meta WHERE key='meridian_pi_dedupe_version'")
+        self.conn.commit()
+        db._migrate(self.conn)
+        self.assertEqual(self._meta('daily_summary_rebuild_pending'), '1')
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) FROM daily_summary').fetchone()[0], 0)
+        rebuilt = []
+        real_summarize = summarizer.summarize_days
+        with patch.object(summarizer, 'summarize_days',
+                          side_effect=lambda days: rebuilt.extend(days)
+                          or real_summarize(days)):
+            main._backfill_if_needed()
+        self.assertEqual(rebuilt, sorted({r[0] for r in self.conn.execute(
+            'SELECT DISTINCT day FROM events')}))
+        self.assertIsNone(self._meta('daily_summary_rebuild_pending'))
+        self.assertIsNone(self._meta(db.ROLLUP_DAYS_KEY))
         self.assertEqual(self.metrics(), base)
 
     def test_every_start_keys_rows_from_code_without_keys(self):
@@ -407,9 +451,7 @@ class PiCopyTest(_PiCopyBase):
             'SELECT DISTINCT source_machine FROM events WHERE pi_copy=1')}, {'copy'})
         self.assertEqual(self.conn.execute(
             'SELECT COUNT(*) FROM tool_uses WHERE pi_copy=1').fetchone()[0], 1)
-        copy_days = sorted({r[0] for r in self.conn.execute(
-            'SELECT day FROM events WHERE pi_copy=1')})
-        self.assertEqual(rebuilt, copy_days)
+        self.assertEqual(rebuilt, self._stale_days())
         self.assertEqual(self.conn.execute(
             'SELECT SUM(cost) FROM daily_summary WHERE day=?', (other_day,)).fetchone()[0], 999)
         # Drop the other session so the metrics compare to one turn.
@@ -423,6 +465,41 @@ class PiCopyTest(_PiCopyBase):
         start()
         self.assertEqual(rebuilt, [])
         self.assertEqual(self.metrics(), base)
+
+    def test_start_re_rolls_the_day_after_a_flagged_day(self):
+        """The next day's active time is seeded from the flagged day's last
+        row, so a session continued after midnight changes that day too."""
+        from app import db, main, summarizer
+        midnight = self.t0 - 60
+        self.post(self.pi('orig', 'proj-a/s1.jsonl', pi_events(midnight - 200)))
+        later = [{'session_id': 'native-s1', 'event_id': 'x-u2', 'kind': 'user',
+                  'timestamp': _iso(midnight + 20), 'has_text': True, 'text_length': 7},
+                 {'session_id': 'native-s1', 'event_id': 'x-a2', 'kind': 'assistant',
+                  'timestamp': _iso(midnight + 50), 'provider': 'anthropic',
+                  'model': 'claude-opus-4-8', 'request_id': 'msg_a2',
+                  'usage': {'input': 10, 'cost_total': 2.0}}]
+        self.post(self.pi('copy', 'proj-b/s1.jsonl',
+                          pi_events(midnight - 200, ids='x-') + later))
+        day = datetime.fromtimestamp(midnight + 20, ZoneInfo(summarizer.TZ_NAME)).strftime('%Y-%m-%d')
+        self.conn.execute("UPDATE events SET pi_copy_key=NULL, pi_copy=NULL "
+                          "WHERE source_machine='copy'")
+        self.conn.execute('UPDATE tool_uses SET pi_copy=NULL')
+        self.conn.execute("DELETE FROM meta WHERE key='daily_summary_rebuild_pending'")
+        self.conn.commit()
+        for each in sorted({r[0] for r in self.conn.execute('SELECT DISTINCT day FROM events')}):
+            summarizer.summarize_days([each])  # as the startup rebuild does
+
+        def active_on_day():
+            return self.conn.execute(
+                'SELECT ROUND(SUM(active_s), 3) FROM daily_summary WHERE day=?',
+                (day,)).fetchone()[0]
+        self.assertEqual(active_on_day(), 120.0)  # seeded from a copy row
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE source_machine='copy' AND day=?",
+            (day,)).fetchone()[0], 2)  # the new rows only: never flagged
+        db._migrate(self.conn)
+        main._backfill_if_needed()
+        self.assertEqual(active_on_day(), 30.0)
 
     def test_start_finds_unkeyed_rows_through_a_partial_index(self):
         from app.event_dedupe import _UNKEYED_PI

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import sqlite3
+from datetime import date, timedelta
 from .config import enterprise_predicate
 
 logger = logging.getLogger(__name__)
@@ -129,8 +130,9 @@ def mark_pi_copies(conn: sqlite3.Connection) -> set[str]:
 
     Runs on each start; the caller owns the transaction. All rows of a new
     key are checked, so a row keyed here can also be the original of a row
-    keyed earlier. Returns the days of the newly flagged rows: only their
-    rollups change.
+    keyed earlier. Returns the days whose rollups change: the days of the
+    newly flagged rows, and each next day, whose active time is seeded from
+    the last activity row of the day before (summarizer Q5).
     """
     columns = {r[1] for r in conn.execute('PRAGMA table_info(events)')}
     if not columns.issuperset(('session_id', 'request_id', *_PI_ENTRY_FIELDS)):
@@ -161,7 +163,7 @@ def mark_pi_copies(conn: sqlite3.Connection) -> set[str]:
             "UPDATE tool_uses SET pi_copy=1 WHERE source_client='pi-agent' "
             "AND COALESCE(pi_copy,0)=0 AND event_uuid IN "
             "(SELECT uuid FROM events WHERE pi_copy=1)")
-    return days
+    return days | {(date.fromisoformat(d) + timedelta(days=1)).isoformat() for d in days}
 
 
 def _billable(alias: str) -> str:
