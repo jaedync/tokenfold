@@ -18,6 +18,8 @@ import threading
 import time
 import weakref
 
+from . import db
+
 log = logging.getLogger(__name__)
 
 # Every cache, so the app shutdown can wait for their builder threads.
@@ -56,6 +58,10 @@ class BackgroundCache:
             if entry and self.stale_s is not None and age >= self.ttl + self.stale_s:
                 entry = None
             thread = self._inflight.get(key)
+            if thread is None and db.shutting_down():
+                # Checked under the lock, as join_all reads _inflight: no
+                # build starts that the app shutdown could miss.
+                return entry[1] if entry is not None else None
             if thread is None:
                 thread = threading.Thread(target=self._run, args=(key, build),
                                           daemon=True, name=f"bg-cache:{key}")
