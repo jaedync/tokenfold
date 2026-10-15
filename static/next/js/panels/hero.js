@@ -2,7 +2,7 @@
 // billing meter against the budget (work), its verdict, the pace facts and
 // what burns it now. Every forecast here is a server field (pace block,
 // tight_epoch, verdict); the browser only picks words for them.
-import { h, fill, setText, setAttr, approx } from '../dom.js';
+import { h, patch, setText, setAttr, approx } from '../dom.js';
 import * as f from '../format.js';
 import { bindingWindow, claudeShortWindow, dataOf, roomElsewhere, nowFrom } from '../select.js';
 import { familyColor, splitLabel } from '../palette.js';
@@ -81,8 +81,8 @@ function burnDetail(now, meterRate) {
   return [
     h('div', { class: 'burn-sub' }, 'Live sessions, share of the meter rate'),
     h('div', { class: 'burnbar', role: 'img', 'aria-label': `Live sessions explain ≈${Math.round(sum / scale * 100)}% of the meter rate` },
-      rows.map((x) => h('span', { style: { width: `${x.share_of_binding_pct_per_h / scale * 100}%`, background: familyColor(x.family) } }))),
-    h('ul', { class: 'burn-list' }, rows.map((x) => h('li', null,
+      rows.map((x) => h('span', { 'data-key': x.id, style: { width: `${x.share_of_binding_pct_per_h / scale * 100}%`, background: familyColor(x.family) } }))),
+    h('ul', { class: 'burn-list' }, rows.map((x) => h('li', { 'data-key': x.id },
       h('span', { class: 'swatch', style: { background: familyColor(x.family) } }),
       h('span', { class: 'bn' }, h('b', null, x.machine), ` ${x.project || ''}`, x.subagents ? ` · ${x.subagents} sub` : ''),
       h('span', { class: 'bv' }, `≈+${x.share_of_binding_pct_per_h.toFixed(2)}%/h`),
@@ -134,15 +134,15 @@ export default {
       const p = w.pace || {};
       setText(kick, 'Binding window');
       setText(name, w.label);
-      fill(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
-      fill(unit, 'used', h('span', null, 'of the window'));
+      patch(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
+      patch(unit, 'used', h('span', null, 'of the window'));
       setMeter(w.pct, p.projected_pct, p.expected_pct,
         `${f.pct(w.pct)} used. Even pace is ${f.pct(p.expected_pct)} now. Forecast at reset: ${f.pct(p.projected_pct)}.`);
       setText(s0, '0');
       setText(sPace, f.missing(p.expected_pct) ? '' : `pace now ${f.pct(p.expected_pct)}`);
       setText(s1, '100%');
       setVerdict(verdictPersonal(w, now));
-      fill(facts,
+      patch(facts,
         fact('Pace', PACE_WORD[p.pace_state] || f.DASH, paceSub(w, now) || ' '),
         fact('Forecast', f.missing(p.projected_pct) ? f.DASH : [approx(), `${f.pct(p.projected_pct)} at reset`],
           f.missing(p.projected_pct) ? 'needs more data' : 'if the window average holds'),
@@ -151,14 +151,14 @@ export default {
           f.missing(w.usd_per_point) ? 'value per point unknown' : `${(100 - w.pct).toFixed(1)} pts × ≈${f.usd(w.usd_per_point, { cents: true })} per point`));
       renderBurn(w, s);
       renderShort(s);
-      fill(note, h('b', null, 'Dollars are API-equivalent at list price, not billed.'),
+      patch(note, h('b', null, 'Dollars are API-equivalent at list price, not billed.'),
         ' Your subscription pays for them. They show what the rest of the quota is worth.');
     }
 
     function renderBurn(w, s) {
       const h1 = w.burn_pct_per_h ? w.burn_pct_per_h.h1 : null;
       burn.hidden = false;
-      fill(burn,
+      patch(burn,
         h('div', { class: 'burn-head' },
           h('span', { class: 'kicker' }, 'Meter rate, last hour'),
           h('b', null, f.missing(h1) ? f.DASH : `+${h1.toFixed(2)}%/h`)),
@@ -174,7 +174,7 @@ export default {
       const chip = fh.waitable ? h('span', { class: 'chip chip-yellow', title: 'If it fills, a wait for its reset is short' }, 'Waitable')
         : (fh.verdict === 'tight' || fh.verdict === 'runs_out') ? h('span', { class: 'chip chip-red' }, 'Watch') : null;
       const room = roomElsewhere(runway).map((w) => h('b', null, `${splitLabel(w).prov} ${splitLabel(w).name.toLowerCase()} ${f.pct(w.pct)}`));
-      fill(short, h('div', { class: 'kicker' }, 'Short window'),
+      patch(short, h('div', { class: 'kicker' }, 'Short window'),
         h('div', { class: 'short-row' }, h('span', null, `${splitLabel(fh).prov} ${splitLabel(fh).name}`),
           h('span', { class: 'num' }, f.pct(fh.pct)),
           h('span', null, `resets ${f.when(fh.resets_at, now)} · in ${f.dur(fh.resets_at - now, true)}`), chip),
@@ -187,8 +187,8 @@ export default {
       const projPct = !f.missing(b.projected_usd) && b.budget_usd ? b.projected_usd / b.budget_usd * 100 : p.projected_pct;
       setText(kick, 'Billing meter');
       setText(name, w.label);
-      fill(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
-      fill(unit, 'of budget', h('span', null, `${f.usd(b.spent_usd ?? w.usd_spent)} of ${f.usd(b.budget_usd)}`));
+      patch(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
+      patch(unit, 'of budget', h('span', null, `${f.usd(b.spent_usd ?? w.usd_spent)} of ${f.usd(b.budget_usd)}`));
       setMeter(w.pct, projPct, p.expected_pct,
         `${f.pct(w.pct)} of the budget is billed. Workday pace is ${f.pct(p.expected_pct)} now.`);
       const expectedUsd = !f.missing(p.expected_pct) && b.budget_usd ? p.expected_pct / 100 * b.budget_usd : null;
@@ -197,7 +197,7 @@ export default {
       setText(s1, f.usd(b.budget_usd));
       setVerdict(verdictWork(w, b));
       const ahead = !f.missing(expectedUsd) ? (b.spent_usd ?? w.usd_spent) - expectedUsd : null;
-      fill(facts,
+      patch(facts,
         fact('Pace', PACE_WORD[b.pace_state || p.pace_state] || f.DASH,
           f.missing(ahead) ? ' ' : `${f.usd(Math.abs(ahead))} ${ahead >= 0 ? 'ahead of' : 'behind'} an even workday spread`),
         fact('Forecast', f.missing(b.projected_usd) ? f.DASH : [approx(), f.usd(b.projected_usd)], `at month end, ${f.dateShort(w.resets_at - 1)}`),
@@ -205,8 +205,8 @@ export default {
         fact('Meter', f.age(now - w.observed_at), 'Anthropic billing meter'));
       burn.hidden = true;
       short.hidden = false;
-      fill(short, h('p', { class: 'burn-none' }, 'The billing meter is the limit. Work usage has no quota windows.'));
-      fill(note, h('b', null, 'Work dollars on the meter are billed dollars.'),
+      patch(short, h('p', { class: 'burn-none' }, 'The billing meter is the limit. Work usage has no quota windows.'));
+      patch(note, h('b', null, 'Work dollars on the meter are billed dollars.'),
         ' Session and daily figures are list-price estimates (≈) until the meter catches up.');
     }
 
@@ -215,18 +215,18 @@ export default {
       const line = feedLine(s.runway, 'the limit feed');
       const w = bindingWindow(runway);
       if (line || !w) {
-        fill(state, line || (runway ? h('div', { class: 'p-state' }, 'No limit window has data yet.',
+        patch(state, line || (runway ? h('div', { class: 'p-state' }, 'No limit window has data yet.',
           h('small', null, 'The quota feed reports every 2 min.')) : null));
         body.hidden = true;
         setText(name, '');
         return;
       }
-      fill(state);
+      patch(state);
       body.hidden = false;
       const now = nowFrom(s);
       if (w.kind === 'month') renderWork(w, runway.budget, now); else renderPersonal(w, s, now);
       big.classList.toggle('is-stale', Boolean(w.stale));
-      fill(age, w.stale ? h('span', { class: 'age' }, `Window data ${f.age(w.age_s)}`) : null, staleNote(s.runway, now));
+      patch(age, w.stale ? h('span', { class: 'age' }, `Window data ${f.age(w.age_s)}`) : null, staleNote(s.runway, now));
     }
 
     return { update };

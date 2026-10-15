@@ -206,5 +206,71 @@ class NextStaticVersionTest(TempDBTestCase):
             self.assertNotEqual(_static_version(folder), v1)
 
 
+
+class NextModulePreloadTest(TempDBTestCase):
+    """The shell lists every module of the static import graph as a
+    modulepreload, so the browser fetches them in one round, not one round
+    per import depth."""
+
+    ROOT = Path(__file__).resolve().parents[2] / "static" / "next"
+
+    def setUp(self):
+        super().setUp()
+        self.html = self.client().get("/next?scope=personal").text
+        self.base = data_attr(self.html, "static")
+
+    def preloads(self):
+        return re.findall(r'<link rel="modulepreload" href="([^"]+)"', self.html)
+
+    def test_every_static_import_is_preloaded(self):
+        from app.next_page import module_graph
+        rels = module_graph(self.ROOT, "js/early.js", "js/main.js")
+        self.assertIn("js/early.js", rels)
+        self.assertIn("js/main.js", rels)
+        self.assertIn("js/panels/hero.js", rels)
+        self.assertIn("vendor/uplot/uPlot.esm.js", rels)
+        hrefs = self.preloads()
+        self.assertEqual(len(hrefs), len(set(hrefs)), "a module is preloaded twice")
+        for href in hrefs:
+            self.assertTrue(href.startswith(self.base + "/"), href)
+        self.assertEqual(sorted(h[len(self.base) + 1:] for h in hrefs), rels)
+
+    def test_graph_follows_imports_and_skips_dynamic_ones(self):
+        import tempfile
+        from app.next_page import module_graph
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "js" / "sub").mkdir(parents=True)
+            (root / "js" / "main.js").write_text(
+                "import { a } from './a.js';\nimport './sub/side.js';\n"
+                "export { b } from \"./sub/b.js\";\nconst lazy = () => import('./lazy.js');\n")
+            (root / "js" / "a.js").write_text("import x from '../vendor/x.js';\nexport const a = 1;")
+            (root / "js" / "sub" / "side.js").write_text("// import nothing from './nope.js'\n")
+            (root / "js" / "sub" / "b.js").write_text("import { a } from '../a.js';\nexport const b = a;")
+            (root / "vendor").mkdir()
+            (root / "vendor" / "x.js").write_text("export default 1;")
+            self.assertEqual(module_graph(root, "js/main.js"),
+                             ["js/a.js", "js/main.js", "js/sub/b.js", "js/sub/side.js", "vendor/x.js"])
+
+    def test_an_import_outside_the_folder_is_skipped_not_an_error(self):
+        # A path out of static/next (or a symlink to one) must not raise: the
+        # graph runs at import time (STATIC_VERSION) and on every page view.
+        import tempfile
+        from app.next_page import module_graph
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside.js"
+            outside.write_text("export const o = 1;")
+            root = Path(tmp) / "static"
+            (root / "js").mkdir(parents=True)
+            (root / "js" / "main.js").write_text(
+                "import { o } from '../../outside.js';\nimport { a } from './a.js';\n"
+                "import { l } from './link.js';\nimport './bad.js';\n")
+            (root / "js" / "a.js").write_text("export const a = 1;")
+            (root / "js" / "bad.js").write_bytes(b"\xff\xfe not utf-8")
+            (root / "js" / "link.js").symlink_to(outside)
+            self.assertEqual(module_graph(root, "js/main.js"), ["js/a.js", "js/main.js"])
+            self.assertEqual(module_graph(root, "../outside.js"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

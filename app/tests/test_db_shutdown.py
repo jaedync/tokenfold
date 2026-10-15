@@ -190,6 +190,7 @@ class LifespanShutdownTest(TempDBTestCase):
         import app.limit_rate as lr
         import app.main as main
         import app.prewarm as pw
+        import app.read_cache as rc
         stubs = [patch.object(main, "load_pricing"),
                  patch.object(main.usage_fetcher, "should_run", return_value=False),
                  patch.object(main, "init_light", new=lambda: asyncio.sleep(0)),
@@ -205,6 +206,7 @@ class LifespanShutdownTest(TempDBTestCase):
                  patch.object(lr, "join_refresh", side_effect=lambda t: order.append("fit")),
                  patch.object(pw, "join", side_effect=lambda t: order.append("prewarm")),
                  patch.object(bg, "join_all", side_effect=lambda t: order.append("bg")),
+                 patch.object(rc, "join_all", side_effect=lambda t: order.append("read")),
                  patch.object(main, "close_conn", side_effect=lambda: order.append("close"))]
         for p in stubs:
             p.start()
@@ -224,7 +226,7 @@ class LifespanShutdownTest(TempDBTestCase):
         self._run(main)
         self.assertEqual(order[0], "signal")
         self.assertEqual(order[-1], "close")
-        self.assertEqual(sorted(order[1:-1]), ["bg", "fit", "prewarm", "rebuild", "sweeps"])
+        self.assertEqual(sorted(order[1:-1]), ["bg", "fit", "prewarm", "read", "rebuild", "sweeps"])
 
     def test_prewarm_is_off_under_tests(self):
         import app.config as cfg

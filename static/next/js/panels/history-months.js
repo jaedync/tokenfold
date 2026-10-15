@@ -1,7 +1,7 @@
 // Monthly spend (/api/spend-history): one stacked bar per UTC month, by
 // model, with a legend grouped by provider. In the work scope a line marks
 // the monthly budget. The browser only adds and draws server values.
-import { h, fill, approx, panelHead, segmented } from '../dom.js';
+import { h, patch, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { feedLine, staleNote, stateLine } from '../panel.js';
@@ -20,9 +20,9 @@ function budgetOf(s) {
 
 function legend(providers) {
   return h('div', { class: 'mo-legend', 'aria-label': 'Models by provider' }, providers.map((p) =>
-    h('div', { class: 'mo-lg' },
+    h('div', { class: 'mo-lg', 'data-key': p.name },
       h('div', { class: 'mo-lg-p' }, p.name, h('span', null, [' ', approx(), f.usdShort(p.total)])),
-      h('ul', null, p.series.map((s) => h('li', null,
+      h('ul', null, p.series.map((s) => h('li', { 'data-key': s.id },
         h('span', { class: `swatch${s.hatch ? ' hatch' : ''}`, style: { background: s.color } }),
         h('span', { class: 'mo-lg-n' }, s.model)))))));
 }
@@ -36,7 +36,7 @@ function readout(row, series, budget) {
     h('div', { class: 'kicker' }, row.partial ? `${row.label.long} · to date` : row.label.long),
     h('div', { class: 'mo-read-v' }, approx(), f.usd(row.total, { cents: false })),
     budget ? h('p', { class: 'mo-read-sub' }, `${Math.round(row.total / budget * 100)}% of the ${f.usd(budget, { cents: false })} budget`) : null,
-    h('ul', { class: 'mo-read-list' }, items.slice(0, 8).map(({ s, v }) => h('li', null,
+    h('ul', { class: 'mo-read-list' }, items.slice(0, 8).map(({ s, v }) => h('li', { 'data-key': s.id },
       h('span', { class: `swatch${s.hatch ? ' hatch' : ''}`, style: { background: s.color } }),
       h('span', { class: 'rn', title: `${s.provider} · ${s.model}` }, s.other ? `${s.provider} · other` : s.model),
       h('span', { class: 'rv' }, f.usd(v, { cents: false })),
@@ -52,13 +52,13 @@ function chart(rows, series, budget, picked, onPick) {
   const cols = rows.map((r, i) => {
     const segs = series.map((s) => ({ s, v: r.values.get(s.id) || 0 })).filter((x) => x.v > 0);
     return h('button', {
-      type: 'button', class: 'mo-col', 'aria-pressed': String(i === picked), 'data-partial': r.partial ? '1' : null,
+      type: 'button', class: 'mo-col', 'data-key': r.month, 'aria-pressed': String(i === picked), 'data-partial': r.partial ? '1' : null,
       'aria-label': `${r.label.long}${r.partial ? ', to date' : ''}: about ${f.usd(r.total, { cents: false })}`,
       onclick: () => onPick(i),
     },
     h('span', { class: 'mo-stack', style: { height: `${(r.total || 0) / top * 100}%` } },
       h('span', { class: 'mo-total' }, f.usdShort(r.total)),
-      segs.map(({ s, v }) => h('i', { class: s.hatch ? 'hatch' : null, style: { flex: `${v} 1 0`, background: s.color } }))),
+      segs.map(({ s, v }) => h('i', { 'data-key': s.id, class: s.hatch ? 'hatch' : null, style: { flex: `${v} 1 0`, background: s.color } }))),
     h('span', { class: 'mo-x' }, r.label.short, r.partial ? h('small', null, 'to date') : null));
   });
   return h('div', { class: 'mo-chart' },
@@ -87,26 +87,24 @@ export default {
       if (!changed(seen, key)) return;
       seen = key;
       const work = s.scope === 'enterprise';
-      fill(lead, `API-equivalent spend per calendar month (UTC), stacked by model. ${API_NOTE}`,
+      patch(lead, `API-equivalent spend per calendar month (UTC), stacked by model. ${API_NOTE}`,
         work ? ' The billing meter has the billed amount.' : '');
       const line = feedLine(s.spendHistory, 'the monthly spend');
-      fill(state, line, staleNote(s.spendHistory, nowFrom(s)));
-      if (line) { fill(body); return; }
+      patch(state, line, staleNote(s.spendHistory, nowFrom(s)));
+      if (line) { patch(body); return; }
       const months = (dataOf(s.spendHistory).months || []).filter((m) => m && m.month);
-      if (!months.length) { fill(body, stateLine('No spend is recorded yet.')); return; }
+      if (!months.length) { patch(body, stateLine('No spend is recorded yet.')); return; }
       range.el.hidden = months.length <= RECENT;
       const shown = span === 'all' ? months : months.slice(-RECENT);
       const { series, providers, rows } = buildSeries(shown);
       // Default pick: the newest full month (the current one is still running).
       const def = rows.length > 1 && rows[rows.length - 1].partial ? rows.length - 2 : rows.length - 1;
       const pick = picked === null || picked >= rows.length ? def : picked;
-      fill(body,
+      patch(body,
         h('div', { class: 'mo-main' }, chart(rows, series, budget, pick, (i) => {
+          // patch() keeps the bar buttons, so the keyboard stays on the picked bar.
           picked = i;
           update(ctx.store.get());
-          // The redraw replaced the buttons: keep the keyboard on the picked bar.
-          const btn = body.querySelectorAll('.mo-col')[i];
-          if (btn) btn.focus();
         }),
           readout(rows[pick], series, budget)),
         legend(providers),

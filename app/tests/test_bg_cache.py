@@ -7,6 +7,13 @@ from app.bg_cache import BackgroundCache
 
 
 class BackgroundCacheTests(unittest.TestCase):
+    def setUp(self):
+        # An earlier test's app shutdown leaves the flag set; builds need it clear.
+        from app import db
+        was = db.shutting_down()
+        db._shutdown.clear()
+        self.addCleanup(lambda: db._shutdown.set() if was else None)
+
     def test_fast_build_is_returned_on_a_cold_miss(self):
         cache = BackgroundCache(ttl=60, wait_s=2.0)
         self.assertEqual(cache.get("k", lambda: 42), 42)
@@ -64,6 +71,22 @@ class BackgroundCacheTests(unittest.TestCase):
             raise RuntimeError("x")
         self.assertIsNone(cache.get("k", boom))
         self.assertEqual(cache.get("k", lambda: 7), 7)
+
+    def test_no_build_starts_after_the_shutdown_began(self):
+        # The lifespan joins builder threads after begin_shutdown(); a build
+        # started later would outlive the database connection it reads.
+        from app import db
+        cache = BackgroundCache(ttl=0.0, wait_s=2.0)
+        cache.get("stale", lambda: "old")
+        calls = []
+        db.begin_shutdown()
+        try:
+            self.assertIsNone(cache.get("cold", lambda: calls.append(1) or "new"))
+            self.assertEqual(cache.get("stale", lambda: calls.append(1) or "new"), "old")
+        finally:
+            db._shutdown.clear()
+        self.assertEqual(calls, [])
+        self.assertEqual(cache._inflight, {})
 
 
 if __name__ == "__main__":

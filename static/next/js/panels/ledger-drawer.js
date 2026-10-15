@@ -2,7 +2,7 @@
 // row, then loads /api/sessions/{id} (the whole session, prompts, tools,
 // tokens, served model). Esc and the scrim close it; Tab stays inside;
 // prev/next walk the period's sessions in time order.
-import { h, fill, setText } from '../dom.js';
+import { h, patch, setText } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, normalize, sessionName, clientName, projectLabel, peakParallel } from './ledger-model.js';
 import { colorsFor, swatch, money, pct0, tokens, plural, closeSession, openSession } from './ledger-kit.js';
@@ -97,6 +97,8 @@ export default {
     scrim.addEventListener('click', () => closeSession(store));
 
     let openId = null, detail = null, dstate = 'idle', ctrl = null, seenD = null, hideTimer = null;
+    // Sessions whose run tree shows every run ("Show all N runs").
+    const allRuns = new Set();
     const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     function order(d) {
@@ -113,24 +115,24 @@ export default {
       const d = derive(st, ctx.now());
       const row = rowFor(d, openId);
       const s = detail ? { ...normalize({ sessions: [detail] }).sessions[0], fileEdits: detail.file_edits } : row;
-      if (!s) { fill(headEl, h('h2', { class: 'dr-title', id: 'dr-title' }, 'Session'), h('button', { type: 'button', class: 'dr-close', 'aria-label': 'Close', onclick: () => closeSession(store) }, '×')); fill(bodyEl, h('p', { class: 'dr-sec dr-quiet' }, dstate === 'loading' ? 'Loading the session…' : 'This session is not in the data.')); return; }
+      if (!s) { patch(headEl, h('h2', { class: 'dr-title', id: 'dr-title' }, 'Session'), h('button', { type: 'button', class: 'dr-close', 'aria-label': 'Close', onclick: () => closeSession(store) }, '×')); patch(bodyEl, h('p', { class: 'dr-sec dr-quiet' }, dstate === 'loading' ? 'Loading the session…' : 'This session is not in the data.')); return; }
       const c = colorsFor(d);
       const ids = order(d), i = ids.indexOf(s.id);
       const prev = i > 0 ? ids[i - 1] : null, next = i >= 0 && i < ids.length - 1 ? ids[i + 1] : null;
       const nav = (id, label, sym) => h('button', { type: 'button', 'aria-label': label, disabled: !id, 'data-go': id || null, onclick: () => go(id, label) }, sym);
       const wall = Math.max(0, s.end - s.start);
       const live = s.live || (row && row.live);
-      fill(headEl,
+      patch(headEl,
         h('div', { class: 'dr-kicker' }, h('span', { class: 'kicker' }, [s.machine, s.project && projectLabel(s.project), clientName(s.client)].filter(Boolean).join(' · ')), live ? h('span', { class: 'live-tag' }, 'Live') : null),
         h('div', { class: 'dr-nav' }, nav(prev, 'Previous session', '‹'), nav(next, 'Next session', '›'),
           h('button', { type: 'button', class: 'dr-close', 'aria-label': 'Close', onclick: () => closeSession(store) }, '×')),
         h('h2', { class: 'dr-title', id: 'dr-title' }, sessionName(s)),
         h('div', { class: 'dr-when' }, h('b', null, `${f.dayClock(s.start)} → ${live ? 'now' : f.when(s.end, s.start)}`), ` · ${f.shortDur(wall)} wall · ${f.shortDur(s.active)} active`));
       const runs = s.runs;
-      fill(bodyEl,
+      patch(bodyEl,
         costSection(s, row, live),
         sec('Fan-out', runs.length ? `${plural(runs.length, 'run')} · peak ${peakParallel(runs)} at once` : 'no subagents',
-          renderGantt(s, detail ? detail.prompt_times : null, c, live), runTree(s, c)),
+          renderGantt(s, detail ? detail.prompt_times : null, c, live, (bodyEl.querySelector('.gantt') || {}).clientWidth), runTree(s, c, allRuns.has(s.id), () => { allRuns.add(s.id); render(null); })),
         modelsSection(s, detail, c),
         toolsTokens(s, detail, dstate),
         servedSection(detail, dstate, st.scope),

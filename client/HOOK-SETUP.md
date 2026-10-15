@@ -159,7 +159,7 @@ still wired up without touching any files.
 | `could not reach … (HTTP 000)` | Network/DNS/TLS. Check the URL and connectivity; the server uses Caddy + a valid cert. |
 | `settings.json is not valid JSON` | Your `settings.json` is malformed. Fix it by hand and re-run; the installer won't overwrite broken JSON. |
 | Hook installed but no new events | Cursor (`~/.tokenfold-cursor.json`) may already be current — that's normal; `push completed — no new events` means nothing new since last flush. New activity flushes on the next Stop/SessionEnd. |
-| Push log shows `Token refresh failed: 403` / `Usage fetch 401` | Only the **OAuth usage gauges** are affected (the personal weekly/5h limit display), **not** event/cost ingestion. Re-auth `~/.claude/.credentials.json` by running `claude` and logging in. |
+| Push log shows `The Claude OAuth token expired` / `Usage fetch 401` | Only the **OAuth usage gauges** are affected (the personal weekly/5h limit display), **not** event/cost ingestion. The client only reads `~/.claude/.credentials.json` and never refreshes it. Run `claude`: Claude Code renews the token. If that fails, log in again. |
 | Want detailed push output | `TOKENFOLD_VERBOSE=1 python3 ~/.claude/usage-telemetry/tokenfold-push.py` |
 
 **Rollback:** the previous `settings.json` is saved as

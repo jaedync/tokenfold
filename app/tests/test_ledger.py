@@ -256,6 +256,59 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertEqual(self.session('nope').status_code, 404)
 
 
+class LedgerStaleWhileRevalidateTest(LedgerTestBase):
+    """A poll past the cache ttl gets the cached body at once; one background
+    build brings the next poll up to date."""
+
+    def test_an_expired_ledger_is_served_while_it_rebuilds(self):
+        import app.ledger as ledger
+        from app import read_cache
+        t = self.t0
+        self.cc('a.jsonl', [self.cc_user('u1', 'a', t), self.cc_reply('a1', 'a', t + 10, 'r1')])
+        first = self.ledger()
+        self.assertEqual(len(first['sessions']), 1)
+        self.cc('b.jsonl', [self.cc_user('u2', 'b', t + 20), self.cc_reply('b1', 'b', t + 30, 'r2')])
+        with ledger._cache._lock:
+            for key, (ts, value) in list(ledger._cache._entries.items()):
+                ledger._cache._entries[key] = (ts - ledger._cache.ttl - 1, value)
+        builds = []
+        real = ledger.build_ledger
+        with patch('app.ledger.build_ledger', side_effect=lambda *a, **k: builds.append(1) or real(*a, **k)):
+            stale = self.ledger()
+            read_cache.join_all(10)
+        self.assertEqual(len(stale['sessions']), 1, 'the poll waited for the rebuild')
+        self.assertEqual(builds, [1])
+        self.assertEqual(len(self.ledger()['sessions']), 2)
+
+
+class LedgerStaleHeaderTest(LedgerTestBase):
+    """After an ingest (the cache version changes) the ledger answers at once
+    with the body built before it and says so (X-Tokenfold-Stale: 1), so the
+    dashboard reads it again a few seconds later."""
+
+    def get(self):
+        r = self.http.get('/api/ledger', params={'scope': 'personal', 'from': self.t0 - 60, 'to': self.t0 + 3600})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r
+
+    def test_a_body_built_before_an_ingest_is_marked_stale(self):
+        from app import aggregator, read_cache
+        t = self.t0
+        self.cc('a.jsonl', [self.cc_user('u1', 'a', t), self.cc_reply('a1', 'a', t + 10, 'r1')])
+        first = self.get()
+        self.assertNotIn('x-tokenfold-stale', first.headers)
+        self.cc('b.jsonl', [self.cc_user('u2', 'b', t + 20), self.cc_reply('b1', 'b', t + 30, 'r2')])
+        with aggregator._cache_lock:
+            aggregator._cache_version_bump()  # what invalidate_cache does after the ingest
+        stale = self.get()
+        self.assertEqual(stale.headers.get('x-tokenfold-stale'), '1')
+        self.assertEqual(len(stale.json()['sessions']), 1)
+        read_cache.join_all(10)
+        fresh = self.get()
+        self.assertNotIn('x-tokenfold-stale', fresh.headers)
+        self.assertEqual(len(fresh.json()['sessions']), 2)
+
+
 class LiveSnapshotThreadTest(LedgerTestBase):
     """agent_state.snapshot() prunes the shared session dict, which only the
     event loop may change: the ledger routes must take it there."""

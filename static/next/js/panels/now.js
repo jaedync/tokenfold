@@ -1,7 +1,7 @@
 // Now: live sessions on every machine, waiting first (longest wait on top),
 // then working, then idle. Squares are live subagents. A session that starts
 // to wait flashes once and is announced to screen readers.
-import { h, fill, setText, approx, panelHead } from '../dom.js';
+import { h, patch, setText, approx, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom, sortSessions } from '../select.js';
 import { familyColor } from '../palette.js';
@@ -19,13 +19,12 @@ function slots(n) {
   return out;
 }
 
-function row(x, now, flash, refs) {
+function row(x, now, flash) {
   const dur = h('span', null, f.shortDur(now - x.state_since));
   const cost = h('span', null, f.usd(x.cost_usd, { cents: true }));
-  refs.set(x.id, { dur, cost, since: x.state_since });
   const [chipCls, chipText] = CHIP[x.state] || ['chip chip-line', x.state];
   const why = x.state === 'waiting' && WHY[x.waiting_reason] ? [`${WHY[x.waiting_reason]} · `, dur] : [dur];
-  return h('li', { class: `row${flash ? ' flash' : ''}`, 'data-state': x.state, 'data-id': x.id, title: x.title || null },
+  return h('li', { class: `row${flash ? ' flash' : ''}`, 'data-state': x.state, 'data-id': x.id, 'data-key': x.id, title: x.title || null },
     h('span', { class: 'rbar' }),
     h('span', { class: 'r-id' }, h('span', { class: 'r-mach' }, x.machine), h('span', { class: 'r-proj' }, x.project || '')),
     h('span', { class: 'r-model' }, h('span', { class: 'swatch', style: { background: familyColor(x.family) } }), x.model || f.DASH),
@@ -50,18 +49,17 @@ export default {
     const state = h('div');
     el.append(head.el, state, groups, foot);
 
-    let structure = '';
     let waitingIds = null;  // null until the first good payload: the first render announces nothing
-    const refs = new Map();
 
+    // Every update patches the rows in place (keyed by session): a row that
+    // did not change keeps its node, so hover and focus stay on it.
     function render(sessions, now, fresh) {
-      refs.clear();
-      fill(groups, GROUPS.map(([st, title]) => {
+      patch(groups, GROUPS.map(([st, title]) => {
         const rows = sessions.filter((x) => x.state === st);
         if (!rows.length && st !== 'waiting') return null;
-        return h('div', { class: 'grp', 'data-state': st },
+        return h('div', { class: 'grp', 'data-state': st, 'data-key': st },
           h('div', { class: 'kicker grp-head' }, h('span', { class: 'sq' }), `${title} · ${rows.length}`),
-          rows.length ? h('ul', { class: 'rows' }, rows.map((x) => row(x, now, fresh.has(x.id), refs)))
+          rows.length ? h('ul', { class: 'rows' }, rows.map((x) => row(x, now, fresh.has(x.id))))
             : h('div', { class: 'empty-q' }, 'Nobody is waiting on you.'));
       }));
     }
@@ -70,8 +68,8 @@ export default {
       const now = nowFrom(s);
       const data = dataOf(s.now);
       const line = feedLine(s.now, 'the live feed');
-      fill(state, line, staleNote(s.now, now));
-      if (line) { fill(groups); fill(foot); setText(sub, ''); structure = ''; waitingIds = null; return; }
+      patch(state, line, staleNote(s.now, now));
+      if (line) { patch(groups); patch(foot); setText(sub, ''); waitingIds = null; return; }
       const sessions = sortSessions(data.sessions);
       const waiting = sessions.filter((x) => x.state === 'waiting');
       const fresh = new Set(waitingIds ? waiting.filter((x) => !waitingIds.has(x.id)).map((x) => x.id) : []);
@@ -79,22 +77,11 @@ export default {
         if (fresh.has(x.id)) ctx.announce(`${x.machine} · ${x.project || 'a session'} is waiting on you: ${WHY[x.waiting_reason] || 'it needs you'}.`);
       }
       waitingIds = new Set(waiting.map((x) => x.id));
-      const key = `${s.scope}|${sessions.map((x) => `${x.id}:${x.state}:${x.subagents}:${x.waiting_reason}:${x.model}`).join(',')}`;
-      if (key !== structure || fresh.size) {
-        structure = key;
-        render(sessions, now, fresh);
-      } else {
-        for (const x of sessions) {
-          const r = refs.get(x.id);
-          if (!r) continue;
-          setText(r.dur, f.shortDur(now - x.state_since));
-          setText(r.cost, f.usd(x.cost_usd, { cents: true }));
-        }
-      }
+      render(sessions, now, fresh);
       const machines = new Set(sessions.map((x) => x.machine));
       const subs = data.live ? data.live.subagents : sessions.reduce((a, x) => a + (x.subagents || 0), 0);
       setText(sub, `${sessions.length} sessions on ${machines.size} machines · ${subs} subagents`);
-      fill(foot, h('span', null, 'Squares: live subagents under the session.'), h('span', null, 'Time: how long in this state.'),
+      patch(foot, h('span', null, 'Squares: live subagents under the session.'), h('span', null, 'Time: how long in this state.'),
         h('span', null, s.scope === 'enterprise' ? '≈ $: list-price estimate for this session.' : '≈ $: API-equivalent for this session.'));
     }
 

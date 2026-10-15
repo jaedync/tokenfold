@@ -9,14 +9,15 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | Path | Purpose |
 |------|---------|
 | `templates/next.html` | Jinja shell: masthead, live bar, `<main id="view">`, footer. Sets `data-scope`, `data-scope-locked`, `data-owner`, `data-view`, `data-version`, `data-static` on `<body>`. |
-| `app/next_page.py` | `GET /` and `GET /next`: dashboard auth, scope precedence as `/classic` (lock > `?scope=` > `tf_scope` cookie > default). Also serves `static/next` under `/static/next-<version>/` (see Cache busting). |
+| `app/next_page.py` | `GET /` and `GET /next`: dashboard auth, scope precedence as `/classic` (lock > `?scope=` > `tf_scope` cookie > default). Also serves `static/next` under `/static/next-<version>/` (see Cache busting), and lists every module of the static import graph as a `modulepreload` link (`module_graph`). |
 | `css/tokenfold.css` | Tokens, atoms, layout, then one section per panel. |
-| `js/main.js` | Boot, hash router (`#runway`, `#ledger`, `#history`, `#lab`), scope switch, tab title, SSE bump. |
+| `js/main.js` | Boot, hash router (`#runway`, `#ledger`, `#history`, `#lab`), scope switch, tab title, SSE bump, idle prefetch of the other views' feeds. |
+| `js/early.js` | Starts the shell feeds and the first view's feeds before the rest of the modules load. Its URLs must match the view feeds (the boot checks in `app/tests/next_stable.test.cjs`). |
 | `js/api.js` | `getJSON(name, params, {scope, mock, signal})`, the endpoint table `ENDPOINTS`, `backoffMs()`. |
-| `js/feeds.js` | Shared polled feeds with backoff; pauses in a hidden tab. |
+| `js/feeds.js` | Shared polled feeds with backoff; pauses in a hidden tab. A refetch keeps the old data on screen. A scope switch sets `switching` and keeps the old content until the new data is in. `prefetch()` reads a feed once. A body the server marks stale (`X-Tokenfold-Stale: 1`, built before the newest ingest) is read again after 4 s, once per bump. |
 | `js/store.js` | Immutable store: `get()`, `set(key, value)`, `subscribe(fn)`. |
 | `js/format.js` | `usd`, `pct`, `dur`, `shortDur`, `age`, `clock`, `dayClock`, `when`, `esc`. Missing values print `—`. |
-| `js/dom.js` | `h()`, `fill()`, `setText()`, `approx()`, `segmented()`, `panelHead()`. |
+| `js/dom.js` | `h()`, `fill()`, `patch()`, `setText()`, `approx()`, `segmented()`, `panelHead()`. |
 | `js/panel.js` | `mountPanel()`, `feedLine()`, `feedStatus()`, `staleNote()`, `stateLine()`. |
 | `js/select.js` | Pure selectors: `bindingWindow`, `otherWindows`, `sortSessions`, `nowFrom`. |
 | `js/palette.js` | Model family colours (CSS variables only), provider names. |
@@ -78,6 +79,20 @@ export default {
 `mountPanel()` wraps `mount` and `update` in try/catch. A panel that throws
 shows one quiet line ("… failed to load"). The other panels keep working.
 
+### Updates in place
+
+A poll must not reload what the user looks at. In `update`, build the new
+content with `h()` and give it to `patch(el, ...)`, not `fill()`. `patch()`
+keeps every node that can stay and changes only text and attributes, so
+hover, focus, selection, scroll and open `<details>` stay. Give each row of a
+list that can change order a `data-key` (a session id, a model name, a
+month). A keyed row that moves keeps its focus, selection and inner scroll:
+`patch()` moves only the rows out of order, with `moveBefore` where the
+browser has it. Keep no reference to a node built for `patch()`: when an old node
+matches, the new one is dropped. `app/tests/next_stable.test.cjs` checks
+every view over three poll cycles: no layout shift, no replaced node, no
+"Loading".
+
 ### Feed state
 
 Each feed is a store key with `{status, data, error, at}`. `status` is
@@ -86,7 +101,7 @@ helpers so every panel speaks the same way:
 
 ```js
 const line = feedLine(state.today, "today's spend");   // null when there is data
-fill(stateEl, line, staleNote(state.today, nowFrom(state)));
+patch(stateEl, line, staleNote(state.today, nowFrom(state)));
 if (line) return;                                      // loading or unavailable
 ```
 

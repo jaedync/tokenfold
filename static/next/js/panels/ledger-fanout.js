@@ -8,15 +8,17 @@ import { svg, swatch, money } from './ledger-kit.js';
 const INK = '#161616', MUTED = '#5d5950', PAPER = '#f3eee3';
 const RH = 9, TOP = 38, MAX_ROWS = 16, TREE_FEW = 8;
 
-export function renderGantt(s, promptTimes, c, live) {
+// Drawn at once, at `width` (the drawer's gantt width now, 0 before it
+// opened: then its max width). The drawer patches the result into its kept
+// gantt, so a poll changes the bars in place; its ResizeObserver redraws
+// when the measured width differs from data-w.
+export function renderGantt(s, promptTimes, c, live, width) {
   const box = h('div', { class: 'gantt' });
-  // The drawer is measured after it opens; until then use its max width.
-  requestAnimationFrame(() => draw(box, s, promptTimes, c, live));
+  draw(box, s, promptTimes, c, live, width || 480);
   return box;
 }
 
-function draw(box, s, promptTimes, c, live) {
-  const W = box.clientWidth || 480;
+function draw(box, s, promptTimes, c, live, W) {
   box.dataset.w = String(W);
   const t0 = s.start, t1 = Math.max(s.end, s.start + 1);
   const x = (t) => ((Math.min(t1, Math.max(t0, t)) - t0) / (t1 - t0)) * (W - 4) + 2;
@@ -79,17 +81,14 @@ function row(c, depth, name, sub, active, cost, model) {
 }
 
 // Claude Code runs have no label (ingest drops the Task text): the model and
-// length name them instead.
-export function runTree(s, c) {
+// length name them instead. `all`: show every run; `onAll`: the "Show all"
+// click. The drawer keeps that state by session id and renders again, so the
+// button holds no built node (patch() may keep the old ones instead).
+export function runTree(s, c, all = false, onAll = null) {
   const list = ordered(s.runs);
-  const ul = h('ul', { class: 'tree' });
-  const fillTree = (all) => {
-    ul.replaceChildren(row(c, 0, 'Orchestrator', `${s.model}`, s.active, s.orch, s.model),
-      ...(all ? list : list.slice(0, TREE_FEW)).map(({ r, depth }) => row(c, depth,
-        r.label || `${r.model} run`, `${r.label ? `${r.model} · ` : ''}${f.int(r.tools || 0)} tools`, r.active, r.cost, r.model)));
-  };
-  fillTree(false);
-  if (list.length <= TREE_FEW) return ul;
-  const more = h('button', { type: 'button', class: 'tree-more', onclick: () => { fillTree(true); more.remove(); } }, `Show all ${list.length} runs`);
-  return h('div', null, ul, more);
+  const ul = h('ul', { class: 'tree' }, row(c, 0, 'Orchestrator', `${s.model}`, s.active, s.orch, s.model),
+    ...(all ? list : list.slice(0, TREE_FEW)).map(({ r, depth }) => row(c, depth,
+      r.label || `${r.model} run`, `${r.label ? `${r.model} · ` : ''}${f.int(r.tools || 0)} tools`, r.active, r.cost, r.model)));
+  const folded = !all && list.length > TREE_FEW;
+  return h('div', null, ul, folded ? h('button', { type: 'button', class: 'tree-more', onclick: onAll }, `Show all ${list.length} runs`) : null);
 }

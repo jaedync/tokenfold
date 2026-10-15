@@ -1,7 +1,7 @@
 // "Who spent it": the subagent share of the period's cost, cost by provider,
 // the biggest change in the model mix over 30 days, dollars per prompt and
 // the share of input read from cache.
-import { h, fill, panelHead } from '../dom.js';
+import { h, patch, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, peakParallel, filterSets } from './ledger-model.js';
 import { providerGroup, groupRank, GROUP_COLOR } from './ledger-colors.js';
@@ -80,16 +80,16 @@ export default {
         const d = derive(s, ctx.now());
         if (d === seen) return;
         seen = d;
-        if (!d.hasData) { fill(body); return; }
+        if (!d.hasData) { patch(body); return; }
         const t = totals(d), c = colorsFor(d);
         const tot = t.orch + t.sub;
-        if (!t.sessions) { fill(body, h('p', { class: 'ws-empty' }, 'Nothing matches this period and these filters.')); return; }
+        if (!t.sessions) { patch(body, h('p', { class: 'ws-empty' }, 'Nothing matches this period and these filters.')); return; }
         const subShare = tot ? t.sub / tot : 0;
         const prov = [...t.prov.entries()].sort((a, b) => groupRank(a[0]) - groupRank(b[0]));
         const modelFiltered = Boolean(filterSets(d.ui.filters).model);
         // Tokens come per session, not per model: a model filter cannot split them.
         const tokNote = modelFiltered ? 'Tokens do not split by model. Remove the model filter to see them.' : null;
-        fill(body,
+        patch(body,
           h('div', { class: 'ws-big' }, h('span', { class: 'ws-pct' }, pct0(subShare)), h('span', { class: 'ws-cap' }, 'of the cost was subagent work')),
           h('div', { class: 'ws-bar', role: 'img', 'aria-label': `Orchestrators ${money(t.orch)}, subagents ${money(t.sub)}` },
             h('i', { class: 'sb-orch', style: { width: `${(1 - subShare) * 100}%` } }), subShare > 0 ? h('i', { class: 'sb-sub', style: { width: `${subShare * 100}%` } }) : null),

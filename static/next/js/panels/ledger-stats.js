@@ -1,7 +1,7 @@
 // Ledger stat strip: cost, sessions, subagents, active time and prompts for
 // the period and the filters. The one place in the view that says what the
 // dollars are: API-equivalent at list price, not billed.
-import { h, fill, setText, approx } from '../dom.js';
+import { h, patch, setText, approx } from '../dom.js';
 import * as f from '../format.js';
 import { feedLine, staleNote } from '../panel.js';
 import { derive, matched, daysBetween } from './ledger-model.js';
@@ -60,7 +60,7 @@ export default {
         if (seen && key.every((k, i) => k === seen[i])) return;
         seen = key;
         const line = d.hasData ? null : feedLine(s.ledger, 'the ledger');
-        fill(state, line, staleNote(s.ledger, ctx.now()));
+        patch(state, line, staleNote(s.ledger, ctx.now()));
         row.hidden = Boolean(line);
         const filtered = d.ui.filters.length > 0;
         setText(period, `${periodLabel(d)} · ${filtered ? 'filtered' : 'all machines'}`);
@@ -70,7 +70,7 @@ export default {
         if (line) return;
         const t = sums(d);
         const days = Math.max(1, daysBetween(d.range.from, d.range.to).length);
-        fill(row,
+        patch(row,
           stat('Cost', [approx(), money(t.cost)], 'API-equivalent at list price, not billed'),
           stat('Sessions', f.int(t.sessions), days > 1 ? `${(t.sessions / days).toFixed(1)} a day` : `${f.int(t.live)} live now`),
           stat('Subagents', f.int(t.runs), t.sessions ? `${(t.runs / t.sessions).toFixed(1)} runs a session` : f.DASH),

@@ -1,7 +1,7 @@
 // Served-model check (/api/served-models/timeline?sessions=0): which model
 // actually wrote each signed thinking block, per time cell, for the models
 // that were ever answered by something else. Personal scope only.
-import { h, fill, panelHead, segmented } from '../dom.js';
+import { h, patch, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { changed } from './history-common.js';
@@ -72,7 +72,7 @@ function strips(data, now, colors) {
         cells.push(h('span', { class: 'sv-c', title: cellTitle(t0 + i * bin, t0 + (i + 1) * bin, bin, states) },
           states.map(([k], j) => h('i', { class: k === 'hidden' ? 'hatch' : null, style: { height: `${hs[j]}%`, background: colors.get(k) } }))));
       }
-      return [h('div', { class: 'sv-name' }, model), h('div', { class: 'sv-row', role: 'img', 'aria-label': `${model}: ${(data.latest || {})[model] ? stateName(data.latest[model].state) : ''}` }, cells)];
+      return [h('div', { class: 'sv-name', 'data-key': `n:${model}` }, model), h('div', { class: 'sv-row', 'data-key': `r:${model}`, role: 'img', 'aria-label': `${model}: ${(data.latest || {})[model] ? stateName(data.latest[model].state) : ''}` }, cells)];
     }),
     h('div', { class: 'sv-axis', 'aria-hidden': 'true' }, ticks(t0, now).map((t) =>
       h('span', { style: { left: `${(t - t0) / span * 100}%` } }, f.dateShort(t)))));
@@ -83,7 +83,7 @@ function latest(data) {
     const l = (data.latest || {})[m];
     if (!l) return null;
     const text = l.state === 'self' ? 'served as asked' : l.state === 'hidden' ? 'header hides the model id' : `served by ${l.state}`;
-    return h('li', { 'data-state': l.state === 'self' ? 'self' : 'other' }, h('b', null, m), ` · ${text} since ${f.dateShort(l.since)}`);
+    return h('li', { 'data-key': m, 'data-state': l.state === 'self' ? 'self' : 'other' }, h('b', null, m), ` · ${text} since ${f.dateShort(l.since)}`);
   }));
 }
 
@@ -94,7 +94,7 @@ function changeLog(data) {
     h('summary', null, `Change log · ${rows.length} combinations`),
     h('div', { class: 'tbl-scroll' }, h('table', { class: 'lab-tbl' },
       h('thead', null, h('tr', null, ['First seen', 'Asked for', 'Served by', 'Header', 'Last seen', 'Blocks', 'Sessions'].map((t, i) => h('th', { class: i >= 5 ? 'r' : null, scope: 'col' }, t)))),
-      h('tbody', null, rows.map((r) => h('tr', { 'data-self': r.state === 'self' ? '1' : null },
+      h('tbody', null, rows.map((r) => h('tr', { 'data-key': `${r.model}|${r.served_model}|${r.state}|${r.sig_version}|${r.sig_fields}`, 'data-self': r.state === 'self' ? '1' : null },
         h('td', null, `${f.dateShort(r.first_seen)} ${f.clock(r.first_seen)}`),
         h('td', null, r.model),
         h('td', { title: r.served_model || '' }, r.state === 'self' ? 'same model' : r.state === 'hidden' ? 'hidden' : r.state),
@@ -128,16 +128,16 @@ export default {
       el.hidden = s.scope === 'enterprise';
       if (el.hidden) return;
       const line = feedLine(s.servedTimeline, 'the served-model check');
-      fill(state, line, staleNote(s.servedTimeline, nowFrom(s)));
-      if (line) { fill(body); return; }
+      patch(state, line, staleNote(s.servedTimeline, nowFrom(s)));
+      if (line) { patch(body); return; }
       const data = dataOf(s.servedTimeline);
       if (!(data.models || []).length) {
-        fill(body, stateLine('Every signed block in this period came from the model that was asked for.'), changeLog(data));
+        patch(body, stateLine('Every signed block in this period came from the model that was asked for.'), changeLog(data));
         return;
       }
       const colors = palette(data.bins || []);
       const bin = data.bin_seconds || 3600;
-      fill(body, latest(data), strips(data, nowFrom(s), colors),
+      patch(body, latest(data), strips(data, nowFrom(s), colors),
         h('div', { class: 'sv-keys' }, [...colors.entries()].filter(([k]) => (data.bins || []).some((b) => b[2] === k)).map(([k, c]) =>
           h('span', null, h('i', { class: k === 'hidden' ? 'hatch' : null, style: { background: c } }), stateName(k))),
         h('span', null, `one cell = ${bin >= 86400 ? '1 day' : bin >= 3600 ? `${bin / 3600} h` : `${bin / 60} min`}`)),

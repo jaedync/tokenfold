@@ -18,18 +18,29 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from zoneinfo import ZoneInfo
 
 from .auth import require_dashboard_auth
 from .config import TZ_NAME
 from . import db
 from .db import get_conn, read_conn
-from .read_cache import ReadCache
+from .read_cache import STALE_HEADER, ReadCache
 from .pricing import display_model
 
 router = APIRouter()
-_timeline_cache = ReadCache()
+
+
+def _data_version() -> int:
+    # aggregator imports this module, so it is read here at call time.
+    from .aggregator import get_cache_version
+    return get_cache_version()
+
+
+# The Lab polls on SSE bumps: past the ttl, or after an ingest (the cache
+# version), a read gets the cached body at once, marked stale, and one
+# background build refreshes it (read_cache stale_s and version).
+_timeline_cache = ReadCache(stale_s=900, version=_data_version)
 TZ = ZoneInfo(TZ_NAME)
 
 DAYS_DEFAULT = 30
@@ -500,7 +511,7 @@ async def served_models(days: int = Query(default=DAYS_DEFAULT),
 
 @router.get("/api/served-models/timeline",
             dependencies=[Depends(require_dashboard_auth)])
-def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
+def served_models_timeline(response: Response, days: int = Query(default=DAYS_DEFAULT),
                                  scope: Optional[str] = Query(default=None),
                                  sessions: bool = Query(default=True)):
     """When each model was served by something other than itself.
@@ -515,7 +526,9 @@ def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
     def build():
         with read_conn() as conn:
             return served_model_timeline(conn, pred, days)
-    body = _timeline_cache.get((db.DB_PATH, pred, days), build)
+    body, stale = _timeline_cache.lookup((db.DB_PATH, pred, days), build)
+    if stale:
+        response.headers[STALE_HEADER] = "1"
     if sessions:
         return body
     # The Lab strips draw no per-session runs, and on a busy month they are

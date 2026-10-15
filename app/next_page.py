@@ -59,23 +59,66 @@ def _signature(folder):
                  for p, s in ((p, p.stat()) for p in _files(folder)))
 
 
+# Static imports and re-exports with a relative specifier. Dynamic import()
+# is left out: it loads on demand.
+_IMPORT_RE = re.compile(
+    r"""(?:^|[;}\s])(?:import|export)\s*(?:[\w*{}\s,$]+?\s*from\s*)?['"](\.{1,2}/[^'"]+)['"]""")
+_COMMENT_RE = re.compile(r"/\*.*?\*/|^\s*//.*?$", re.S | re.M)
+
+
+def module_graph(folder, *entries):
+    """Every module the entry modules import statically, as paths relative to
+    folder, sorted. The shell lists them as modulepreload links, so the
+    browser fetches the whole graph in one round instead of one round per
+    import depth."""
+    root = Path(folder).resolve()
+    seen, todo = set(), list(entries)
+    while todo:
+        rel = todo.pop()
+        if rel in seen:
+            continue
+        path = (root / rel).resolve()
+        if not path.is_file() or root not in path.parents:
+            continue
+        try:
+            source = _COMMENT_RE.sub("", path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue  # not a module the browser can load; never fail the page
+        seen.add(rel)
+        for spec in _IMPORT_RE.findall(source):
+            target = (path.parent / spec).resolve()
+            # An import out of the folder (or a symlink out of it) is not a
+            # static file this app serves: skip it, check before relative_to.
+            if root in target.parents:
+                todo.append(target.relative_to(root).as_posix())
+    return sorted(seen)
+
+
 _version_lock = threading.Lock()
-_version_cache = {"sig": None, "version": None}
+_version_cache = {"sig": None, "version": None, "modules": ()}
 
 
-def static_version(folder=_STATIC):
-    """The version for this page view: hashed again only when a file's size
-    or mtime moved (a dev edit without a restart), else the cached hash."""
+def _refresh(folder):
+    """Hash and scan again only when a file's size or mtime moved (a dev
+    edit without a restart); else keep the cached version and module list."""
     try:
         sig = _signature(folder) if folder.is_dir() else ()
     except OSError:
         sig = None
     with _version_lock:
         if sig is None or sig != _version_cache["sig"]:
-            _version_cache.update(sig=sig, version=_static_version(folder))
-        return _version_cache["version"]
+            _version_cache.update(sig=sig, version=_static_version(folder),
+                                  modules=tuple(module_graph(folder, *ENTRY_MODULES)))
+        return _version_cache["version"], _version_cache["modules"]
 
 
+def static_version(folder=_STATIC):
+    """The version for this page view."""
+    return _refresh(folder)[0]
+
+
+# The shell's module scripts (templates/next.html).
+ENTRY_MODULES = ("js/early.js", "js/main.js")
 STATIC_VERSION = static_version()
 _static_files = StaticFiles(directory=str(_STATIC), check_dir=False)
 
@@ -108,7 +151,7 @@ CSP = "default-src 'self'; style-src 'self'; img-src 'self' data:"
 @router.get("/next", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 def next_dashboard(request: Request, scope: Optional[str] = None):
     effective = page_scope(scope, request.cookies.get("tf_scope"))
-    version = static_version()
+    version, modules = _refresh(_STATIC)
     response = templates.TemplateResponse(request, "next.html", {
         "scope": effective,
         "scope_locked": bool(config.LOCKED_SCOPE),
@@ -116,6 +159,7 @@ def next_dashboard(request: Request, scope: Optional[str] = None):
         "default_view": DEFAULT_VIEW,
         "version": version,
         "static_base": STATIC_PREFIX + version,
+        "modules": modules,
     })
     # The security middleware sets no-store too; set here as well, so the
     # /next alias is covered whatever the middleware matches.

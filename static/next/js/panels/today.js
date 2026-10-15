@@ -1,6 +1,6 @@
 // Today: spend since local midnight against a typical day (median of the last
 // 28 days, from the server), the model mix and spend by machine.
-import { h, fill, setText, approx, panelHead } from '../dom.js';
+import { h, patch, setText, approx, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { familyColor, familyOf, FAMILY_ORDER } from '../palette.js';
@@ -40,18 +40,18 @@ export default {
       seen = s.today; seenMinute = Math.floor(now / 60); seenScope = s.scope;
       const t = dataOf(s.today);
       const line = feedLine(s.today, "today's spend");
-      fill(state, line, staleNote(s.today, now));
+      patch(state, line, staleNote(s.today, now));
       body.hidden = Boolean(line);
       if (line) return;
       setText(sub, s.scope === 'enterprise' ? 'since midnight · list-price estimate' : 'since midnight');
-      fill(big, approx(), f.usd(t.spend_usd, { cents: false }));
+      patch(big, approx(), f.usd(t.spend_usd, { cents: false }));
       const ref = t.typical_by_now_usd;
       if (!f.missing(ref) && ref > 0) {
         const delta = (t.spend_usd / ref - 1) * 100;
-        fill(cmp, h('b', null, `${delta >= 0 ? '+' : '−'}${Math.abs(delta).toFixed(0)}%`), ` vs typical by ${f.clock(now)} (${f.usd(ref, { cents: false })})`);
+        patch(cmp, h('b', null, `${delta >= 0 ? '+' : '−'}${Math.abs(delta).toFixed(0)}%`), ` vs typical by ${f.clock(now)} (${f.usd(ref, { cents: false })})`);
       } else {
         // A known full day means history exists: the by-hour profile is still building.
-        fill(cmp, f.missing(t.typical_day_usd) ? 'No typical day yet.' : 'The typical spend by this hour is not ready yet.');
+        patch(cmp, f.missing(t.typical_day_usd) ? 'No typical day yet.' : 'The typical spend by this hour is not ready yet.');
       }
       setText(facts, `${f.int(t.prompts)} prompts · ${f.dur(t.active_s)} active`);
       const scale = Math.max(t.spend_usd || 0, t.typical_day_usd || 0, ref || 0) * 1.08 || 1;
@@ -60,7 +60,7 @@ export default {
       if (!f.missing(ref)) barTypical.style.left = `${ref / scale * 100}%`;
       barDay.hidden = f.missing(t.typical_day_usd);
       if (!f.missing(t.typical_day_usd)) barDay.style.left = `${t.typical_day_usd / scale * 100}%`;
-      fill(keys,
+      patch(keys,
         h('span', null, h('i', { style: { background: 'var(--ink)' } }), 'today'),
         h('span', null, h('i', { style: { background: 'var(--yellow)', 'box-shadow': '0 0 0 1px var(--ink)' } }), 'typical by now (median, 28 days)'),
         f.missing(t.typical_day_usd) ? null : h('span', null, h('i', { style: { 'border-left': '2px dashed var(--ink)', width: '0' } }), `typical full day ${f.usd(t.typical_day_usd, { cents: false })}`));
@@ -68,16 +68,16 @@ export default {
       const models = (t.by_model || []).map((m) => ({ ...m, family: m.family || familyOf(m.model) }))
         .filter((m) => m.usd > 0).sort((a, b) => rank(a.family) - rank(b.family) || b.usd - a.usd);
       const total = models.reduce((a, m) => a + m.usd, 0) || 1;
-      fill(mix, models.map((m) => h('span', { style: { flex: `${m.usd} 1 0`, background: familyColor(m.family) }, title: `${m.model} ${f.usd(m.usd)}` })));
+      patch(mix, models.map((m) => h('span', { 'data-key': m.model, style: { flex: `${m.usd} 1 0`, background: familyColor(m.family) }, title: `${m.model} ${f.usd(m.usd)}` })));
       mix.setAttribute('aria-label', `Model mix: ${models.map((m) => `${m.model} ${Math.round(m.usd / total * 100)} percent`).join(', ') || 'no spend yet'}`);
-      fill(mixLegend, models.map((m) => h('li', null,
+      patch(mixLegend, models.map((m) => h('li', { 'data-key': m.model },
         h('span', { class: 'swatch', style: { background: familyColor(m.family) } }),
         h('span', { class: 'ml-n', title: m.model }, m.model), h('span', { class: 'ml-v' }, f.usd(m.usd, { cents: false })),
         h('span', { class: 'ml-p' }, `${Math.round(m.usd / total * 100)}%`))));
 
       const machines = (t.by_machine || []).slice().sort((a, b) => b.usd - a.usd);
       const top = machines.length ? machines[0].usd || 1 : 1;
-      fill(machs, machines.length ? machines.map((m) => h('li', null,
+      patch(machs, machines.length ? machines.map((m) => h('li', { 'data-key': m.machine },
         h('span', { class: 'mn', title: m.machine }, m.machine, m.working ? h('span', { class: 'live-dot', title: 'working now', 'aria-label': 'working now' }) : null),
         h('span', { class: 'mb' }, h('i', { style: { width: `${(m.usd || 0) / top * 100}%` } })),
         h('span', { class: 'mv' }, f.usd(m.usd, { cents: false }))))

@@ -1,7 +1,7 @@
 // "Where it went": daily cost by model over 30 days (daily rollup), as
 // stacked bars or as shares. The shaded span under the black bracket is the
 // period; drag across days to set it. Legend items filter by model.
-import { h, fill, setText, segmented, panelHead } from '../dom.js';
+import { h, patch, setText, segmented, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { feedLine } from '../panel.js';
 import { derive, dayStart, filterSets, uiOf } from './ledger-model.js';
@@ -101,17 +101,24 @@ export default {
     const tip = tooltip();
 
     let geo = null, days = [], drag = null, last = null, lastW = 0, lastStatus = null;
+    // The day under the mouse and where the mouse is, so a redraw for new
+    // data shows the same day's tooltip again instead of dropping it.
+    let hoverDay = null, pointer = null;
+
+    function bracketRects(lo, hi, m) {
+      const x0 = m.ml + lo * m.bw, x1 = m.ml + (hi + 1) * m.bw;
+      return [svg('rect', { x: x0, y: m.mt - 10, width: x1 - x0, height: 5, fill: INK }),
+        lo > 0 ? svg('rect', { x: x0 - 1, y: m.mt - 10, width: 2, height: m.ih + 10, fill: INK }) : null,
+        hi < days.length - 1 ? svg('rect', { x: x1 - 1, y: m.mt - 10, width: 2, height: m.ih + 10, fill: INK }) : null];
+    }
+    const shadeAttrs = (lo, hi, m) => ({ x: m.ml + lo * m.bw, width: (hi + 1 - lo) * m.bw });
 
     function bracket(lo, hi) {
       if (!geo) return;
-      const { g, m } = geo;
-      g.replaceChildren();
-      const x0 = m.ml + lo * m.bw, x1 = m.ml + (hi + 1) * m.bw;
-      g.append(svg('rect', { x: x0, y: m.mt - 10, width: x1 - x0, height: 5, fill: INK }));
-      if (lo > 0) g.append(svg('rect', { x: x0 - 1, y: m.mt - 10, width: 2, height: m.ih + 10, fill: INK }));
-      if (hi < days.length - 1) g.append(svg('rect', { x: x1 - 1, y: m.mt - 10, width: 2, height: m.ih + 10, fill: INK }));
-      geo.shade.setAttribute('x', x0);
-      geo.shade.setAttribute('width', x1 - x0);
+      patch(geo.g, bracketRects(lo, hi, geo.m));
+      const a = shadeAttrs(lo, hi, geo.m);
+      geo.shade.setAttribute('x', a.x);
+      geo.shade.setAttribute('width', a.width);
     }
 
     function periodIdx(d) {
@@ -129,10 +136,12 @@ export default {
       // from loading to error, so the feed status is part of the key.
       const status = store.get().ledger && store.get().ledger.status;
       if (!force && d === last && W === lastW && status === lastStatus) return;
+      // Mid-drag the bracket follows the pointer; the pointerup redraws.
+      if (!force && drag !== null) return;
       last = d; lastW = W; lastStatus = status;
       const line = d.daily30 ? null : feedLine(store.get().ledger, 'daily spend');
-      fill(state, line || (d.daily30 && !d.daily30.length ? h('p', { class: 'p-state' }, 'No daily spend in these 30 days.') : null));
-      if (!d.daily30) { wrap.replaceChildren(); legend.replaceChildren(); geo = null; return; }
+      patch(state, line || (d.daily30 && !d.daily30.length ? h('p', { class: 'p-state' }, 'No daily spend in these 30 days.') : null));
+      if (!d.daily30) { wrap.replaceChildren(); legend.replaceChildren(); geo = null; hoverDay = null; return; }
       const c = colorsFor(d);
       days = chartData(d);
       const share = mode === 'share';
@@ -143,7 +152,10 @@ export default {
       const step = share ? 0.25 : niceStep(maxV / 4);
       const top = share ? 1 : Math.ceil(maxV / step) * step;
       const m = { W, H, ml, mr, mt, ih, bw, step, top, share, y: (v) => mt + ih - (v / top) * ih };
-      const shade = svg('rect', { y: mt - 10, height: ih + 10, fill: PAPER_2 });
+      // The bracket and shade are part of the new tree, so the patch below
+      // leaves them where they are when the period did not change.
+      const [lo, hi] = periodIdx(d);
+      const shade = svg('rect', { class: 'lo-shade', y: mt - 10, height: ih + 10, fill: PAPER_2, ...shadeAttrs(lo, hi, m) });
       const body = svg('g');
       axes(body, m);
       (share ? shares : bars)(body, m, days, c);
@@ -154,21 +166,23 @@ export default {
         if (!(new Date(x.t * 1000).getDay() === 1 || today) || (!today && W - mr - (ml + i * bw + bw / 2) < 72)) return;
         ticks.append(svg('text', { x: today ? W - mr : ml + i * bw + bw / 2, y: H - 8, 'text-anchor': today ? 'end' : 'middle', class: 'ax', text: today ? 'Today' : dateFmt.format(new Date(x.t * 1000)) }));
       });
-      const hover = svg('rect', { y: mt, width: bw, height: ih, fill: 'none', stroke: INK, 'stroke-width': 2, visibility: 'hidden', 'pointer-events': 'none' });
-      const brk = svg('g');
+      const hover = svg('rect', { class: 'lo-hover', y: mt, width: bw, height: ih, fill: 'none', stroke: INK, 'stroke-width': 2, visibility: 'hidden', 'pointer-events': 'none' });
+      const brk = svg('g', { class: 'lo-brk' }, ...bracketRects(lo, hi, m));
       const hit = svg('rect', { x: ml, y: 0, width: iw, height: H, fill: 'transparent', class: 'lo-hit' });
       const defs = svg('defs', null, svg('pattern', { id: 'lo-hatch', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' },
         svg('rect', { width: 2.2, height: 6, fill: 'rgba(243,238,227,.6)' })));
       const label = `${share ? 'Share of daily cost' : 'Daily cost'} by model for ${days.length} days. The selected period is marked with a black bracket.`;
-      wrap.replaceChildren(svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': label }, defs, shade, body, brk, ticks, hover, hit));
-      geo = { g: brk, m, shade, hover };
-      const [lo, hi] = periodIdx(d);
-      bracket(lo, hi);
+      // patch() keeps the drawn nodes and changes only what moved; look the
+      // bracket, the shade and the hover frame up again in the kept tree.
+      patch(wrap, svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': label }, defs, shade, body, brk, ticks, hover, hit));
+      const live = wrap.firstElementChild;
+      geo = { g: live.querySelector('.lo-brk'), m, shade: live.querySelector('.lo-shade'), hover: live.querySelector('.lo-hover') };
       const byDims = Object.keys(filterSets(d.ui.filters)).filter((k) => k !== 'model');
       setText(sub, `${share ? 'Share of daily cost' : 'Daily cost'} by model · ${days.length} days${d.ui.filters.some((x) => x.dim === 'model') ? ' · filtered' : ''}`);
       note.hidden = !byDims.length;
       setText(note, byDims.length ? `This chart comes from the daily totals. It follows model filters only, not ${byDims.join(' or ')} filters.` : '');
       drawLegend(d, c);
+      if (hoverDay !== null && pointer && days.length) showDay(pointer, Math.min(hoverDay, days.length - 1));
     }
 
     function drawLegend(d, c) {
@@ -183,10 +197,10 @@ export default {
         groups.get(g).push(m);
       }
       const { filters } = d.ui;
-      fill(legend, [...groups.keys()].sort((a, b) => groupRank(a) - groupRank(b)).map((g) => h('div', { class: 'lg-group' },
+      patch(legend, [...groups.keys()].sort((a, b) => groupRank(a) - groupRank(b)).map((g) => h('div', { class: 'lg-group', 'data-key': g },
         h('span', { class: 'lg-prov' }, g),
         groups.get(g).map((m) => h('button', {
-          type: 'button', class: `lg-item${inPeriod.has(m) ? '' : ' is-empty'}`, 'data-model': m,
+          type: 'button', class: `lg-item${inPeriod.has(m) ? '' : ' is-empty'}`, 'data-model': m, 'data-key': m,
           'aria-pressed': String(filters.some((x) => x.dim === 'model' && x.val === m)),
           title: `Filter every panel to ${m}`, onclick: () => toggleFilter(store, 'model', m),
         }, swatch(c.color(m).fill), m)))));
@@ -198,6 +212,7 @@ export default {
       return Math.min(days.length - 1, Math.max(0, Math.floor((x - geo.m.ml) / geo.m.bw)));
     };
     function showDay(ev, i) {
+      hoverDay = i; pointer = { clientX: ev.clientX, clientY: ev.clientY };
       geo.hover.setAttribute('x', geo.m.ml + i * geo.m.bw);
       geo.hover.setAttribute('visibility', 'visible');
       const day = days[i], c = colorsFor(last);
@@ -206,7 +221,7 @@ export default {
       tip.show(ev, h('div', { class: 'tt-k' }, `${dayLabel(day.t)}${i === days.length - 1 ? ' · so far' : ''}`),
         h('div', { class: 'tt-big' }, `≈${f.usd(day.total)}`), rows.length ? rows : h('span', null, 'No spend'));
     }
-    function hideTip() { tip.hide(); if (geo) geo.hover.setAttribute('visibility', 'hidden'); }
+    function hideTip() { hoverDay = null; tip.hide(); if (geo) geo.hover.setAttribute('visibility', 'hidden'); }
 
     wrap.addEventListener('pointerdown', (ev) => {
       if (!geo || !ev.target.closest('.lo-hit')) return;
