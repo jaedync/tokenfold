@@ -15,6 +15,7 @@ from .usage_pace import usage_pace
 from datetime import datetime, timezone
 
 from .db import get_conn, write_txn
+from .event_dedupe import not_pi_copy
 
 META_KEY = "provider_usage"
 MAX_SNAPSHOT_AGE_S = 24 * 3600
@@ -119,6 +120,7 @@ def _month_reported_costs(conn, now, scope):
         " MAX(reported_cost_cache_read) reported_cache_read,"
         " MAX(reported_cost_cache_write) reported_cache_write"
         " FROM events WHERE type='assistant' AND source_client='pi-agent'"
+        f" AND {not_pi_copy()}"
         " AND request_id IS NOT NULL AND ts_epoch>=? AND ts_epoch<?"
         f" AND {pred} GROUP BY provider, request_id"
         ") GROUP BY provider",
@@ -159,6 +161,7 @@ def _window_reported_cost(conn, scope, provider, start, end):
         "MAX(reported_cost_input) inp, MAX(reported_cost_output) outp, "
         "MAX(reported_cost_cache_read) cr, MAX(reported_cost_cache_write) cw "
         "FROM events WHERE type='assistant' AND source_client='pi-agent' "
+        f"AND {not_pi_copy()} "
         f"AND provider IN ({slots}) AND {pred} AND request_id IS NOT NULL "
         "AND ts_epoch>=? AND ts_epoch<? GROUP BY provider, request_id)",
         (*providers, start, end),
