@@ -16,7 +16,7 @@ async function check(name, action) {
   catch (error) { failures.push(name + ': ' + error.message); console.log('FAIL - ' + name + '\n  ' + error.message); }
 }
 
-async function open(browser, {viewport, url, api404 = false, fixtureOverride = null}) {
+async function open(browser, {viewport, url, api404 = false, fixtureOverride = null, delays = {}}) {
   const context = await browser.newContext({viewport, timezoneId: 'America/Chicago'});
   const page = await context.newPage();
   const errors = [];
@@ -26,7 +26,7 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
   page.on('console', m => {
     if (m.type() === 'error' && !(api404 && /status of 404/.test(m.text()))) errors.push(m.text());
   });
-  await page.route('**/*', route => {
+  await page.route('**/*', async route => {
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
     if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML});
@@ -34,6 +34,7 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
     const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
     if (fixture) fixtures.push(fixture[1]);
+    if (fixture && delays[fixture[1]]) await new Promise(r => setTimeout(r, delays[fixture[1]]));
     if (fixture && fixtureOverride) {
       const body = fixtureOverride(fixture[1], JSON.parse(fs.readFileSync(path.join(FIXTURES, fixture[1] + '.json'), 'utf8')));
       if (body) return route.fulfill({json: body});
@@ -100,6 +101,22 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await page.fill('#v-price', '-5');
       await page.click('.v-form button[type="submit"]');
       assert.match(await text(page, '.v-msg'), /from 1 to 100,000/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('history: a slow window history says it is building, with a long timeout', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#history', delays: {'window-history': 2500}});
+      await page.waitForSelector('.p-history-windows .p-state');
+      assert.match(await text(page, '.p-history-windows .p-state'), /Loading the window history/);
+      assert.match(await text(page, '.p-history-windows .p-state'), /up to a minute/);
+      await page.waitForSelector('.p-history-windows .wc');
+      const timeouts = await page.evaluate(async () => {
+        const api = await import(document.body.dataset.static + '/js/api.js');
+        return [api.timeoutFor('windowHistory'), api.timeoutFor('windowHistory5h'), api.timeoutFor('now')];
+      });
+      assert.ok(timeouts[0] >= 60000 && timeouts[1] >= 60000, `window history timeouts ${timeouts}`);
+      assert.equal(timeouts[2], 20000);
       assert.deepEqual(errors, []);
       await context.close();
     });

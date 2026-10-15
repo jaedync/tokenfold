@@ -10,7 +10,11 @@ export class ApiError extends Error {
 }
 
 // name -> real path and fixture file. `work`: a separate fixture exists for
-// the work (enterprise) scope, named <fixture>-work.json.
+// the work (enterprise) scope, named <fixture>-work.json. `timeoutMs`: a
+// longer wait than TIMEOUT_MS for a read that can be slow when cold.
+const TIMEOUT_MS = 20000;
+const SLOW_TIMEOUT_MS = 90000;
+
 export const ENDPOINTS = Object.freeze({
   now: { path: '/api/now', fixture: 'now', work: true },
   runway: { path: '/api/runway', fixture: 'runway', work: true },
@@ -19,9 +23,11 @@ export const ENDPOINTS = Object.freeze({
   limitRate: { path: '/api/limit-rate', fixture: 'limit-rate', work: true },
   ledger: { path: '/api/ledger', fixture: 'ledger' },
   session: { path: (p) => `/api/sessions/${encodeURIComponent(p.id)}`, fixture: 'session' },
-  windowHistory: { path: '/api/window-history', fixture: 'window-history' },
+  // Cold after a restart until the prewarm has run: one week of events per
+  // ended window. Wait for it instead of failing at TIMEOUT_MS.
+  windowHistory: { path: '/api/window-history', fixture: 'window-history', timeoutMs: SLOW_TIMEOUT_MS },
   // History and Lab (existing endpoints of the classic dashboard).
-  windowHistory5h: { path: '/api/window-history', fixture: 'window-history-5h' },
+  windowHistory5h: { path: '/api/window-history', fixture: 'window-history-5h', timeoutMs: SLOW_TIMEOUT_MS },
   spendHistory: { path: '/api/spend-history', fixture: 'spend-history', work: true },
   stats: { path: '/api/stats', fixture: 'stats', work: true },
   servedTimeline: { path: '/api/served-models/timeline', fixture: 'served-timeline' },
@@ -29,7 +35,11 @@ export const ENDPOINTS = Object.freeze({
 });
 
 const FIXTURES = new URL('../fixtures/', import.meta.url);
-const TIMEOUT_MS = 20000;
+
+// How long a request to this endpoint may take before it fails.
+export function timeoutFor(name) {
+  return (ENDPOINTS[name] && ENDPOINTS[name].timeoutMs) || TIMEOUT_MS;
+}
 
 function url(name, params, { mock, scope }) {
   const ep = ENDPOINTS[name];
@@ -48,7 +58,7 @@ function url(name, params, { mock, scope }) {
 
 // getJSON('runway', {}, {scope, mock, signal}) -> parsed JSON or ApiError.
 export async function getJSON(name, params = {}, { scope, mock = false, signal } = {}) {
-  const timeout = AbortSignal.timeout(TIMEOUT_MS);
+  const timeout = AbortSignal.timeout(timeoutFor(name));
   const combined = signal && AbortSignal.any ? AbortSignal.any([signal, timeout]) : (signal || timeout);
   let res;
   try {

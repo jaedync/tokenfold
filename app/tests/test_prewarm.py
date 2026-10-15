@@ -152,12 +152,37 @@ class PrewarmTest(_Base):
                 patch.object(self.tt, "warm", side_effect=lambda s, *a, **k: seen.append("typical:" + s)), \
                 patch("app.ledger.warm", side_effect=lambda s: seen.append("ledger:" + s)), \
                 patch.object(self.sh, "warm", side_effect=lambda s: seen.append("history:" + s)), \
+                patch("app.runway_history.window_history",
+                      side_effect=lambda c, s, b: seen.append(f"windows:{s}:{b}")), \
                 patch.object(self.pw, "_warm_stats", side_effect=lambda s: seen.append("stats:" + s)):
             START().join(10)
         self.assertEqual(seen, ["typical:personal", "typical:enterprise",
                                 "ledger:personal", "ledger:enterprise",
                                 "history:personal", "history:enterprise",
+                                "windows:personal:seven_day", "windows:personal:five_hour",
                                 "stats:enterprise"])
+
+    def test_window_history_warms_the_window_costs(self):
+        # A cold 7-day window history costs one week scan per ended window
+        # (up to 60): past the client's timeout on production. The prewarm
+        # leaves every window's cost cached, so the route only reads them.
+        import app.runway_history as rh
+        calls = []
+        self.pw._stop.clear()   # a direct call, as from the prewarm thread
+        with patch.object(rh, "window_history",
+                          side_effect=lambda conn, scope, bucket: calls.append((scope, bucket))):
+            self.pw._warm_window_history("personal")
+        self.assertEqual(calls, [("personal", "seven_day"), ("personal", "five_hour")])
+
+    def test_window_history_is_personal_only(self):
+        seen = []
+        with patch("app.config.LOCKED_SCOPE", "enterprise"), \
+                patch.object(self.tt, "warm"), patch.object(self.sh, "warm"), \
+                patch("app.ledger.warm"), \
+                patch("app.runway_history.window_history",
+                      side_effect=lambda c, s, b: seen.append(s)):
+            START().join(10)
+        self.assertEqual(seen, [])
 
     def test_the_second_stats_scope_is_built_after_the_default(self):
         built = []

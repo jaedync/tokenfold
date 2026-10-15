@@ -2,9 +2,10 @@
 
 After a restart the first visit used to wait for builds that only a request
 started: today's typical-spend profile (Runway said "not ready"), the
-/api/spend-history scan (History said "Loading" for about 6 s) and the
-/api/stats build of the scope that is not the default (about 11 s for the
-work scope). It also builds the default 30-day ledger, which leaves the
+/api/spend-history scan (History said "Loading" for about 6 s), the
+/api/window-history window costs (a cold 7-day history can take longer than
+the client's timeout) and the /api/stats build of the scope that is not the
+default (about 11 s for the work scope). It also builds the default 30-day ledger, which leaves the
 closed days and the Pi lineage cached (a cold ledger read is about 2 s).
 start() runs those builds once, in order, on one background thread, so
 startup never waits for them.
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 
 SCOPES = ("personal", "enterprise")
 TYPICAL_WAIT_S = 120.0
+WINDOW_BUCKETS = ("seven_day", "five_hour")
 
 _lock = threading.Lock()
 _stop = threading.Event()
@@ -57,6 +59,22 @@ def _warm_history(scope: str) -> None:
     spend_history.warm(scope)
 
 
+def _warm_window_history(scope: str) -> None:
+    """Build /api/window-history for both Claude buckets.
+
+    A cold 7-day history costs one week of events per ended window (up to
+    60), which can pass the client's timeout. Each window's cost stays
+    cached (runway_history._window_cost_cache), so the first visit reads it.
+    """
+    from . import runway_history
+    from .db import read_conn
+    for bucket in WINDOW_BUCKETS:
+        if _stop.is_set():
+            return
+        with read_conn() as conn:
+            runway_history.window_history(conn, scope, bucket)
+
+
 def _warm_stats(scope: str) -> None:
     """Build the /api/stats payload of a scope that is not the default.
 
@@ -76,6 +94,9 @@ def _steps() -> list[tuple[str, object, str]]:
     steps = [("typical", _warm_typical, s) for s in scopes]
     steps += [("ledger", _warm_ledger, s) for s in scopes]
     steps += [("spend history", _warm_history, s) for s in scopes]
+    # Limit windows are personal (Max) data: /api/window-history 404s elsewhere.
+    if "personal" in scopes:
+        steps.append(("window history", _warm_window_history, "personal"))
     # A scope-locked instance serves one scope: the eager rebuild has it.
     if len(scopes) > 1:
         steps += [("stats", _warm_stats, s) for s in scopes if s != _cfg().DEFAULT_SCOPE]

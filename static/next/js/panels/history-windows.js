@@ -4,7 +4,7 @@
 import { h, fill, setText, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
-import { feedLine, staleNote, stateLine } from '../panel.js';
+import { feedLine, feedStatus, staleNote, stateLine } from '../panel.js';
 import { median, changed } from './history-common.js';
 
 const BUCKETS = [['seven_day', '7-day'], ['five_hour', '5-hour']];
@@ -58,6 +58,17 @@ function strip(windows, bucket) {
       h('span', null, h('i', { class: 'k-limit' }), '100% of the limit')));
 }
 
+// The first read after a restart can be slow (one week of events per window):
+// say so while it loads, and after a timeout say that it is still building.
+function windowsLine(feed) {
+  const status = feedStatus(feed);
+  if (status === 'loading') return stateLine('Loading the window history…', 'The first read after a restart can take up to a minute.');
+  if (status === 'unavailable' && feed.error && feed.error.status === 0) {
+    return stateLine('The server is still building the window history.', 'The page tries again on its own.');
+  }
+  return feedLine(feed, 'the window history');
+}
+
 function summary(windows) {
   const hits = windows.filter((w) => w.hit_limit).length;
   const grants = windows.reduce((a, w) => a + (w.granted_resets || []).length, 0);
@@ -100,7 +111,7 @@ export default {
       el.hidden = s.scope === 'enterprise';
       if (el.hidden) return;
       setText(lead, `Each card is one ended Claude ${bucket === 'five_hour' ? '5-hour' : '7-day'} window: its peak, whether it hit the limit, and its spend. Spend counts the Claude requests inside the window; per point divides it by the points used.`);
-      const line = feedLine(feed, 'the window history');
+      const line = windowsLine(feed);
       fill(state, line, staleNote(feed, nowFrom(s)));
       if (line) { fill(body); return; }
       const windows = (dataOf(feed).windows || []).filter((w) => w && typeof w.start === 'number');
