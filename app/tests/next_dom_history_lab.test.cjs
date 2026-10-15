@@ -29,13 +29,15 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
     if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML});
-    const fixture = u.pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
+    // The shell serves static/next under /static/next-<version>/ (cache busting).
+    const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
+    const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
     if (fixture) fixtures.push(fixture[1]);
     if (fixture && fixtureOverride) {
       const body = fixtureOverride(fixture[1], JSON.parse(fs.readFileSync(path.join(FIXTURES, fixture[1] + '.json'), 'utf8')));
       if (body) return route.fulfill({json: body});
     }
-    if (u.pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, u.pathname)});
+    if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     if (u.pathname.startsWith('/api/') && api404) return route.fulfill({status: 404, json: {detail: 'Not Found'}});
     return route.fulfill({status: 404, body: ''});
   });
