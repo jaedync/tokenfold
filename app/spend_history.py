@@ -264,8 +264,10 @@ def _build_segment(conn, scope, b0, end_epoch, end_kind, inferred, now=None, *, 
         "start_epoch": b0["epoch"],
         "end_epoch": end_epoch,
         "end_kind": end_kind,
+        # Claude-subscription spend only, as limit_window in /api/rate-limits:
+        # Codex/OpenCode Pi rows do not consume this limit window.
         "cost": round(compute_window_cost(conn, b0["epoch"], cost_end,
-                                          scope=scope), 2),
+                                          scope=scope, anthropic_only=True), 2),
         "peak_pct": peak["p"] if peak else None,
         "inferred": bool(inferred),
     }
