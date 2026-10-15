@@ -21,6 +21,7 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
   const page = await context.newPage();
   const errors = [];
   const fixtures = [];
+  const apis = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => {
     if (m.type() === 'error' && !(api404 && /status of 404/.test(m.text()))) errors.push(m.text());
@@ -38,11 +39,12 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
       if (body) return route.fulfill({json: body});
     }
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
+    if (u.pathname.startsWith('/api/')) apis.push(u.pathname + u.search);
     if (u.pathname.startsWith('/api/') && api404) return route.fulfill({status: 404, json: {detail: 'Not Found'}});
     return route.fulfill({status: 404, body: ''});
   });
   await page.goto(ORIGIN + url);
-  return {page, errors, context, fixtures};
+  return {page, errors, context, fixtures, apis};
 }
 
 const text = (page, sel) => page.locator(sel).first().innerText();
@@ -152,15 +154,18 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await context.close();
     });
 
-    await check('lab work scope: the served check says not available and never asks', async () => {
+    await check('lab work scope: the served check hides and never asks', async () => {
       const {page, errors, context, fixtures} = await open(browser, {viewport: {width: 1024, height: 768}, url: '/next?mock=1&scope=personal#history'});
       await page.waitForSelector('.wc');
       await page.click('[data-scope="enterprise"]');
       await page.waitForSelector('.p-history-meter .mt-big');
       await page.click('[data-view-link="lab"]');
       await page.waitForSelector('.p-lab-prices .pr-tbl');
-      assert.match(await text(page, '.p-lab-served .p-state'), /not available for this scope/);
+      assert.equal(await page.locator('[data-panel="lab-served"]').isHidden(), true);
       assert.equal(fixtures.includes('served-timeline'), false);
+      await page.click('button[data-scope="personal"]');
+      await page.waitForSelector('.p-lab-served .sv-row');
+      assert.equal(await page.locator('[data-panel="lab-served"]').isHidden(), false);
       assert.deepEqual(errors, []);
       await context.close();
     });
@@ -173,6 +178,20 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
         assert.deepEqual(errors, []);
         await context.close();
       }
+    });
+
+    await check('real mode work scope: History never asks for window history', async () => {
+      const {page, errors, context, apis} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?scope=personal#runway', api404: true});
+      await page.waitForSelector('#view .panel');
+      await page.click('[data-scope="enterprise"]');
+      apis.length = 0;
+      await page.click('[data-view-link="history"]');
+      await page.waitForFunction(() => [...document.querySelectorAll('#view .p-state')].some(e => /unavailable/i.test(e.textContent)));
+      await page.waitForTimeout(300);
+      assert.equal(apis.some(a => a.startsWith('/api/window-history')), false, apis.join(' '));
+      assert.equal(await page.locator('[data-panel="history-windows"]').isHidden(), true);
+      assert.deepEqual(errors, []);
+      await context.close();
     });
 
     await check('real mode without endpoints: History and Lab panels say unavailable', async () => {

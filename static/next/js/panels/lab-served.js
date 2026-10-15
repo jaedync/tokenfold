@@ -123,12 +123,10 @@ export default {
       if (!changed(seen, key)) return;
       seen = key;
       days.select(s.labServedDays || '30');
-      days.el.hidden = s.scope === 'enterprise';
-      if (s.scope === 'enterprise') {
-        fill(state, stateLine('The served-model check is not available for this scope.'));
-        fill(body);
-        return;
-      }
+      // Served-model capture is personal (Max) data: the work scope hides
+      // the panel, as it hides the other personal-only panels.
+      el.hidden = s.scope === 'enterprise';
+      if (el.hidden) return;
       const line = feedLine(s.servedTimeline, 'the served-model check');
       fill(state, line, staleNote(s.servedTimeline, nowFrom(s)));
       if (line) { fill(body); return; }
