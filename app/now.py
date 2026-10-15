@@ -163,43 +163,59 @@ def _machines(known, recent, directory, rows, now) -> tuple[list[dict], set]:
     return out, online
 
 
-def build_now(scope: str, snap: dict, now: float) -> dict:
-    live = {sid: s for sid, s in snap["sessions"].items() if not s.get("ending")}
-    today = datetime.fromtimestamp(now, _tz()).strftime("%Y-%m-%d")
-    # Start the slow background builds first so they overlap the joins
-    # below; the second read after the joins then waits at most wait_s.
-    _safe("prime directory", lambda: now_machines.directory(scope, wait_s=0), None)
-    _safe("prime binding rate", lambda: binding_rate(scope, wait_s=0), None)
-    with read_conn() as conn:
-        ids = _safe("pi id lookup", lambda: now_sessions.resolve_event_sessions(conn, live, now),
-                    {sid: [sid] for sid in live})
-        twins = _safe("twin check", lambda: now_sessions.mirror_sessions(conn, live), set())
-        all_ids = [i for lst in ids.values() for i in lst]
-        rollups = _safe("session cost", lambda: now_sessions.session_rollups(
-            conn, all_ids, now, scope), {})
-        titles = _safe("titles", lambda: now_sessions.session_titles(conn, all_ids), {})
-        known = _safe("scope machines", lambda: now_machines.scope_machines(conn, scope, today), set())
-        recent = _safe("recent events", lambda: now_machines.last_events(
-            conn, scope, now - now_machines.RECENT_WINDOW_S), {})
-        burn = _fleet_burn(conn, scope, now)
-    directory = _safe("machine directory", lambda: now_machines.directory(scope), None)
-    rate = _safe("binding rate", lambda: binding_rate(scope), None)
+def scoped_sessions(conn, scope: str, snap: dict, now: float,
+                    known: set, rate_fn=None) -> list[dict]:
+    """Live agent_state sessions in this scope, joined to events and sorted.
 
+    rate_fn returns the binding $/point; it is called after the joins so a
+    background build gets that long to land. Shared with /api/today."""
+    live = {sid: s for sid, s in snap["sessions"].items() if not s.get("ending")}
+    if not live:
+        return []
+    ids = _safe("pi id lookup", lambda: now_sessions.resolve_event_sessions(conn, live, now),
+                {sid: [sid] for sid in live})
+    twins = _safe("twin check", lambda: now_sessions.mirror_sessions(conn, live), set())
+    all_ids = [i for lst in ids.values() for i in lst]
+    rollups = _safe("session cost", lambda: now_sessions.session_rollups(
+        conn, all_ids, now, scope), {})
+    titles = _safe("titles", lambda: now_sessions.session_titles(conn, all_ids), {})
+    rate = _safe("binding rate", rate_fn, None) if rate_fn else None
     rows = []
     for sid, s in live.items():
         if sid in twins:
             continue
-        agg = _merge_rollups([rollups[i] for i in ids.get(sid, [sid]) if i in rollups])
+        mine = ids.get(sid, [sid])
+        agg = _merge_rollups([rollups[i] for i in mine if i in rollups])
         machine = canonical_machine(s.get("machine") or "")
         if not _in_scope(agg, machine, scope, known):
             continue
-        title = next((titles[i] for i in ids.get(sid, [sid]) if i in titles), None)
+        title = next((titles[i] for i in mine if i in titles), None)
         # Pi subagent sessions have no AI title, but their run name
         # ("ui-review-b0") says what they do.
         title = title or (agg or {}).get("agent_name")
         rows.append(_session_row(sid, s, agg, title, rate, now))
     rows.sort(key=_sort_key)
+    return rows
 
+
+def local_day(now: float) -> str:
+    return datetime.fromtimestamp(now, _tz()).strftime("%Y-%m-%d")
+
+
+def build_now(scope: str, snap: dict, now: float) -> dict:
+    # Start the slow background builds first so they overlap the joins
+    # below; the second read after the joins then waits at most wait_s.
+    _safe("prime directory", lambda: now_machines.directory(scope, wait_s=0), None)
+    _safe("prime binding rate", lambda: binding_rate(scope, wait_s=0), None)
+    with read_conn() as conn:
+        known = _safe("scope machines", lambda: now_machines.scope_machines(
+            conn, scope, local_day(now)), set())
+        rows = scoped_sessions(conn, scope, snap, now, known,
+                               rate_fn=lambda: binding_rate(scope))
+        recent = _safe("recent events", lambda: now_machines.last_events(
+            conn, scope, now - now_machines.RECENT_WINDOW_S), {})
+        burn = _fleet_burn(conn, scope, now)
+    directory = _safe("machine directory", lambda: now_machines.directory(scope), None)
     machines, online = _machines(known, recent, directory, rows, now)
     newest = max((m["last_event"] for m in machines if m["last_event"]), default=None)
     return {
