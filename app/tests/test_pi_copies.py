@@ -264,6 +264,31 @@ class PiCopyTest(_PiCopyBase):
         self.assertEqual(got['rollup'][1:3], (base['rollup'][1] + 1, base['rollup'][2]))
         self.assertEqual(got['api_calls'], base['api_calls'] + 1)
 
+    def test_copy_continued_after_midnight_starts_no_gap_at_a_copy_row(self):
+        """A one-day rebuild seeds active time from the previous day's last
+        row of each session. A copy row is not activity there either."""
+        from app import summarizer
+        midnight = self.t0 - 60
+        self.post(self.pi('orig', 'proj-a/s1.jsonl', pi_events(midnight - 200)))
+        later = [{'session_id': 'native-s1', 'event_id': 'x-u2', 'kind': 'user',
+                  'timestamp': _iso(midnight + 20), 'has_text': True, 'text_length': 7},
+                 {'session_id': 'native-s1', 'event_id': 'x-a2', 'kind': 'assistant',
+                  'timestamp': _iso(midnight + 50), 'provider': 'anthropic',
+                  'model': 'claude-opus-4-8', 'request_id': 'msg_a2',
+                  'usage': {'input': 10, 'cost_total': 2.0}}]
+        self.post(self.pi('copy', 'proj-b/s1.jsonl',
+                          pi_events(midnight - 200, ids='x-') + later))
+        day = datetime.fromtimestamp(midnight + 20, ZoneInfo(summarizer.TZ_NAME)).strftime('%Y-%m-%d')
+
+        def active_on_day():
+            return self.conn.execute(
+                'SELECT ROUND(SUM(active_s), 3) FROM daily_summary WHERE day=?',
+                (day,)).fetchone()[0]
+        both_days = active_on_day()
+        self.assertEqual(both_days, 30.0)  # the new prompt to its reply only
+        summarizer.summarize_days([day])
+        self.assertEqual(active_on_day(), both_days)
+
     def test_fork_on_the_same_machine_counts_copied_history_once(self):
         """Pi /fork writes the history into a new session with a new native
         session ID, keeping each entry's timestamp and response ID."""
