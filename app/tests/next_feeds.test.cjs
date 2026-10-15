@@ -114,8 +114,9 @@ async function check(name, page, fn) {
       t.store.set('scope', 'enterprise');
       t.feeds.reset();
       await tick();
-      // b asks with the old parameter first; its answer must not end the switch.
-      await t.answer('b', 'week data, work');
+      // b waits for the new data of a: the old parameter is of the old scope.
+      must(t.open('b').length === 0, 'b asked with the old parameter');
+      must(t.store.get().b.data === 'week data', 'the old data of b did not stay during the switch');
       await t.answer('a', {w: 'month'});
       await tick();
       must(t.store.get().switching === true, 'the switch ended while b had the old parameter');
@@ -317,7 +318,7 @@ async function check(name, page, fn) {
       t.store.set('scope', 'enterprise');
       t.feeds.reset();
       await tick();
-      must(t.open('p').length === 1, 'the scope switch did not read the period again');
+      must(t.open('l').length === 1, 'the scope switch did not read again');
       rel.forEach((r) => r());
       await tick();
       rel = want();
@@ -349,6 +350,33 @@ async function check(name, page, fn) {
       must(t.open('p').length === 1, 'the data for the old params counted as fresh');
       must(t.open('p')[0].params.from === 2, 'the read is not for the new params');
       rel();
+    });
+
+    await check('a scope switch never reads with params from the old scope data', page, async () => {
+      // The Runway trajectory reads the binding window of the runway data. The
+      // personal window is unknown in the work scope (404), so the read must
+      // wait for the work runway data; the switch waits for both.
+      const t = setup();
+      const dep = {endpoint: 'traj', params: (s) => (s.run && s.run.data ? {window: s.run.data} : null)};
+      t.feeds.want('run', {endpoint: 'run'});
+      t.feeds.want('traj', dep);
+      await tick();
+      await t.answer('run', 'personal-week');
+      await tick();
+      await t.answer('traj', 'personal-points');
+      t.store.set('scope', 'enterprise');
+      t.feeds.reset();
+      await tick();
+      must(t.open('traj').length === 0, `a read with old params: ${JSON.stringify(t.open('traj').map((c) => c.params))}`);
+      must(t.store.get().traj.data === 'personal-points', 'the old data did not stay during the switch');
+      await t.answer('run', 'work-week');
+      await tick();
+      must(t.store.get().switching === true, 'the switch ended before the dependent feed answered');
+      const c = t.open('traj');
+      must(c.length === 1 && c[0].params.window === 'work-week' && c[0].scope === 'enterprise', `wrong read: ${JSON.stringify(c.map((x) => [x.scope, x.params]))}`);
+      await t.answer('traj', 'work-points');
+      must(!t.store.get().switching, 'the switch did not end');
+      must(t.store.get().traj.data === 'work-points', 'the new data is not in');
     });
 
     if (errors.length) failures.push('page errors: ' + errors.join('; '));

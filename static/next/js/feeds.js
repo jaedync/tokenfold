@@ -45,8 +45,29 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     return f;
   }
 
+  // The params a read uses. Data of an older scope generation (kept on
+  // screen during a switch) counts as missing: a window id or a period of
+  // the old scope must not go into a read for the new one.
   function params(f) {
+    return f.spec.params ? f.spec.params(currentState()) : {};
+  }
+
+  // The params with the data on screen, old scope included: a feed with
+  // these keeps its data during a switch.
+  function shownParams(f) {
     return f.spec.params ? f.spec.params(store.get()) : {};
+  }
+
+  function currentState() {
+    const state = store.get();
+    let out = state;
+    for (const g of feeds.values()) {
+      const cur = state[g.key];
+      if (g.gen === gen || !cur || cur.data === null) continue;
+      if (out === state) out = { ...state };
+      out[g.key] = LOADING;
+    }
+    return out;
   }
 
   function schedule(f, delayMs) {
@@ -129,6 +150,8 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     for (const f of feeds.values()) {
       if (!f.users) continue;
       const p = params(f);
+      // Params from the old scope only: wait for the feed it depends on.
+      if (p === null && shownParams(f) !== null && f.doneGen !== gen) return;
       if (p === null) continue;
       if (f.doneGen !== gen || f.doneKey !== JSON.stringify(p)) return;
     }
@@ -213,7 +236,7 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
       f.once = false;
       f.failures = 0;
       f.paramsKey = null;
-      const inUse = f.users > 0 && params(f) !== null;
+      const inUse = f.users > 0 && shownParams(f) !== null;
       if (!inUse) store.set(f.key, LOADING);
       if (f.users) schedule(f, 0);
       wait = wait || inUse;
