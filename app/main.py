@@ -145,6 +145,7 @@ from .now import router as now_router
 from .today import router as today_router
 from .runway import router as runway_router
 from .limit_rate import router as limit_rate_router
+from .ledger import router as ledger_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
@@ -165,6 +166,7 @@ app.include_router(now_router)
 app.include_router(today_router)
 app.include_router(runway_router)
 app.include_router(limit_rate_router)
+app.include_router(ledger_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():
