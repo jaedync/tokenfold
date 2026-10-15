@@ -457,7 +457,7 @@ def _migrate(conn) -> None:
     # The usage fallback no longer refreshes or caches the OAuth login
     # (app/usage_fetcher.py). Drop the token pair older code kept here: it is
     # a live credential, and it rode along in every database backup.
-    conn.execute("DELETE FROM meta WHERE key='oauth_credentials'")
+    _secure_delete_oauth_credentials(conn)
 
     # Startup-only exception to the write_txn rule: this runs inside
     # _init_lock before the connection is published to any other thread, so
@@ -468,6 +468,24 @@ def _migrate(conn) -> None:
     # about 500 MB on production). Return that disk now; journal_size_limit
     # alone keeps 64 MiB until the next checkpoint.
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _secure_delete_oauth_credentials(conn) -> None:
+    """Delete the cached OAuth token pair and overwrite its bytes.
+
+    A plain DELETE leaves the row on a free page of the file. secure_delete
+    zeroes the freed content for this statement only (it costs extra writes,
+    so the previous value comes back). The page goes to the WAL first; the
+    TRUNCATE checkpoint at the end of _migrate writes it to the main file.
+    """
+    if conn.execute("SELECT 1 FROM meta WHERE key='oauth_credentials'").fetchone() is None:
+        return
+    before = int(conn.execute("PRAGMA secure_delete").fetchone()[0])
+    conn.execute("PRAGMA secure_delete=ON")
+    try:
+        conn.execute("DELETE FROM meta WHERE key='oauth_credentials'")
+    finally:
+        conn.execute(f"PRAGMA secure_delete={before}")
 
 
 def get_conn() -> sqlite3.Connection:

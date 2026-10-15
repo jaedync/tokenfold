@@ -78,6 +78,30 @@ class NoRefreshTest(UsageFetcherTestBase):
         self.assertIsNone(self.conn.execute(
             "SELECT 1 FROM meta WHERE key='oauth_credentials'").fetchone())
 
+    def test_the_deleted_token_bytes_leave_the_database_file(self):
+        # DELETE alone leaves the row's bytes on a free page of the file
+        # (and in every backup made after). secure_delete overwrites them.
+        small = "sk-ant-ort01-SMALLSECRETMARKER"
+        big = "sk-ant-oat01-" + "BIGSECRETMARKER" * 400  # spills to overflow pages
+        self.conn.execute("INSERT INTO meta VALUES('oauth_credentials',?)",
+                          (json.dumps({"refreshToken": small, "accessToken": big}),))
+        self.conn.commit()
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        with open(self._db.DB_PATH, "rb") as fh:
+            self.assertIn(b"SMALLSECRETMARKER", fh.read(), "the test row is not in the file")
+        before = self.conn.execute("PRAGMA secure_delete").fetchone()[0]
+        self._db._migrate(self.conn)
+        for suffix in ("", "-wal"):
+            try:
+                with open(self._db.DB_PATH + suffix, "rb") as fh:
+                    data = fh.read()
+            except FileNotFoundError:
+                continue
+            self.assertNotIn(b"SMALLSECRETMARKER", data, f"token bytes stay in the file{suffix}")
+            self.assertNotIn(b"BIGSECRETMARKER", data, f"token bytes stay in the file{suffix}")
+        self.assertEqual(self.conn.execute("PRAGMA secure_delete").fetchone()[0], before,
+                         "secure_delete was not restored")
+
 
 class ManagedSourceTest(UsageFetcherTestBase):
     def test_managed_source_prevents_server_snapshot_and_history_writes(self):
