@@ -86,7 +86,9 @@ content with `h()` and give it to `patch(el, ...)`, not `fill()`. `patch()`
 keeps every node that can stay and changes only text and attributes, so
 hover, focus, selection, scroll and open `<details>` stay. Give each row of a
 list that can change order a `data-key` (a session id, a model name, a
-month). Keep no reference to a node built for `patch()`: when an old node
+month). A keyed row that moves keeps its focus, selection and inner scroll:
+`patch()` moves only the rows out of order, with `moveBefore` where the
+browser has it. Keep no reference to a node built for `patch()`: when an old node
 matches, the new one is dropped. `app/tests/next_stable.test.cjs` checks
 every view over three poll cycles: no layout shift, no replaced node, no
 "Loading".

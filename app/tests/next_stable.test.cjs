@@ -41,9 +41,13 @@ function drift(v, key, n) {
 // The shell is rendered for the personal scope; the work scope is one click away.
 // boot: the scope the page opens in (the rendered shell is personal).
 // holdStatic: static paths that wait for page.__release() like held fixtures.
-async function open(browser, {viewport, url, hold = null, scope = 'personal', boot = 'personal', holdStatic = null, waitUntil = 'load'}) {
+// mutate(name, body, page): change a fixture body before it is served.
+// noMoveBefore: run as a browser without Element.moveBefore.
+async function open(browser, {viewport, url, hold = null, scope = 'personal', boot = 'personal', holdStatic = null, waitUntil = 'load',
+  mutate = null, noMoveBefore = false}) {
   const context = await browser.newContext({viewport, timezoneId: 'America/Chicago'});
   const page = await context.newPage();
+  if (noMoveBefore) await page.addInitScript(() => { delete Element.prototype.moveBefore; });
   const errors = [];
   const counts = {};
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -60,7 +64,8 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal', bo
       if (page.__hold && page.__hold.test(fixture[1])) await new Promise((resolve) => page.__held.push({name: fixture[1], resolve}));
       const n = (counts[fixture[1]] = (counts[fixture[1]] || 0) + 1);
       const body = JSON.parse(fs.readFileSync(path.join(FIXTURES, fixture[1] + '.json'), 'utf8'));
-      return route.fulfill({json: n === 1 ? body : drift(body, null, n)});
+      const out = n === 1 ? body : drift(body, null, n);
+      return route.fulfill({json: mutate ? mutate(fixture[1], out, page) : out});
     }
     if (pathname === '/static/next/js/main.js') {
       const text = fs.readFileSync(path.join(ROOT, pathname), 'utf8');
@@ -253,6 +258,40 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       assert.deepEqual(errors, []);
       await context.close();
     });
+
+    // The top project of the fixture drops to the last row when its sessions
+    // cost a ten-thousandth, and comes back. The focused row button keeps the focus.
+    const COST = /cost_usd$/;
+    const cheap = (v) => (Array.isArray(v) ? v.map(cheap) : v && typeof v === 'object'
+      ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, COST.test(k) && typeof x === 'number' ? x / 1e4 : k === 'orch_models' ? Object.fromEntries(Object.entries(x).map(([m, c]) => [m, c / 1e4])) : cheap(x)]))
+      : v);
+    const sinkTop = (name, body, page) => (name !== 'ledger' || !page.__sink ? body
+      : {...body, sessions: body.sessions.map((x) => (x.project === 'agent-tools' ? cheap(x) : x))});
+    for (const noMoveBefore of [false, true]) {
+      await check(`ledger 1440${noMoveBefore ? ' without moveBefore' : ''}: a pivot row that moves keeps the focus`, async () => {
+        const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#ledger', mutate: sinkTop, noMoveBefore});
+        await settle(page);
+        const keys = () => page.evaluate(() => [...document.querySelectorAll('.p-ledger-pivot tbody tr')].map((r) => r.dataset.key));
+        const first = (await keys())[0];
+        assert.equal(first, 'project:agent-tools', 'the fixture has another top project');
+        await page.evaluate(() => {
+          const b = document.querySelector('.p-ledger-pivot tbody tr button.pv-name');
+          b.focus();
+          window.__focus = b;
+        });
+        for (const sink of [true, false]) {
+          page.__sink = sink;
+          await page.evaluate(() => document.dispatchEvent(new Event('tf:bump')));
+          await page.clock.runFor(11000);
+          await page.waitForTimeout(100);
+          const order = await keys();
+          assert.equal(sink ? order[order.length - 1] : order[0], 'project:agent-tools', `the row did not move: ${order.join(', ')}`);
+          assert.ok(await page.evaluate(() => document.activeElement === window.__focus), 'the focus left the moved row');
+        }
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
 
     for (const [scope, width] of [['personal', 1440], ['personal', 390], ['enterprise', 1440]]) {
       await check(`history ${scope} ${width}: polls keep the picked month, the focus and the scroll`, async () => {

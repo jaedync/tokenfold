@@ -9,9 +9,9 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const ORIGIN = 'http://tokenfold.test';
 const CSP = "default-src 'self'; style-src 'self'; img-src 'self' data:";
 const failures = [];
-async function check(name, page, fn) {
+async function check(name, page, fn, arg) {
   try {
-    await page.evaluate(fn);
+    await page.evaluate(fn, arg);
     console.log('ok - ' + name);
   } catch (error) {
     failures.push(name + ': ' + error.message);
@@ -136,6 +136,65 @@ async function check(name, page, fn) {
       patch(root, h('input', {value: '1'}));
       window.must(input.value === '42', `value ${input.value}`);
     });
+
+    // Keyed rows that move keep focus, selection and inner scroll, with the
+    // native moveBefore() and without it (older browsers), and the patch
+    // moves only the rows outside the longest run that stays in order.
+    for (const native of [true, false]) {
+      const mode = native ? 'moveBefore' : 'insertBefore';
+      await check(`${mode}: a focused button in a keyed row that moves to the end keeps the focus`, page, (native) => {
+        const {h, patch} = window.dom;
+        const saved = Element.prototype.moveBefore;
+        if (!native) delete Element.prototype.moveBefore;
+        try {
+          const root = window.fresh();
+          const list = (keys) => keys.map((k) => h('li', {'data-key': k}, h('button', null, `row ${k}`)));
+          patch(root, list(['a', 'b', 'c', 'd', 'e']));
+          const a = root.children[0], btn = a.querySelector('button');
+          btn.focus();
+          let moved = 0;
+          const mo = new MutationObserver((ms) => { for (const m of ms) moved += m.removedNodes.length; });
+          mo.observe(root, {childList: true});
+          patch(root, list(['b', 'c', 'd', 'e', 'a']));
+          mo.takeRecords().forEach((m) => { moved += m.removedNodes.length; });
+          mo.disconnect();
+          window.must(root.lastElementChild === a, 'the row did not move to the end');
+          window.must(document.activeElement === btn, `the focus moved to ${document.activeElement && document.activeElement.outerHTML}`);
+          window.must(moved <= 1, `${moved} rows moved for one row out of place`);
+        } finally {
+          if (saved && !native) Element.prototype.moveBefore = saved;
+        }
+      }, native);
+
+      await check(`${mode}: a reversed list keeps the focus, the selection and the inner scroll`, page, (native) => {
+        const {h, patch} = window.dom;
+        const saved = Element.prototype.moveBefore;
+        if (!native) delete Element.prototype.moveBefore;
+        try {
+          const root = window.fresh();
+          const keys = ['a', 'b', 'c', 'd', 'e', 'f'];
+          const list = (ks) => ks.map((k) => h('li', {'data-key': k},
+            h('button', null, `go ${k}`), h('p', {class: 'sel'}, `text ${k}`),
+            h('div', {class: 'box', style: {height: '20px', overflow: 'auto'}}, h('div', {style: {height: '200px'}}, 'tall'))));
+          patch(root, list(keys));
+          const [, b, , d, e] = root.children;
+          const btn = b.querySelector('button');
+          btn.focus();
+          const sel = getSelection(), r = document.createRange();
+          r.selectNodeContents(d.querySelector('.sel'));
+          sel.removeAllRanges(); sel.addRange(r);
+          const box = e.querySelector('.box');
+          box.scrollTop = 50;
+          patch(root, list(keys.slice().reverse()));
+          window.must(root.children[4] === b && root.children[2] === d && root.children[1] === e, 'a keyed row was replaced');
+          window.must(document.activeElement === btn, 'the focus moved');
+          window.must(getSelection().toString() === 'text d', `selection is "${getSelection()}"`);
+          window.must(box.scrollTop === 50, `inner scroll is ${box.scrollTop}`);
+        } finally {
+          if (saved && !native) Element.prototype.moveBefore = saved;
+        }
+      }, native);
+    }
 
     assert.deepEqual(errors, []);
   } finally {

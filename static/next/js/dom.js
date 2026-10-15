@@ -96,10 +96,79 @@ function morphChildren(parent, next) {
     return match;
   });
   for (const o of old) if (!used.has(o)) o.remove();
-  let ref = parent.firstChild;
-  for (const node of out) {
-    if (node === ref) { ref = ref.nextSibling; continue; }
-    parent.insertBefore(node, ref);
+  place(parent, out);
+}
+
+// Put `out` in order under parent with as few moves as possible: the kept
+// nodes on the longest run that is already in order stay, the others move.
+// A move with insertBefore takes the node out of the document for a moment,
+// which drops the focus and inner scroll inside it, so moveBefore (which
+// keeps them) goes first. Either move collapses a selection inside the node
+// (the DOM updates live ranges as for a removal), so it is put back.
+function place(parent, out) {
+  const index = new Map();
+  Array.from(parent.childNodes).forEach((n, i) => index.set(n, i));
+  const kept = out.filter((n) => index.has(n));
+  const stay = new Set(longestRun(kept.map((n) => index.get(n))).map((i) => kept[i]));
+  const moves = [];
+  let ref = null;
+  for (let i = out.length - 1; i >= 0; i -= 1) {
+    const node = out[i];
+    if (!stay.has(node)) moves.push([node, ref]);
+    ref = node;
+  }
+  if (!moves.length) return;
+  const native = typeof parent.moveBefore === 'function' && parent.isConnected;
+  const saved = saveState(moves.filter(([n]) => index.has(n)).map(([n]) => n), native);
+  for (const [node, before] of moves) {
+    if (native && index.has(node)) {
+      try { parent.moveBefore(node, before); continue; } catch { /* not movable here: insert */ }
+    }
+    parent.insertBefore(node, before);
+  }
+  if (saved) restoreState(saved);
+}
+
+// Indexes (into seq) of one longest strictly increasing subsequence.
+function longestRun(seq) {
+  const tails = [], prev = new Array(seq.length);
+  for (let i = 0; i < seq.length; i += 1) {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (seq[tails[mid]] < seq[i]) lo = mid + 1; else hi = mid; }
+    prev[i] = lo ? tails[lo - 1] : -1;
+    tails[lo] = i;
+  }
+  const run = [];
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) run.push(i);
+  return run.reverse();
+}
+
+// The focus, the selection and inner scroll positions inside nodes that move.
+function saveState(moving, native) {
+  if (!moving.length) return null;
+  const inside = (n) => n && moving.some((m) => m === n || m.contains(n));
+  const act = document.activeElement;
+  const sel = typeof getSelection === 'function' ? getSelection() : null;
+  const range = sel && sel.rangeCount && (inside(sel.anchorNode) || inside(sel.focusNode))
+    ? [sel.anchorNode, sel.anchorOffset, sel.focusNode, sel.focusOffset] : null;
+  const scrolled = [];
+  for (const m of native ? [] : moving) {
+    if (m.nodeType !== 1) continue;
+    for (const el of [m, ...m.querySelectorAll('*')]) {
+      if (el.scrollTop || el.scrollLeft) scrolled.push([el, el.scrollTop, el.scrollLeft]);
+    }
+  }
+  return { focus: inside(act) ? act : null, range, scrolled };
+}
+
+function restoreState({ focus, range, scrolled }) {
+  for (const [el, top, left] of scrolled) {
+    if (el.scrollTop !== top) el.scrollTop = top;
+    if (el.scrollLeft !== left) el.scrollLeft = left;
+  }
+  if (focus && focus.isConnected && document.activeElement !== focus) focus.focus({ preventScroll: true });
+  if (range && range[0].isConnected && range[2].isConnected) {
+    try { getSelection().setBaseAndExtent(...range); } catch { /* the offsets no longer fit: drop the selection */ }
   }
 }
 
