@@ -8,8 +8,9 @@ part fails alone: a broken part logs and leaves its fields null.
 Scope: agent_state is fleet-wide and carries no account. A session is in
 the requested scope when its own events say so. A session with no events
 yet (Claude Code pushes every 5 min; Pi pushes at turn end) cannot be
-classified; it shows only when its machine has usage in this scope in the
-last 30 days, else it is hidden (fail closed). Meridian's SDK copies of Pi
+classified; it shows only when its machine has usage in this scope and
+none in the other scope in the last 30 days, and never on a scope-locked
+instance; else it is hidden (fail closed). Meridian's SDK copies of Pi
 sessions (pi_mirror_sessions) are hidden like everywhere else.
 """
 import logging
@@ -120,10 +121,10 @@ def _session_row(sid, s, agg, title, rate, now):
     }
 
 
-def _in_scope(agg, machine, scope, known_machines) -> bool:
+def _in_scope(agg, machine, scope, claimable) -> bool:
     if agg is not None:
         return agg["enterprise"] == (scope == "enterprise")
-    return machine in known_machines
+    return machine in claimable
 
 
 def _sort_key(row):
@@ -164,11 +165,13 @@ def _machines(known, recent, directory, rows, now) -> tuple[list[dict], set]:
 
 
 def scoped_sessions(conn, scope: str, snap: dict, now: float,
-                    known: set, rate_fn=None) -> list[dict]:
+                    claimable: set, rate_fn=None) -> list[dict]:
     """Live agent_state sessions in this scope, joined to events and sorted.
 
-    rate_fn returns the binding $/point; it is called after the joins so a
-    background build gets that long to land. Shared with /api/today."""
+    A session without events shows only on a `claimable` machine
+    (now_machines.claimable_machines). rate_fn returns the binding $/point;
+    it is called after the joins so a background build gets that long to
+    land. Shared with /api/today."""
     live = {sid: s for sid, s in snap["sessions"].items() if not s.get("ending")}
     if not live:
         return []
@@ -188,7 +191,7 @@ def scoped_sessions(conn, scope: str, snap: dict, now: float,
         mine = ids.get(sid, [sid])
         agg = _merge_rollups([rollups[i] for i in mine if i in rollups])
         machine = canonical_machine(s.get("machine") or "")
-        if not _in_scope(agg, machine, scope, known):
+        if not _in_scope(agg, machine, scope, claimable):
             continue
         title = next((titles[i] for i in mine if i in titles), None)
         # Pi subagent sessions have no AI title, but their run name
@@ -260,7 +263,9 @@ def build_now(scope: str, snap: dict, now: float) -> dict:
     with read_conn() as conn:
         known = _safe("scope machines", lambda: now_machines.scope_machines(
             conn, scope, local_day(now)), set())
-        rows = scoped_sessions(conn, scope, snap, now, known,
+        claimable = _safe("claimable machines", lambda: now_machines.claimable_machines(
+            conn, scope, local_day(now), known), set())
+        rows = scoped_sessions(conn, scope, snap, now, claimable,
                                rate_fn=lambda: binding_rate(scope))
         recent = _safe("recent events", lambda: now_machines.last_events(
             conn, scope, now - now_machines.RECENT_WINDOW_S), {})

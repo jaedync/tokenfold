@@ -88,8 +88,9 @@ def _daily_costs(conn, pred: str, days: list[str]) -> list[float]:
 
 def _working_by_machine(conn, scope, snap, now, today) -> dict[str, int]:
     known = now_machines.scope_machines(conn, scope, today)
+    claimable = now_machines.claimable_machines(conn, scope, today, known)
     counts: dict[str, int] = {}
-    for row in scoped_sessions(conn, scope, snap, now, known):
+    for row in scoped_sessions(conn, scope, snap, now, claimable):
         if row["state"] == "working" and row["machine"]:
             counts[row["machine"]] = counts.get(row["machine"], 0) + 1
     return counts

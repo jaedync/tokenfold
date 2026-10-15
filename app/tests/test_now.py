@@ -156,6 +156,25 @@ class NowEndpointTests(TempDBTestCase):
         self.assertIsNone(s["burn_usd_per_h"])
         self.assertIsNone(s["client"])
 
+    def test_session_without_events_hides_on_a_machine_of_both_scopes(self):
+        # A shared machine: the session could be the other account's.
+        insert_event(self.conn, "p", session="mine", ts=self.now - 86400,
+                     inp=1000, machine="laptop")
+        insert_event(self.conn, "w", session="theirs", ts=self.now - 86400,
+                     inp=1000, machine="laptop", account=WORK)
+        self._summarize()
+        agent_state.update("new-1", "laptop", "p", "working", now=self.now - 5)
+        self.assertEqual(self._get("personal")["sessions"], [])
+        self.assertEqual(self._get("enterprise")["sessions"], [])
+
+    def test_locked_scope_never_shows_sessions_without_events(self):
+        insert_event(self.conn, "w", session="theirs", ts=self.now - 86400,
+                     inp=1000, machine="laptop", account=WORK)
+        self._summarize()
+        agent_state.update("new-1", "laptop", "p", "working", now=self.now - 5)
+        with mock.patch("app.config.LOCKED_SCOPE", "enterprise"):
+            self.assertEqual(self._get("enterprise")["sessions"], [])
+
     def test_sort_waiting_longest_first_then_working_then_idle(self):
         insert_event(self.conn, "x", session="seed", ts=self.now - 60, inp=1)
         self._summarize()

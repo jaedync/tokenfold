@@ -45,6 +45,20 @@ def scope_machines(conn, scope: str, today: str) -> set[str]:
     return names
 
 
+def claimable_machines(conn, scope: str, today: str, known: set[str]) -> set[str]:
+    """Machines where a live session without events may show in this scope.
+
+    Such a session has no account, so it shows only on a machine known in
+    this scope (`known`) and not in the other one: on a shared machine it
+    could be the other account's session. A scope-locked instance never
+    shows one (the other scope's activity must not leak into it).
+    """
+    if sys.modules["app.config"].LOCKED_SCOPE:
+        return set()
+    other = "enterprise" if scope == "personal" else "personal"
+    return set(known) - scope_machines(conn, other, today)
+
+
 def last_events(conn, scope: str, since: float) -> dict[str, float]:
     """canonical machine -> newest billable event since `since` (scope)."""
     out: dict[str, float] = {}
