@@ -175,6 +175,14 @@ class NowEndpointTests(TempDBTestCase):
         with mock.patch("app.config.LOCKED_SCOPE", "enterprise"):
             self.assertEqual(self._get("enterprise")["sessions"], [])
 
+    def test_pi_copy_rows_do_not_make_a_machine_online(self):
+        from app import now_machines
+        insert_event(self.conn, "c1", session="pi:copy", ts=self.now - 60, inp=1000,
+                     machine="backup", client="pi-agent", provider="anthropic")
+        self.conn.execute("UPDATE events SET pi_copy=1 WHERE uuid='c1'")
+        self.conn.commit()
+        self.assertEqual(now_machines.last_events(self.conn, "personal", self.now - 3600), {})
+
     def test_sort_waiting_longest_first_then_working_then_idle(self):
         insert_event(self.conn, "x", session="seed", ts=self.now - 60, inp=1)
         self._summarize()

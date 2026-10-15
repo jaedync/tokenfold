@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from .aggregator import canonical_machine
 from .bg_cache import BackgroundCache
 from .db import read_conn
+from .event_dedupe import not_pi_copy
 
 DIRECTORY_DAYS = 30
 RECENT_WINDOW_S = 3600
@@ -66,7 +67,8 @@ def last_events(conn, scope: str, since: float) -> dict[str, float]:
             "SELECT source_machine, MAX(ts_epoch) AS ts FROM events "
             "INDEXED BY idx_events_billable_ts WHERE type='assistant' "
             f"AND request_id IS NOT NULL AND ts_epoch >= ? AND {_pred(scope)} "
-            "GROUP BY source_machine", (since,)):
+            # A copied Pi file reports old rows again on another machine.
+            f"AND {not_pi_copy()} GROUP BY source_machine", (since,)):
         name = canonical_machine(r["source_machine"])
         if name and r["ts"] and r["ts"] > out.get(name, 0):
             out[name] = r["ts"]
