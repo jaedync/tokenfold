@@ -239,6 +239,30 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    // An old quota reading: the server cannot prove the window start, so it
+    // sends none. Early in a window the forecast can be far over 100%.
+    const oldReading = (name, body) => {
+      if (name !== 'runway') return null;
+      const now = body.generated_at;
+      const windows = body.windows.map(w => (w.id !== body.binding ? w : {...w,
+        pct: 9, window_start: null, resets_at: now + 6.5 * 86400, tight_epoch: null, verdict: 'runs_out',
+        pace: {pace_state: 'above', expected_pct: 7, projected_pct: 211.4, reaches_100_epoch: now + 3.3 * 86400, elapsed_fraction: 0.071}}));
+      return {...body, windows};
+    };
+
+    await check('runs out days ahead: the hero and other windows name the day; the chart has no unknown start', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#runway', fixtureOverride: oldReading});
+      await page.waitForFunction(() => /runs out/i.test(document.querySelector('.p-hero .verdict-word').textContent));
+      assert.match(await text(page, '.p-hero .verdict-word'), /^Runs out (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d/i);
+      await page.waitForFunction(() => document.querySelector('.p-chart .chart-sub').textContent.trim() !== '');
+      const sub = await text(page, '.p-chart .chart-sub');
+      assert.doesNotMatch(sub, /—/, 'no dash for an unknown start');
+      assert.match(sub, /^Resets (Mon|Tue|Wed|Thu|Fri|Sat|Sun) /);
+      assert.doesNotMatch(await text(page, '.p-chart .legend'), /Even pace/, 'no even-pace line without a known start');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('burn: the meter rate is labelled as such; sessions split it when they exist', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
       await page.waitForSelector('.p-hero .burn-list li');

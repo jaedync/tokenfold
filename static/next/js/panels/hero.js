@@ -18,11 +18,11 @@ function verdictPersonal(w, now) {
   const rate = w.kind === 'short' ? '1-hour' : '6-hour';
   switch (w.verdict) {
     case 'runs_out':
-      return ['out', `Runs out ${f.clock(p.reaches_100_epoch)}`,
+      return ['out', `Runs out ${f.when(p.reaches_100_epoch, now)}`,
         `At the window average, this window reaches 100% ${f.dur(w.resets_at - p.reaches_100_epoch)} before it resets.`];
     case 'tight':
       return ['tight', 'Tight',
-        `At the window average you reach ≈${f.pct(p.projected_pct)} at reset. At the ${rate} rate you reach 100% at ≈${f.clock(w.tight_epoch)}, ${f.dur(w.resets_at - w.tight_epoch)} before the reset.`];
+        `At the window average you reach ≈${f.pct(p.projected_pct)} at reset. At the ${rate} rate you reach 100% at ≈${f.when(w.tight_epoch, now)}, ${f.dur(w.resets_at - w.tight_epoch)} before the reset.`];
     case 'clear':
       return ['clear', 'Clear to reset', `At the window average this window ends near ≈${f.pct(p.projected_pct)}.`];
     case 'too_early':
@@ -177,7 +177,7 @@ export default {
       fill(short, h('div', { class: 'kicker' }, 'Short window'),
         h('div', { class: 'short-row' }, h('span', null, `${splitLabel(fh).prov} ${splitLabel(fh).name}`),
           h('span', { class: 'num' }, f.pct(fh.pct)),
-          h('span', null, `resets ${f.clock(fh.resets_at)} · in ${f.dur(fh.resets_at - now, true)}`), chip),
+          h('span', null, `resets ${f.when(fh.resets_at, now)} · in ${f.dur(fh.resets_at - now, true)}`), chip),
         room.length ? h('div', { class: 'elsewhere' }, 'Room elsewhere: ', room.flatMap((r, i) => (i ? [' · ', r] : [r])), '.') : null);
     }
 

@@ -67,12 +67,17 @@ function model(s, zoom) {
   const month = w.kind === 'month';
   const p = w.pace || {};
   const day = zoom === 'day' && zoomable(w);
-  const [x0, x1] = day ? dayFrame(w, now) : [w.window_start, w.resets_at];
-  const [yMin, yMax] = day ? dayRange(w, pts, x0, x1, now)
+  // The server sends no start when its quota reading is too old to prove the
+  // window. The frame then uses the nominal start; the even-pace line and the
+  // start stamp stay out, because they would claim a start nobody knows.
+  const knownStart = !f.missing(w.window_start);
+  const fw = knownStart ? w : { ...w, window_start: w.resets_at - w.window_s };
+  const [x0, x1] = day ? dayFrame(fw, now) : [fw.window_start, w.resets_at];
+  const [yMin, yMax] = day ? dayRange(fw, pts, x0, x1, now)
     : [0, Math.max(100, month && !f.missing(p.projected_pct) ? p.projected_pct * 1.06 : 100)];
   const budget = month && dataOf(s.runway).budget ? dataOf(s.runway).budget.budget_usd : null;
   return {
-    w, now, pts, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at,
+    w, now, pts, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at, knownStart,
     cur: w.pct, projected: p.projected_pct, tight: w.tight_epoch,
     reaches: p.reaches_100_epoch, resets: (traj.resets || []).filter((t) => t > x0 && t <= now),
     yFmt: (v) => (month && budget ? f.usdShort(v / 100 * budget) : `${Math.round(v)}%`),
@@ -119,6 +124,19 @@ function xLabel(m, t, width) {
 
 // "Thu Oct 15, 3:00 AM": a 7-day window starts and ends on the same weekday.
 const longStamp = (e) => `${f.dow(e)} ${f.dateShort(e)}, ${f.clock(e)}`;
+
+const BIG = '400 15px "Archivo Black", sans-serif';
+const forecastLabel = (m) => (m.month && m.budget ? `≈${f.usdShort(m.projected / 100 * m.budget)}` : `≈${Math.round(m.projected)}%`);
+// Right padding that fits the forecast label: "≈211%" is wider than "≈99%".
+const measure = document.createElement('canvas').getContext('2d');
+function labelRoom(m) {
+  if (!m || f.missing(m.projected)) return 16;
+  measure.font = BIG;
+  const wide = measure.measureText(forecastLabel(m)).width;
+  measure.font = BOLD;
+  const sub = m.cut ? measure.measureText('at reset').width : 0;
+  return Math.max(m.month ? 72 : 58, Math.ceil(Math.max(wide, sub)) + 14);
+}
 
 export default {
   id: 'chart',
@@ -179,18 +197,16 @@ export default {
     function drawForecast(u, c, nx) {
       const w = m.w, right = u.bbox.left + u.bbox.width;
       clipped(c, u, () => line(c, nx, Yraw(u, m.cur), X(u, w.resets_at), Yraw(u, m.projected), RED, 3, [7, 5]));
-      const big = '400 15px "Archivo Black", sans-serif';
       if (!m.cut) {
         const ex = X(u, m.x1), ey = Y(u, m.projected);
         c.fillStyle = RED; c.fillRect(ex - px(4), ey - px(4), px(8), px(8));
-        const lbl = m.month && m.budget ? `≈${f.usdShort(m.projected / 100 * m.budget)}` : `≈${Math.round(m.projected)}%`;
-        label(c, lbl, ex + px(8), ey + px(m.projected > 97 ? 14 : 4), RED_INK, 'left', big);
+        label(c, forecastLabel(m), ex + px(8), ey + px(m.projected > 97 ? 14 : 4), RED_INK, 'left', BIG);
         return;
       }
       // The frame ends before the reset: say where the line goes.
       const ve = along(m.now, m.cur, w.resets_at, m.projected, m.x1);
       const ey = Y(u, Math.max(m.yMin, ve));
-      label(c, `≈${Math.round(m.projected)}%`, right + px(6), ey + px(5), RED_INK, 'left', big);
+      label(c, forecastLabel(m), right + px(6), ey + px(5), RED_INK, 'left', BIG);
       label(c, 'at reset', right + px(6), ey + px(19), RED_INK, 'left', BOLD);
     }
 
@@ -199,7 +215,7 @@ export default {
       const c = u.ctx, { top, left, width, height } = u.bbox;
       const bottom = top + height, right = left + width, nx = X(u, m.now);
       const w = m.w, limitIn = m.yMax >= 100;
-      if (!m.month) clipped(c, u, () => line(c, X(u, w.window_start), Yraw(u, 0), X(u, w.resets_at), Yraw(u, 100), INK, 1.6, [6, 5]));
+      if (!m.month && m.knownStart) clipped(c, u, () => line(c, X(u, w.window_start), Yraw(u, 0), X(u, w.resets_at), Yraw(u, 100), INK, 1.6, [6, 5]));
       if (limitIn) {
         line(c, left, Y(u, 100), right, Y(u, 100), INK, 3, []);
         label(c, m.month ? 'BUDGET' : 'LIMIT', left + px(4), Y(u, 100) - px(6), INK, 'left', BOLD);
@@ -233,7 +249,8 @@ export default {
       const pace = (t) => (t - m.w.window_start) / (m.w.resets_at - m.w.window_start) * 100;
       if (i === null || i === undefined || u.data[0][i] === undefined) return showLatest();
       const t = u.data[0][i], v = u.data[1][i];
-      fill(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed` : ` · ${v.toFixed(1)}% used · even pace ${pace(t).toFixed(1)}%`);
+      fill(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed`
+        : ` · ${v.toFixed(1)}% used${m.knownStart ? ` · even pace ${pace(t).toFixed(1)}%` : ''}`);
     }
     function showLatest() {
       if (!m || f.missing(m.cur)) return fill(readout);
@@ -245,7 +262,7 @@ export default {
     const plot = new uPlot({
       width: 400, height: 300,
       // Room on the right for the forecast label ("≈99%" or "≈$3.4K"), if any.
-      padding: [18, () => (!m || f.missing(m.projected) ? 16 : m.month ? 72 : 58), 0, 0],
+      padding: [18, () => labelRoom(m), 0, 0],
       legend: { show: false },
       select: { show: false },
       cursor: { y: false, drag: { x: false, y: false }, points: { size: 9, fill: BLUE, stroke: PAPER, width: 2 } },
@@ -296,13 +313,13 @@ export default {
       const w = m.w;
       setText(head.titleEl, m.month ? w.label : `${String(w.label).replace(' · ', ' ')} window`);
       seg.el.hidden = !zoomable(w);
+      const stamp = w.window_s >= 2 * D ? longStamp : f.dayClock;
       setText(sub, m.month ? `${f.dateShort(w.window_start + D / 2)} to ${f.dateShort(w.resets_at - D / 2)}`
-        : w.window_s >= 2 * D ? `${longStamp(w.window_start)} to ${longStamp(w.resets_at)}`
-          : `${f.dayClock(w.window_start)} to ${f.dayClock(w.resets_at)}`);
+        : m.knownStart ? `${stamp(w.window_start)} to ${stamp(w.resets_at)}` : `Resets ${stamp(w.resets_at)}`);
       const hasProj = !f.missing(m.projected), hasTight = !f.missing(w.tight_epoch);
       const items = m.month
         ? [['area', 'Billed'], ...(hasProj ? [['proj', 'Forecast at month end']] : [])]
-        : [['area', 'Used'], ['pace', 'Even pace'], ...(hasProj ? [['proj', 'Forecast at reset']] : []),
+        : [['area', 'Used'], ...(m.knownStart ? [['pace', 'Even pace']] : []), ...(hasProj ? [['proj', 'Forecast at reset']] : []),
           ...(hasTight ? [['tight', `At the ${w.kind === 'short' ? '1-hour' : '6-hour'} rate`]] : []), ...(m.resets.length ? [['reset', 'Reset']] : [])];
       fill(legend, items.map(([cls, t]) => h('span', { class: 'lg' }, h('i', { class: cls }), t)));
       const noHistory = !m.pts.length;

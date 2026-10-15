@@ -9,10 +9,10 @@ import { feedLine, staleNote } from '../panel.js';
 
 const clamp = (v) => Math.max(0, Math.min(100, v));
 
-function forecastText(w) {
+function forecastText(w, now) {
   const p = w.pace || {};
-  if (w.verdict === 'runs_out' && !f.missing(p.reaches_100_epoch)) return `100% at ≈${f.clock(p.reaches_100_epoch)}`;
-  if (!f.missing(w.tight_epoch)) return `tight: 100% at ≈${f.clock(w.tight_epoch)}`;
+  if (w.verdict === 'runs_out' && !f.missing(p.reaches_100_epoch)) return `100% at ≈${f.when(p.reaches_100_epoch, now)}`;
+  if (!f.missing(w.tight_epoch)) return `tight: 100% at ≈${f.when(w.tight_epoch, now)}`;
   if (!f.missing(p.projected_pct)) return `≈${f.pct(p.projected_pct)} at reset`;
   if (p.pace_state === 'too_early') return 'too early to tell';
   return 'no forecast';
@@ -28,12 +28,12 @@ function row(w, now) {
   return h('li', { class: `rw${w.stale ? ' is-stale' : ''}`, 'data-hot': hot ? '' : null, 'data-window': w.id },
     h('span', { class: 'rw-name' }, h('span', { class: 'rw-prov' }, prov), name),
     h('span', { class: 'rw-pct' }, f.pct(w.pct)),
-    h('span', { class: 'rw-bar', role: 'img', 'aria-label': `${f.pct(w.pct)} used. Even pace ${f.pct(p.expected_pct)}. ${forecastText(w)}.` },
+    h('span', { class: 'rw-bar', role: 'img', 'aria-label': `${f.pct(w.pct)} used. Even pace ${f.pct(p.expected_pct)}. ${forecastText(w, now)}.` },
       h('i', { style: { width: `${usedPct}%` } }),
       h('u', { style: { left: `${usedPct}%`, width: `${Math.max(0, proj - usedPct)}%` } }),
       f.missing(p.expected_pct) ? null : h('b', { style: { left: `${clamp(p.expected_pct)}%` } })),
     h('span', { class: 'rw-meta' },
-      h('span', { class: hot ? 'hot' : null }, forecastText(w),
+      h('span', { class: hot ? 'hot' : null }, forecastText(w, now),
         w.waitable ? [' · ', h('span', { class: 'chip chip-yellow' }, 'waitable')] : null,
         w.stale ? ` · data ${f.age(w.age_s)}` : null),
       h('span', null, resets)));
