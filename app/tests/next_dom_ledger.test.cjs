@@ -62,6 +62,9 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
       assert.ok(await page.locator('.tl-lane').count() >= 3, 'machine swimlanes');
       assert.ok(await page.locator('.tl-sess').count() > 10, 'session bars');
       assert.equal(await page.locator('.lt-item').count(), 8);
+      // The view stylesheet loads from the versioned static path, no ?v=.
+      const css = await page.locator('#ledger-css').getAttribute('href');
+      assert.match(new URL(css).pathname + new URL(css).search, /^\/static\/next-[0-9a-f]+\/css\/ledger\.css$/);
       // The cost note appears once in the view.
       const body = await page.evaluate(() => document.body.innerText);
       assert.equal((body.match(/not billed/g) || []).length, 1, 'one "not billed" note');

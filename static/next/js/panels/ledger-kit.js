@@ -141,10 +141,11 @@ export function keepFocus(root, rebuild) {
   if (again) again.focus({ preventScroll: true });
 }
 
-// The view's stylesheet, linked once (no change to the shared shell).
+// The view's stylesheet, linked once (no change to the shared shell). This
+// module loads from /static/next-<version>/, so the relative URL carries the
+// version (README, Cache busting).
 export function ensureCss() {
   if (typeof document === 'undefined' || document.getElementById('ledger-css')) return;
-  const v = document.body && document.body.dataset.version;
-  const href = new URL(`../../css/ledger.css${v ? `?v=${encodeURIComponent(v)}` : ''}`, import.meta.url).href;
+  const href = new URL('../../css/ledger.css', import.meta.url).href;
   document.head.append(h('link', { rel: 'stylesheet', id: 'ledger-css', href }));
 }
