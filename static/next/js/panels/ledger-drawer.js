@@ -97,6 +97,8 @@ export default {
     scrim.addEventListener('click', () => closeSession(store));
 
     let openId = null, detail = null, dstate = 'idle', ctrl = null, seenD = null, hideTimer = null;
+    // Sessions whose run tree shows every run ("Show all N runs").
+    const allRuns = new Set();
     const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     function order(d) {
@@ -130,7 +132,7 @@ export default {
       patch(bodyEl,
         costSection(s, row, live),
         sec('Fan-out', runs.length ? `${plural(runs.length, 'run')} · peak ${peakParallel(runs)} at once` : 'no subagents',
-          renderGantt(s, detail ? detail.prompt_times : null, c, live, (bodyEl.querySelector('.gantt') || {}).clientWidth), runTree(s, c)),
+          renderGantt(s, detail ? detail.prompt_times : null, c, live, (bodyEl.querySelector('.gantt') || {}).clientWidth), runTree(s, c, allRuns.has(s.id), () => { allRuns.add(s.id); render(null); })),
         modelsSection(s, detail, c),
         toolsTokens(s, detail, dstate),
         servedSection(detail, dstate, st.scope),

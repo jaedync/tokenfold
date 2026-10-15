@@ -227,6 +227,33 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
         await context.close();
       });
     }
+    await check('ledger 1440: "Show all N runs" works after the detail redraw and stays open over polls', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#ledger'});
+      await settle(page);
+      // The first of the biggest sessions with more runs than the tree shows.
+      let found = false;
+      for (let i = 0; i < 8 && !found; i += 1) {
+        await page.locator('.lt-btn').nth(i).click();
+        await page.clock.runFor(500);
+        await page.waitForSelector('.drawer.is-open .served-word');
+        found = await page.locator('.drawer .tree-more').count() > 0;
+        if (!found) { await page.keyboard.press('Escape'); await page.clock.runFor(500); }
+      }
+      assert.ok(found, 'no session of the list has a folded run tree');
+      const label = await page.locator('.drawer .tree-more').innerText();
+      const all = Number(label.match(/\d+/)[0]);
+      await page.locator('.drawer .tree-more').click();
+      await page.clock.runFor(100);
+      const rows = () => page.locator('.drawer .tree li').count();
+      assert.equal(await rows(), all + 1, 'the click did not show every run');
+      assert.equal(await page.locator('.drawer .tree-more').count(), 0, 'the button stays');
+      await polls(page, 150);
+      assert.equal(await rows(), all + 1, 'a poll folded the run tree again');
+      assert.equal(await page.locator('.drawer .tree-more').count(), 0, 'the button came back');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     for (const [scope, width] of [['personal', 1440], ['personal', 390], ['enterprise', 1440]]) {
       await check(`history ${scope} ${width}: polls keep the picked month, the focus and the scroll`, async () => {
         const {page, errors, context, counts} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#history', scope});

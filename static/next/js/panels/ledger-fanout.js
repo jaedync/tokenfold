@@ -81,17 +81,14 @@ function row(c, depth, name, sub, active, cost, model) {
 }
 
 // Claude Code runs have no label (ingest drops the Task text): the model and
-// length name them instead.
-export function runTree(s, c) {
+// length name them instead. `all`: show every run; `onAll`: the "Show all"
+// click. The drawer keeps that state by session id and renders again, so the
+// button holds no built node (patch() may keep the old ones instead).
+export function runTree(s, c, all = false, onAll = null) {
   const list = ordered(s.runs);
-  const ul = h('ul', { class: 'tree' });
-  const fillTree = (all) => {
-    ul.replaceChildren(row(c, 0, 'Orchestrator', `${s.model}`, s.active, s.orch, s.model),
-      ...(all ? list : list.slice(0, TREE_FEW)).map(({ r, depth }) => row(c, depth,
-        r.label || `${r.model} run`, `${r.label ? `${r.model} · ` : ''}${f.int(r.tools || 0)} tools`, r.active, r.cost, r.model)));
-  };
-  fillTree(false);
-  if (list.length <= TREE_FEW) return ul;
-  const more = h('button', { type: 'button', class: 'tree-more', onclick: () => { fillTree(true); more.remove(); } }, `Show all ${list.length} runs`);
-  return h('div', null, ul, more);
+  const ul = h('ul', { class: 'tree' }, row(c, 0, 'Orchestrator', `${s.model}`, s.active, s.orch, s.model),
+    ...(all ? list : list.slice(0, TREE_FEW)).map(({ r, depth }) => row(c, depth,
+      r.label || `${r.model} run`, `${r.label ? `${r.model} · ` : ''}${f.int(r.tools || 0)} tools`, r.active, r.cost, r.model)));
+  const folded = !all && list.length > TREE_FEW;
+  return h('div', null, ul, folded ? h('button', { type: 'button', class: 'tree-more', onclick: onAll }, `Show all ${list.length} runs`) : null);
 }
