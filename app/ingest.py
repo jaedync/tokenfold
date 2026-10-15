@@ -17,7 +17,8 @@ from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
 from .claude_usage import parse_claude_usage
-from .event_dedupe import (matching_claude_days, matching_pi_days,
+from .event_dedupe import (flag_new_pi_copies, matching_claude_days,
+                           matching_pi_days, pi_copy_key,
                            record_mirror_sessions, session_days,
                            sessions_without_reply)
 from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
@@ -414,6 +415,11 @@ _EVENT_SQL = (
     f"INSERT OR IGNORE INTO events({','.join(EVENT_COLS)}) "
     f"VALUES({','.join('?' for _ in EVENT_COLS)})"
 )
+PI_EVENT_COLS = EVENT_COLS + ["pi_copy_key"]
+_PI_EVENT_SQL = (
+    f"INSERT OR IGNORE INTO events({','.join(PI_EVENT_COLS)}) "
+    f"VALUES({','.join('?' for _ in PI_EVENT_COLS)})"
+)
 _TOOL_SQL = (
     f"INSERT OR IGNORE INTO tool_uses({','.join(TOOL_COLS)}) "
     f"VALUES({','.join('?' for _ in TOOL_COLS)})"
@@ -664,6 +670,7 @@ def _pi_event_row(event, machine: str, project_dir: str, session_file: str,
         "reported_cost_cache_write": usage.cost_cache_write if usage else None,
         "reported_cost_total": usage.cost_total if usage else None,
     })
+    row["pi_copy_key"] = pi_copy_key(row)
     tools = []
     for tool in event.tools:
         tools.append({
@@ -690,9 +697,14 @@ def _store_pi_rows(req: PiIngestRequest, event_rows: list[tuple],
     accepted = duplicates = 0
     with write_txn() as conn:
         cur = conn.cursor()
+        # Rows inserted below get larger rowids: the copy check runs on them.
+        events_after = conn.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM events").fetchone()[0]
+        tools_after = conn.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM tool_uses").fetchone()[0]
         for values in event_rows:
             try:
-                cur.execute(_EVENT_SQL, values)
+                cur.execute(_PI_EVENT_SQL, values)
                 accepted += int(cur.rowcount > 0)
                 duplicates += int(cur.rowcount <= 0)
             except sqlite3.IntegrityError:
@@ -702,6 +714,8 @@ def _store_pi_rows(req: PiIngestRequest, event_rows: list[tuple],
                 cur.execute(_TOOL_SQL, values)
             except sqlite3.IntegrityError:
                 pass
+        if accepted:
+            flag_new_pi_copies(conn, events_after, tools_after)
         now = datetime.now(TZ).isoformat()
         cursor_machine = f"pi:{req.account_class}:{req.machine}"
         last_ts = req.events[-1].timestamp if req.events else None
@@ -723,7 +737,7 @@ def ingest_pi(req: PiIngestRequest):
     for event in req.events:
         row, tools = _pi_event_row(event, req.machine, req.project_dir,
                                    req.session_file, req.account_class)
-        event_rows.append(tuple(row[c] for c in EVENT_COLS))
+        event_rows.append(tuple(row[c] for c in PI_EVENT_COLS))
         touched_days.add(row["day"])
         if row["message_id"]:
             anthropic_message_ids.add(row["message_id"])

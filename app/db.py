@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -305,10 +306,14 @@ _ADDED_COLUMNS = {
         "reported_cost_input": "REAL", "reported_cost_output": "REAL",
         "reported_cost_cache_read": "REAL", "reported_cost_cache_write": "REAL",
         "reported_cost_total": "REAL",
+        # Pi copies (event_dedupe.pi_copy_key): key set at ingest, flag set
+        # on the later-ingested rows of a key. NULL flag = not a copy.
+        "pi_copy_key": "TEXT", "pi_copy": "INTEGER",
     },
     "tool_uses": {
         "source_client": "TEXT NOT NULL DEFAULT 'claude-code'",
         "provider": "TEXT", "api": "TEXT",
+        "pi_copy": "INTEGER",
     },
 }
 
@@ -328,7 +333,33 @@ _POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_claude_message "
     "ON events(message_id) WHERE source_client='claude-code' "
     "AND type='assistant'",
+    # Only Pi rows carry a key, so the index holds Pi rows alone.
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_copy_key "
+    "ON events(pi_copy_key) WHERE pi_copy_key IS NOT NULL",
 )
+
+
+# Created after the first key pass, so it is built empty instead of holding
+# every Pi row until that pass removes them again.
+_PI_UNKEYED_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_unkeyed ON events(source_client) "
+    "WHERE source_client='pi-agent' AND pi_copy_key IS NULL")
+
+# JSON list of days whose rollups are stale. main._backfill_if_needed
+# re-rolls them; daily_summary_rebuild_pending re-rolls every day instead.
+ROLLUP_DAYS_KEY = 'daily_summary_rebuild_days'
+
+
+def queued_rollup_days(conn) -> set[str]:
+    row = conn.execute('SELECT value FROM meta WHERE key=?', (ROLLUP_DAYS_KEY,)).fetchone()
+    return set(json.loads(row[0])) if row else set()
+
+
+def queue_rollup_days(conn, days) -> None:
+    """Add days to the durable re-roll list (caller owns the transaction)."""
+    if days:
+        conn.execute('INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)',
+                     (ROLLUP_DAYS_KEY, json.dumps(sorted(queued_rollup_days(conn) | set(days)))))
 
 
 def _migrate(conn) -> None:
@@ -382,11 +413,25 @@ def _migrate(conn) -> None:
             "INSERT OR REPLACE INTO meta(key,value) "
             "VALUES('daily_summary_rebuild_pending','1')")
 
+    # Pi copies: ingest keys and flags its own rows. Each start keys and flags
+    # the Pi rows that code without the key wrote, in the same commit as the
+    # durable rebuild obligation for the days that changed.
+    # The first start after the upgrade keys all Pi history this way; only
+    # the days of flagged rows (and each next day) change: 13 of 266 days on
+    # production.
+    from .event_dedupe import mark_pi_copies
+    queue_rollup_days(conn, mark_pi_copies(conn))
+    conn.execute(_PI_UNKEYED_INDEX)
+
     # Startup-only exception to the write_txn rule: this runs inside
     # _init_lock before the connection is published to any other thread, so
     # nothing can race it in-process. (Two OS processes migrating at once are
     # serialized by SQLite's own file locks + busy_timeout.)
     conn.commit()
+    # A migration can leave a WAL of hundreds of MB (the first Pi copy pass:
+    # about 500 MB on production). Return that disk now; journal_size_limit
+    # alone keeps 64 MiB until the next checkpoint.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def get_conn() -> sqlite3.Connection:

@@ -269,7 +269,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
             f"WHERE is_sidechain=0 AND agent_id IS NULL "
             f"AND type IN ('user','assistant') "
             f"AND day = ? AND session_id IN ({ctx_placeholders}) "
-            f"AND COALESCE(account_email,'unknown') = ? "
+            f"AND {activity} AND COALESCE(account_email,'unknown') = ? "
             f"ORDER BY session_id, ts_epoch",
             [prev_day] + list(target_session_ids) + [account],
         ):
