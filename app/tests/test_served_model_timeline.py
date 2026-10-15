@@ -255,6 +255,23 @@ class TimelineSessionsTest(TimelineTestCase):
         self.assertEqual(len(body["ledger"]), 1)
 
 
+class TimelineSessionsOptOutTest(TimelineTestCase):
+    """`sessions=0`: the Lab strips need no per-session runs (megabytes on a
+    busy month), so a caller may leave them out."""
+
+    def test_sessions_zero_omits_the_runs(self):
+        self._ins("claude-fable-5", KETTLE, _at(0, 9), session="sA")
+        body = self._body("scope=personal&sessions=0")
+        self.assertNotIn("sessions", body)
+        self.assertEqual(body["models"], ["Fable 5"])
+        self.assertEqual(len(body["ledger"]), 1)
+
+    def test_default_still_carries_the_runs(self):
+        self._ins("claude-fable-5", KETTLE, _at(0, 9), session="sA")
+        self._body("scope=personal&sessions=0")  # a cached slim body must not leak
+        self.assertIn("sA", self._body()["sessions"])
+
+
 class TimelineLedgerTest(TimelineTestCase):
     """`ledger`: one row per (model, served, sig_version, sig_fields)."""
 

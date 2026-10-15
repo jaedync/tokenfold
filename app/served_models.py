@@ -501,7 +501,8 @@ async def served_models(days: int = Query(default=DAYS_DEFAULT),
 @router.get("/api/served-models/timeline",
             dependencies=[Depends(require_dashboard_auth)])
 def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
-                                 scope: Optional[str] = Query(default=None)):
+                                 scope: Optional[str] = Query(default=None),
+                                 sessions: bool = Query(default=True)):
     """When each model was served by something other than itself.
 
     `models` are the models with anything to report, busiest first; `bins` are
@@ -514,4 +515,9 @@ def served_models_timeline(days: int = Query(default=DAYS_DEFAULT),
     def build():
         with read_conn() as conn:
             return served_model_timeline(conn, pred, days)
-    return _timeline_cache.get((db.DB_PATH, pred, days), build)
+    body = _timeline_cache.get((db.DB_PATH, pred, days), build)
+    if sessions:
+        return body
+    # The Lab strips draw no per-session runs, and on a busy month they are
+    # megabytes. One cached build serves both shapes; the copy keeps it whole.
+    return {k: v for k, v in body.items() if k != "sessions"}
