@@ -1,0 +1,103 @@
+"""Dollars per limit point of the binding Claude window. No routes.
+
+/api/now turns a session's burn ($/h) into the share of the binding window
+it eats per hour (points/h = $/h / $/point). $/point here is the simple
+ratio "API-equivalent spend in the current window / percent used", the same
+inputs /api/rate-limits shows as limit_window cost and pct. It needs a scan
+of up to 7 days of events (about 0.5 s on the production copy), so it is
+served from a background cache: /api/now never waits for it, and reports
+null until the first build lands.
+
+Binding window: the long (7-day) Claude window with the highest projected
+percent at reset (fallback: highest percent). Short windows never bind.
+Only personal scope has Claude subscription windows.
+"""
+import json
+import sys
+import time
+
+from .bg_cache import BackgroundCache
+from .cost_windows import compute_window_cost_by_model
+from .db import read_conn
+from .limit_windows import _bucket_window_start, _iso_to_epoch
+from .quota_freshness import MAX_OBSERVATION_AGE_S
+from .usage_buckets import normalize_usage_buckets
+from .usage_pace import MIN_USED_PCT, WEEK_S, usage_pace
+
+# A rate is stable for minutes; the window cost moves a few dollars per
+# minute against thousands, so two minutes of age is invisible.
+_CACHE = BackgroundCache(ttl=120, wait_s=0.05)
+
+
+def binding_rate(scope: str, now: float | None = None) -> dict | None:
+    """{"bucket", "usd_per_point"} or None (not ready, not applicable)."""
+    return _CACHE.get(scope, lambda: build_binding_rate(scope, now))
+
+
+def build_binding_rate(scope: str, now: float | None = None) -> dict | None:
+    now = time.time() if now is None else now
+    if scope != "personal" or sys.modules["app.config"].LOCKED_SCOPE == "enterprise":
+        return None
+    with read_conn(snapshot=True) as conn:
+        stored = _oauth_row(conn)
+        if stored is None:
+            return None
+        observed = stored.get("observed_at_epoch")
+        if not isinstance(observed, (int, float)) or now - observed > MAX_OBSERVATION_AGE_S:
+            return None
+        source = stored.get("source")
+        best = _binding_bucket(conn, stored.get("data") or {}, observed,
+                               source, now)
+        if best is None:
+            return None
+        key, pct, start = best
+        by_model = compute_window_cost_by_model(conn, start, observed, scope=scope,
+                                                anthropic_only=True)
+    cost = sum(v for name, v in by_model.items() if _counts_for(key, name))
+    if cost <= 0:
+        return None                     # no evidence: a 0 rate would divide
+    return {"bucket": key, "usd_per_point": cost / pct}
+
+
+def _oauth_row(conn) -> dict | None:
+    row = conn.execute("SELECT value FROM meta WHERE key='oauth_usage'").fetchone()
+    if not row:
+        return None
+    try:
+        stored = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+    return stored if isinstance(stored, dict) else None
+
+
+def _binding_bucket(conn, usage, observed, source, now):
+    """(key, pct, window_start) of the binding long window, or None.
+
+    Pace runs at the observation time: the pct describes that moment. A
+    window that has reset since the observation no longer binds."""
+    ranked = []
+    for b in normalize_usage_buckets(usage):
+        key = b["key"]
+        if key != "seven_day" and not key.startswith("scoped:"):
+            continue
+        pct = b["utilization"]
+        reset = _iso_to_epoch(b["resets_at"])
+        if reset is None or reset <= max(observed, now) or pct < MIN_USED_PCT:
+            continue
+        start = _bucket_window_start(conn, key, reset, WEEK_S, observed, source=source)
+        pace = usage_pace(pct, reset, WEEK_S, observed, window_start_epoch=start)
+        projected = (pace or {}).get("projected_pct")
+        ranked.append(((projected if projected is not None else -1.0, pct),
+                       (key, pct, start)))
+    if not ranked:
+        return None
+    return max(ranked, key=lambda r: r[0])[1]
+
+
+def _counts_for(key: str, display_model: str) -> bool:
+    """A scoped window governs one model family; same stem rule as
+    /api/rate-limits (scoped:opus_4_8 matches every 'Opus' display name)."""
+    if key == "seven_day":
+        return True
+    family = key.split(":", 1)[1].split("_")[0].lower()
+    return bool(family) and family in display_model.lower()
