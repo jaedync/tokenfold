@@ -165,3 +165,81 @@ class HistoryDegradeTest(_HABase):
                                   params={"scope": "personal"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"windows": []})
+
+
+class MonthTrajectoryTest(_HABase):
+    """claude:month (work scope): the billed line from the billing meter."""
+
+    def setUp(self):
+        super().setUp()
+        from app.monthly_budget import _month_bounds_utc
+        self.m_start, self.m_end, self.m_label, _ = _month_bounds_utc(self.now)
+        # Readings spread over the part of the month that has passed.
+        self.span = self.now - self.m_start
+
+    def _get(self, status=200):
+        with patch.object(app.config, "LOCKED_SCOPE", None):
+            r = self.client().get("/api/runway/trajectory", params={
+                "scope": "enterprise", "window": "claude:month"})
+        self.assertEqual(r.status_code, status, r.text)
+        return r.json()
+
+    def _meter(self, t, used_usd, limit_usd=2000.0):
+        self.conn.execute(
+            "INSERT INTO extra_usage_readings(fetched_epoch, machine, used_cents,"
+            " limit_cents, utilization) VALUES(?,?,?,?,?)",
+            (t, "m", used_usd * 100, limit_usd * 100, None))
+        self.conn.commit()
+
+    def _at(self, frac):
+        return self.m_start + 30 + frac * (self.span - 60)
+
+    def test_meter_readings_become_percent_of_budget(self):
+        self._meter(self.m_start - 3600, 1900.0)  # last month: left out
+        self._meter(self._at(0.2), 100.0)
+        self._meter(self._at(0.6), 500.0)
+        self._meter(self._at(1.0), 1000.0)
+        body = self._get()
+        self.assertEqual(body["start"], self.m_start)
+        self.assertEqual(body["end"], self.m_end)
+        self.assertEqual(body["points"], [
+            [_minute(self._at(0.2)), 5.0],
+            [_minute(self._at(0.6)), 25.0],
+            [_minute(self._at(1.0)), 50.0]])
+        self.assertEqual(body["resets"], [])
+
+    def test_rollover_inside_the_month_drops_the_old_cycle(self):
+        # The meter rolled over a little after the UTC month started.
+        self._meter(self._at(0.05), 1950.0)
+        self._meter(self._at(0.1), 2.0)
+        self._meter(self._at(0.9), 400.0)
+        pts = self._get()["points"]
+        self.assertEqual([p[1] for p in pts], [0.1, 20.0])
+
+    def test_hand_entered_billing_readings_when_no_meter(self):
+        from app.monthly_budget import set_budget
+        set_budget(self.conn, 1000.0)
+        self.conn.execute(
+            "INSERT INTO billing_readings(scope, amount_usd, month, recorded_at,"
+            " recorded_epoch) VALUES('enterprise', ?, ?, 'x', ?)",
+            (250.0, self.m_label, self._at(0.5)))
+        self.conn.execute(
+            "INSERT INTO billing_readings(scope, amount_usd, month, recorded_at,"
+            " recorded_epoch) VALUES('personal', 900.0, ?, 'x', ?)",
+            (self.m_label, self._at(0.6)))
+        self.conn.commit()
+        self.assertEqual(self._get()["points"], [[_minute(self._at(0.5)), 25.0]])
+
+    def test_no_readings_is_bounds_only(self):
+        from app.monthly_budget import set_budget
+        set_budget(self.conn, 1000.0)
+        body = self._get()
+        self.assertEqual(body["points"], [])
+        self.assertEqual((body["start"], body["end"]), (self.m_start, self.m_end))
+
+    def test_downsampled_to_400_points(self):
+        for i in range(900):
+            self._meter(self._at(i / 899), float(i + 1))
+        pts = self._get()["points"]
+        self.assertLessEqual(len(pts), 400)
+        self.assertEqual(pts[-1][1], 45.0)

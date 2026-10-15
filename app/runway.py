@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from .api import _rate_limits_payload, _resolve_scope
 from .auth import require_dashboard_auth
 from .db import read_conn
+from .month_trajectory import month_points
 from .monthly_budget import monthly_budget_block
 from .provider_usage import provider_usage_block
 from .runway_history import claude_trajectory, window_history
@@ -92,12 +93,20 @@ def _personal_limits_allowed(effective):
 
 
 def _bounds_only(conn, effective, provider, now, window_id):
-    """Provider windows and the month meter keep no per-poll history: only
-    their bounds are known, so points and resets stay empty."""
+    """Provider windows keep no per-poll history: only their bounds are
+    known, so points and resets stay empty. The month meter has its billing
+    readings (app/month_trajectory.py)."""
     if provider == "claude":
         block = (monthly_budget_block(conn, now)
                  if effective == "enterprise" else None)
         windows = [month_window(block, now)] if block else []
+        if block and window_id == "claude:month":
+            w = windows[0]
+            return {"points": month_points(conn, w["window_start"],
+                                           block["month"],
+                                           block["budget_usd"], now),
+                    "resets": [], "start": w["window_start"],
+                    "end": w["resets_at"]}
     else:
         windows = provider_windows(provider_usage_block(
             effective, now, conn=conn, include_costs=False), now)
