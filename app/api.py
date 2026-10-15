@@ -223,7 +223,17 @@ def _rate_limits_response(scope):
 
 
 def _build_rate_limits(scope, conn):
+    """The /api/rate-limits response; see _rate_limits_payload."""
+    return JSONResponse(content=_rate_limits_payload(scope, conn))
+
+
+def _rate_limits_payload(scope, conn, *, lean=False):
     """Return scope-filtered weekly spend over a rolling 7-day window.
+
+    lean=True (the /api/runway input) skips the rolling-7d chart inputs
+    (week_cost, week_active_s, hourly_costs), limit_window.active_s and the
+    providers' month_cost. Each is a scan of a week or a month of events
+    that the runway does not show; everything else is the same build.
 
     Defaults to enterprise scope. Pass ?scope=personal for personal view.
 
@@ -255,7 +265,18 @@ def _build_rate_limits(scope, conn):
     now = time.time()
     week_start_epoch = now - 7 * 24 * 3600
     window_end = now
+    weekly_budget = {"updated_at_epoch": now} if lean else {
+        "source": "events",
+        "window": "rolling_7d",
+        **_rolling_week(conn, effective, pred, week_start_epoch, window_end),
+        "updated_at_epoch": now,
+    }
+    _attach_quota_blocks(weekly_budget, effective, pred, conn, now, lean)
+    return {"weekly_budget": weekly_budget}
 
+
+def _rolling_week(conn, effective, pred, week_start_epoch, window_end):
+    """week_cost, week_active_s and hourly_costs over the rolling 7 days."""
     # Cost: delegate to compute_window_cost which deduplicates by request_id
     # and correctly applies fast/geo pricing modifiers (speed, inference_geo).
     # Claude-subscription spend only (anthropic_only): the Codex/OpenCode
@@ -328,14 +349,16 @@ def _build_rate_limits(scope, conn):
             if not found:
                 hourly_costs.append({"h": h_idx, "c": round(c, 4)})
 
-    weekly_budget = {
-        "source": "events",
-        "window": "rolling_7d",
+    return {
         "week_cost": round(week_cost, 2),
         "week_active_s": round(week_active_s),
         "hourly_costs": hourly_costs,
-        "updated_at_epoch": now,
     }
+
+
+def _attach_quota_blocks(weekly_budget, effective, pred, conn, now, lean):
+    """Add monthly_budget, oauth and providers to weekly_budget in place
+    (the dict is built and owned by _rate_limits_payload alone)."""
 
     # ── Enterprise-scope monthly $ budget pacing block ─────────────────────
     # Only attached when this is an enterprise request AND a budget is set
@@ -437,8 +460,8 @@ def _build_rate_limits(scope, conn):
                             "cost": round(compute_window_cost(
                                 conn, lw_start, observed, scope=effective,
                                 anthropic_only=True), 2),
-                            "active_s": round(
-                                _active_seconds(conn, pred, lw_start, observed)),
+                            **({} if lean else {"active_s": round(
+                                _active_seconds(conn, pred, lw_start, observed))}),
                         }
                 except Exception as e:
                     print(f"[rate-limits] limit_window computation failed: "
@@ -527,10 +550,9 @@ def _build_rate_limits(scope, conn):
     # class has reported.
     try:
         from .provider_usage import provider_usage_block
-        providers = provider_usage_block(effective, now, conn=conn)
+        providers = provider_usage_block(effective, now, conn=conn,
+                                         include_month_cost=not lean)
         if providers:
             weekly_budget["providers"] = providers
     except Exception as e:
         print(f"[rate-limits] provider usage failed: {e}", flush=True)
-
-    return JSONResponse(content={"weekly_budget": weekly_budget})

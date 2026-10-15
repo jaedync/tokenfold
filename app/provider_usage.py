@@ -203,12 +203,19 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
     return result
 
 
-def provider_usage_block(scope, now=None, *, conn=None, include_costs=True):
-    """Build one scope's provider block, omitting stale snapshots."""
+def provider_usage_block(scope, now=None, *, conn=None, include_costs=True,
+                         include_month_cost=True):
+    """Build one scope's provider block, omitting stale snapshots.
+
+    include_month_cost=False keeps the window dollars but skips the month
+    scan of Pi events (/api/runway does not show month_cost). A provider
+    with no fresh window is then omitted, as it has nothing to show.
+    """
     now = now if now is not None else time.time()
     conn = conn if conn is not None else get_conn()
     snapshots = _load_scopes(conn).get(scope, {})
-    costs = _month_reported_costs(conn, now, scope) if include_costs else {}
+    month_cost = include_costs and include_month_cost
+    costs = _month_reported_costs(conn, now, scope) if month_cost else {}
     result = {}
 
     for provider in _PROVIDER_EVENT_IDS:
@@ -222,7 +229,7 @@ def provider_usage_block(scope, now=None, *, conn=None, include_costs=True):
         plan = snapshot.get("plan") if fresh else None
         result[provider] = {
             "windows": windows,
-            **({"month_cost": cost} if include_costs else {}),
+            **({"month_cost": cost} if month_cost else {}),
             **({"updated_at_epoch": observed} if fresh else {}),
             **({"plan": plan} if isinstance(plan, str) else {}),
         }
