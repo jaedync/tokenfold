@@ -187,7 +187,8 @@ def resolve_scope(requested):
 LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 PRICING_CACHE_TTL = 86400  # 24 hours
 
-# OAuth credentials file (mounted from host)
+# OAuth credentials file (mounted read-only from the host). The usage fallback
+# reads it and never refreshes it: Claude Code on the host owns the login.
 CLAUDE_CREDENTIALS_PATH = os.environ.get("CLAUDE_CREDENTIALS_PATH", "/app/credentials.json")
 
 # Notify relay (optional — all empty = feature disabled)

@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/app/data
+      # Read only, never refreshed here: a refresh would spend the token Claude
+      # Code and Meridian on this host need (app/usage_fetcher.py).
       - ~/.claude/.credentials.json:/app/credentials.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

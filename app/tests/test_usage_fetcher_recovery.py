@@ -1,4 +1,5 @@
-"""Mocked refresh deadlines, credential rotation, managed source ownership."""
+"""The usage fallback reads the mounted credentials and never refreshes them;
+managed source ownership."""
 import asyncio
 import json
 from unittest.mock import AsyncMock, patch
@@ -8,72 +9,83 @@ from app import usage_fetcher as f
 from app.tests._support import TempDBTestCase
 
 
-class UsageFetcherRecoveryTest(TempDBTestCase):
+class UsageFetcherTestBase(TempDBTestCase):
     def setUp(self):
         super().setUp()
-        self.oauth = {"accessToken": "fake-access", "refreshToken": "fake-refresh", "expiresAt": 1}
-        for name, value in (("_cached_oauth", None), ("_consecutive_refresh_failures", 0),
-                            ("_refresh_identity", None), ("_refresh_retry_at", 0),
-                            ("_file_identity", None), ("_backoff_until", 0)):
+        self.now = 10000
+        self.oauth = {"accessToken": "fake-access", "refreshToken": "fake-refresh",
+                      "expiresAt": (self.now + 3600) * 1000}
+        for name, value in (("_backoff_until", 0), ("_token_state", None)):
             p = patch.object(f, name, value, create=True)
             p.start()
             self.addCleanup(p.stop)
         self.creds = patch.object(f, "_read_credentials_file", return_value=({}, self.oauth)).start()
         self.addCleanup(patch.stopall)
-        self.write_file = patch.object(f, "_write_credentials_file").start()
         self.http = AsyncMock()
         self.factory = patch.object(f.httpx, "AsyncClient").start()
         self.factory.return_value.__aenter__.return_value = self.http
-        self.now = 10000
         self.clock = patch.object(f.time, "time", side_effect=lambda: self.now).start()
-        response = httpx.Response(403, request=httpx.Request("POST", f.OAUTH_TOKEN_URL))
-        self.http.post.return_value = response
+        self.printed = patch.object(f, "log").start()
 
-    def refresh(self):
-        asyncio.run(f._refresh_token_if_needed(force=True))
+    def usage(self, status, body=None):
+        return httpx.Response(status, json=body or {}, request=httpx.Request("GET", f.USAGE_API_URL))
 
-    def test_retry_threshold_has_real_hourly_deadline(self):
-        for _ in range(5):
-            self.refresh()
-        self.assertEqual(self.http.post.call_count, 5)
-        self.assertEqual(f._refresh_retry_at, self.now + 3600)
-        self.now += 3599
-        self.refresh()
-        self.assertEqual(self.http.post.call_count, 5)
-        self.now += 1
-        self.refresh()
-        self.assertEqual(self.http.post.call_count, 6)
-        self.assertEqual(f._refresh_retry_at, self.now + 3600)
 
-    def test_changed_credentials_recover_even_with_earlier_expiry(self):
-        for _ in range(5):
-            self.refresh()
-        self.creds.return_value = ({}, {**self.oauth, "accessToken": "rotated-access", "refreshToken": "rotated-refresh", "expiresAt": 0})
-        self.http.post.return_value = httpx.Response(200, json={"access_token": "recovered", "expires_in": 7200},
-                                                   request=httpx.Request("POST", f.OAUTH_TOKEN_URL))
-        self.refresh()
-        self.assertEqual(self.http.post.call_count, 6)
-        self.assertEqual(self.http.post.call_args.kwargs["json"]["refresh_token"], "rotated-refresh")
-        self.assertEqual(f._consecutive_refresh_failures, 0)
-        self.assertEqual(f._refresh_retry_at, 0)
-        self.assertEqual(f._cached_oauth["accessToken"], "recovered")
-        # The still-mounted old file must not undo the just-refreshed token.
-        self.assertEqual(f._get_oauth()["accessToken"], "recovered")
+class NoRefreshTest(UsageFetcherTestBase):
+    """A refresh-token grant rotates the token server-side and the mount is
+    read-only, so a refresh here would spend the token Claude Code and
+    Meridian on the host need."""
 
-    def test_missing_access_token_response_also_backs_off(self):
-        self.http.post.return_value = httpx.Response(200, json={}, request=httpx.Request("POST", f.OAUTH_TOKEN_URL))
-        for _ in range(6):
-            self.refresh()
-        self.assertEqual(self.http.post.call_count, 5)
-        self.assertEqual(f._refresh_retry_at, self.now + 3600)
+    def test_module_has_no_refresh_path(self):
+        for name in ("_refresh_token_if_needed", "_load_cached_credentials",
+                     "_write_credentials_file", "OAUTH_TOKEN_URL"):
+            self.assertFalse(hasattr(f, name), name)
 
+    def test_expired_file_token_skips_the_fetch(self):
+        self.creds.return_value = ({}, {**self.oauth, "expiresAt": (self.now - 1) * 1000})
+        asyncio.run(f._fetch_usage())
+        self.http.get.assert_not_called()
+        self.http.post.assert_not_called()
+
+    def test_expired_token_is_logged_once_per_change(self):
+        self.creds.return_value = ({}, {**self.oauth, "expiresAt": (self.now - 1) * 1000})
+        for _ in range(3):
+            asyncio.run(f._fetch_usage())
+        expired = [c for c in self.printed.call_args_list if "expired" in c.args[0]]
+        self.assertEqual(len(expired), 1)
+
+    def test_401_backs_off_without_a_refresh(self):
+        self.http.get.return_value = self.usage(401)
+        asyncio.run(f._fetch_usage())
+        self.http.post.assert_not_called()
+        self.assertEqual(f._backoff_until, self.now + f.UNAUTHORIZED_BACKOFF_S)
+
+    def test_429_backs_off(self):
+        self.http.get.return_value = self.usage(429)
+        asyncio.run(f._fetch_usage())
+        self.assertEqual(f._backoff_until, self.now + f.RATE_LIMIT_BACKOFF_S)
+
+    def test_token_comes_from_the_file_only(self):
+        fresher = {**self.oauth, "accessToken": "db-access", "expiresAt": (self.now + 7200) * 1000}
+        self.conn.execute("INSERT INTO meta VALUES('oauth_credentials',?)", (json.dumps(fresher),))
+        self.conn.commit()
+        self.assertEqual(f._get_access_token(), "fake-access")
+
+    def test_startup_deletes_the_cached_token_pair(self):
+        self.conn.execute("INSERT INTO meta VALUES('oauth_credentials','{}')")
+        self.conn.commit()
+        self._db._migrate(self.conn)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM meta WHERE key='oauth_credentials'").fetchone())
+
+
+class ManagedSourceTest(UsageFetcherTestBase):
     def test_managed_source_prevents_server_snapshot_and_history_writes(self):
         managed = {"source": "meridian-oauth", "observed_at_epoch": self.now - 100,
                    "updated_at": "2026-01-01T00:00:00Z", "data": {}}
         self.conn.execute("INSERT INTO meta VALUES('oauth_usage',?)", (json.dumps(managed),))
         self.conn.commit()
-        self.http.get.return_value = httpx.Response(200, json={"five_hour": {"utilization": 82}},
-                                                  request=httpx.Request("GET", f.USAGE_API_URL))
+        self.http.get.return_value = self.usage(200, {"five_hour": {"utilization": 82}})
         asyncio.run(f._fetch_usage())
         self.assertEqual(json.loads(self.conn.execute("SELECT value FROM meta WHERE key='oauth_usage'").fetchone()[0]), managed)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM limit_readings").fetchone()[0], 0)
@@ -84,8 +96,7 @@ class UsageFetcherRecoveryTest(TempDBTestCase):
         async def provider_response(*args, **kwargs):
             store_snapshot({"five_hour": {"utilization": 7}}, self.now - 100,
                            "meridian-oauth", metadata={"source_profile": "default"})
-            return httpx.Response(200, json={"five_hour": {"utilization": 82}},
-                                  request=httpx.Request("GET", f.USAGE_API_URL))
+            return self.usage(200, {"five_hour": {"utilization": 82}})
 
         self.http.get.side_effect = provider_response
         asyncio.run(f._fetch_usage())

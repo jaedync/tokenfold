@@ -454,6 +454,11 @@ def _migrate(conn) -> None:
     queue_rollup_days(conn, mark_pi_copies(conn))
     conn.execute(_PI_UNKEYED_INDEX)
 
+    # The usage fallback no longer refreshes or caches the OAuth login
+    # (app/usage_fetcher.py). Drop the token pair older code kept here: it is
+    # a live credential, and it rode along in every database backup.
+    conn.execute("DELETE FROM meta WHERE key='oauth_credentials'")
+
     # Startup-only exception to the write_txn rule: this runs inside
     # _init_lock before the connection is published to any other thread, so
     # nothing can race it in-process. (Two OS processes migrating at once are
