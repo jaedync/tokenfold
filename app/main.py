@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .db import close_conn, get_conn, write_txn
+from .db import (ROLLUP_DAYS_KEY, close_conn, get_conn, queued_rollup_days,
+                 write_txn)
 from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
 from .pricing import load_pricing
@@ -72,20 +73,26 @@ def _backfill_if_needed():
 
     Each day commits atomically. A failing day is logged and skipped so a bad
     day cannot crash-loop startup; the pending marker then stays durable, so
-    the next startup retries ALL days even if some rows already exist.
+    the next startup retries ALL days even if some rows already exist. Days
+    queued by queue_rollup_days alone are re-rolled the same way.
     """
     conn = get_conn()
     pending = conn.execute(
         "SELECT 1 FROM meta WHERE key='daily_summary_rebuild_pending'"
     ).fetchone()
-    if not pending and conn.execute("SELECT 1 FROM daily_summary LIMIT 1").fetchone():
+    queued = queued_rollup_days(conn)
+    every_day = pending or not conn.execute("SELECT 1 FROM daily_summary LIMIT 1").fetchone()
+    if not every_day and not queued:
         return
-    with write_txn(conn):
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) "
-            "VALUES('daily_summary_rebuild_pending','1')")
     from .summarizer import summarize_days
-    days = [r['day'] for r in conn.execute('SELECT DISTINCT day FROM events ORDER BY day')]
+    if every_day:
+        with write_txn(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key,value) "
+                "VALUES('daily_summary_rebuild_pending','1')")
+        days = [r['day'] for r in conn.execute('SELECT DISTINCT day FROM events ORDER BY day')]
+    else:
+        days = sorted(queued)
     started, failed = time.monotonic(), []
     logger.warning("rebuilding daily rollups for %d days before serving", len(days))
     for i, day in enumerate(days, 1):
@@ -102,7 +109,9 @@ def _backfill_if_needed():
         logger.error("daily rollup rebuild incomplete: %d of %d days failed", len(failed), len(days))
         return
     with write_txn(conn):
-        conn.execute("DELETE FROM meta WHERE key='daily_summary_rebuild_pending'")
+        # A full rebuild also covered the queued days.
+        conn.execute("DELETE FROM meta WHERE key IN "
+                     "('daily_summary_rebuild_pending', ?)", (ROLLUP_DAYS_KEY,))
     logger.warning("daily rollups rebuilt in %.0f s", time.monotonic() - started)
 
 
