@@ -288,7 +288,7 @@ a.lb-wait { text-decoration: none; }
 .mix-legend .ml-v { margin-left: auto; font-weight: 800; white-space: nowrap; }
 .mix-legend .ml-p { color: var(--muted); font-weight: 600; min-width: 3.4ch; text-align: right; }
 .machs { list-style: none; display: grid; gap: 6px; }
-.machs li { display: grid; grid-template-columns: 88px minmax(0, 1fr) 62px; align-items: center; gap: 10px; font-size: 13px; }
+.machs li { display: grid; grid-template-columns: 148px minmax(0, 1fr) 62px; align-items: center; gap: 10px; font-size: 13px; }
 .machs .mn { font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machs .mb { height: 10px; background: var(--paper-2); position: relative; }
 .machs .mb i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--blue); }

@@ -79,7 +79,7 @@ function peakBlock(d, now) {
     h('div', { class: 'peak-now' }, status),
     h('div', { class: 'hours', role: 'img', 'aria-label': `Limit use per hour today. Red hours are peak hours, about ×${f.fixed(peak.factor, 2)}.` }, strip),
     h('div', { class: 'hours-x' }, ['12a', '6a', '12p', '6p'].map((t) => h('span', null, t))),
-    h('p', { class: 'ex-text' }, `In peak hours the 5-hour window fills ≈×${f.fixed(peak.factor, 2)} faster. The 7-day window does not change.`));
+    h('p', { class: 'ex-text' }, `In peak hours the 5-hour window fills ≈${f.fixed(peak.factor, 2)} times as fast. The 7-day window does not change.`));
 }
 
 function cacheBlock(d) {
@@ -92,6 +92,9 @@ function cacheBlock(d) {
       ? `Cache reads count at about ${Math.round(c.value * 100)}% of their list price (${f.fixed(c.lo, 2)} to ${f.fixed(c.hi, 2)}).`
       : 'Not enough data to weigh cache reads.'));
 }
+
+// Server notes arrive as lower-case fragments; print them as a sentence.
+const sentence = (t) => { const v = String(t).trim(); return v ? `${v[0].toUpperCase()}${v.slice(1)}${/[.!?]$/.test(v) ? '' : '.'}` : v; };
 
 export default {
   id: 'exchange',
@@ -116,7 +119,7 @@ export default {
       const q = d && d.fit_quality ? d.fit_quality : {};
       if (line || (q.status && q.status !== 'ok' && q.status !== 'stale')) {
         fill(state, line || h('div', { class: 'p-state' },
-          q.status === 'computing' ? 'The fit is in progress.' : 'No exchange rate for this scope.', q.note ? h('small', null, q.note) : null));
+          q.status === 'computing' ? 'The fit is in progress.' : 'No exchange rate for this scope.', q.note ? h('small', null, sentence(q.note)) : null));
         fill(body);
         return;
       }

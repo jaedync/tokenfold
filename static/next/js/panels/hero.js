@@ -108,7 +108,8 @@ export default {
         f.missing(h6) ? null : `6 h rate ${h6.toFixed(2)}%/h`].filter(Boolean).join(' · ');
       fill(facts,
         fact('Pace', PACE_WORD[p.pace_state] || f.DASH, paceSub || ' '),
-        fact('Forecast', f.missing(p.projected_pct) ? f.DASH : [approx(), `${f.pct(p.projected_pct)} at reset`], 'if the window average holds'),
+        fact('Forecast', f.missing(p.projected_pct) ? f.DASH : [approx(), `${f.pct(p.projected_pct)} at reset`],
+          f.missing(p.projected_pct) ? 'needs more data' : 'if the window average holds'),
         fact('Resets', f.dayClock(w.resets_at), `in ${f.dur(w.resets_at - now)}`),
         fact('Left', f.missing(w.usd_left) ? f.DASH : [approx(), f.usd(w.usd_left)],
           f.missing(w.usd_per_point) ? 'value per point unknown' : `${(100 - w.pct).toFixed(1)} pts × ≈${f.usd(w.usd_per_point, { cents: true })} per point`));
@@ -135,7 +136,7 @@ export default {
           h('span', { class: 'bn' }, h('b', null, x.machine), ` ${x.project || ''}`, x.subagents ? ` · ${x.subagents} sub` : ''),
           h('span', { class: 'bv' }, `+${x.share_of_binding_pct_per_h.toFixed(2)}%/h`),
           h('span', { class: 'bd' }, `≈${f.usd(x.burn_usd_per_h, { cents: false })}/h`)))
-          : h('li', null, h('span'), h('span', { class: 'bn' }, 'No session burns this window now.'))));
+          : h('li', null, h('span'), h('span', { class: 'bn' }, 'No live session burns this window now.'))));
     }
 
     function renderShort(s) {

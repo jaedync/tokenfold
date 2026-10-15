@@ -77,6 +77,9 @@ function xLabel(m, t, width) {
   return f.dow(t);
 }
 
+// "Thu Oct 15, 3:00 AM": a 7-day window starts and ends on the same weekday.
+const longStamp = (e) => `${f.dow(e)} ${f.dateShort(e)}, ${f.clock(e)}`;
+
 export default {
   id: 'chart',
   label: 'Trajectory',
@@ -185,7 +188,9 @@ export default {
         { stroke: MUTED, font: FONT, size: 30, gap: 6, ticks: { show: false }, grid: { stroke: GRID, width: 1 },
           splits: (u) => (m ? xSplits(m, u.bbox.width / uPlot.pxRatio) : []),
           values: (u, splits) => splits.map((t) => {
-            if (!m || Math.abs(u.valToPos(t, 'x') - u.valToPos(m.now, 'x')) < 56 || (t > m.now && !m.month)) return '';
+            // Keep clear of the NOW and end labels, which the draw hook paints.
+            const x = u.valToPos(t, 'x');
+            if (!m || Math.abs(x - u.valToPos(m.now, 'x')) < 56 || Math.abs(x - u.valToPos(m.x1, 'x')) < 44) return '';
             return xLabel(m, t, u.bbox.width / uPlot.pxRatio);
           }) },
         { stroke: MUTED, font: FONT, size: 46, gap: 6, ticks: { show: false }, grid: { stroke: GRID, width: 1 },
@@ -221,7 +226,8 @@ export default {
       setText(head.titleEl, m.month ? w.label : `${String(w.label).replace(' · ', ' ')} window`);
       seg.el.hidden = m.month;
       setText(sub, m.month ? `${f.dateShort(w.window_start + D / 2)} to ${f.dateShort(w.resets_at - D / 2)}`
-        : `${f.dayClock(w.window_start)} to ${f.dayClock(w.resets_at)}`);
+        : w.window_s >= 2 * D ? `${longStamp(w.window_start)} to ${longStamp(w.resets_at)}`
+          : `${f.dayClock(w.window_start)} to ${f.dayClock(w.resets_at)}`);
       const items = m.month
         ? [['area', 'Billed'], ['proj', 'Forecast at month end']]
         : [['area', 'Used'], ['pace', 'Even pace'], ['proj', 'Forecast at reset'], ...(f.missing(w.tight_epoch) ? [] : [['tight', `At the ${w.kind === 'short' ? '1-hour' : '6-hour'} rate`]]), ...(m.resets.length ? [['reset', 'Reset']] : [])];

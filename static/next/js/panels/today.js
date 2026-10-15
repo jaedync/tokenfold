@@ -69,7 +69,7 @@ export default {
       mix.setAttribute('aria-label', `Model mix: ${models.map((m) => `${m.model} ${Math.round(m.usd / total * 100)} percent`).join(', ') || 'no spend yet'}`);
       fill(mixLegend, models.map((m) => h('li', null,
         h('span', { class: 'swatch', style: { background: familyColor(m.family) } }),
-        h('span', { class: 'ml-n' }, m.model), h('span', { class: 'ml-v' }, f.usd(m.usd, { cents: false })),
+        h('span', { class: 'ml-n', title: m.model }, m.model), h('span', { class: 'ml-v' }, f.usd(m.usd, { cents: false })),
         h('span', { class: 'ml-p' }, `${Math.round(m.usd / total * 100)}%`))));
 
       const machines = (t.by_machine || []).slice().sort((a, b) => b.usd - a.usd);
