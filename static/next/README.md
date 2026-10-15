@@ -8,8 +8,8 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 
 | Path | Purpose |
 |------|---------|
-| `templates/next.html` | Jinja shell: masthead, live bar, `<main id="view">`, footer. Sets `data-scope`, `data-scope-locked`, `data-owner`, `data-view`, `data-version` on `<body>`. |
-| `app/next_page.py` | `GET /next`: dashboard auth, scope precedence as `/` (lock > `?scope=` > `tf_scope` cookie > default). |
+| `templates/next.html` | Jinja shell: masthead, live bar, `<main id="view">`, footer. Sets `data-scope`, `data-scope-locked`, `data-owner`, `data-view`, `data-version`, `data-static` on `<body>`. |
+| `app/next_page.py` | `GET /next`: dashboard auth, scope precedence as `/` (lock > `?scope=` > `tf_scope` cookie > default). Also serves `static/next` under `/static/next-<version>/` (see Cache busting). |
 | `css/tokenfold.css` | Tokens, atoms, layout, then one section per panel. |
 | `js/main.js` | Boot, hash router (`#runway`, `#ledger`, `#history`, `#lab`), scope switch, tab title, SSE bump. |
 | `js/api.js` | `getJSON(name, params, {scope, mock, signal})`, the endpoint table `ENDPOINTS`, `backoffMs()`. |
@@ -25,6 +25,19 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | `fixtures/*.json` | One fixture per endpoint (`-work` variants for the work scope). Made by `scripts/make_next_fixtures.py`. |
 | `vendor/uplot/` | uPlot 1.6.32, MIT (`LICENSE`). ESM build. |
 | `fonts/` | Archivo Black, DM Sans (OFL text files beside them). |
+
+## Cache busting
+
+The shell loads every file of `static/next` from `/static/next-<version>/…`,
+where `<version>` is a content hash of the folder (`app/next_page.py`). Relative
+imports inherit the prefix, so a nested module is never stale after a deploy,
+and the current version is served `immutable`. A URL with an older version
+still loads (the current files, `no-cache`).
+
+- In a module, build asset URLs relative to the module:
+  `new URL('../../css/ledger.css', import.meta.url)`.
+- In the template, use `{{ static_base }}/css/<view>.css`. Do not write
+  `/static/next/…` or `?v=`: the plain path still works but skips the version.
 
 ## Mock mode
 

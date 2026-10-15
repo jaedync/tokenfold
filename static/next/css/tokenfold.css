@@ -87,9 +87,17 @@ main:focus { outline: none; }
 /* The mark is a gauge, not art: red = binding window used, blue = Claude 5-hour used. */
 .mark { display: grid; grid-template-columns: 64px 64px 40px; gap: var(--rule); background: var(--ink); border-left: var(--rule) solid var(--ink); }
 .mark > span { position: relative; overflow: hidden; }
-.mk-blue { background: var(--blue); }
-.mk-red { background: var(--red); }
-.mk-red i, .mk-blue i { position: absolute; left: 0; right: 0; top: 0; height: 100%; background: var(--paper); border-bottom: var(--rule) solid var(--ink); transition: height .6s ease; }
+/* Each column: a paper cap with the window and its value, then the gauge.
+ * The gauge keeps a thin strip of colour at 0%, so it never reads as an empty frame. */
+.mk-col { display: grid; grid-template-rows: auto 1fr; gap: var(--rule); background: var(--ink); }
+.mk-cap { background: var(--paper); padding: 6px 7px 5px; display: grid; gap: 2px; min-width: 0; }
+.mk-cap small { font: 800 9px/1 var(--text); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-cap b { font: 400 17px/1 var(--display); letter-spacing: -.02em; white-space: nowrap; }
+.mk-g { position: relative; overflow: hidden; }
+.mk-blue .mk-g { background: var(--blue); }
+.mk-red .mk-g { background: var(--red); }
+.mk-red i, .mk-blue i { position: absolute; left: 0; right: 0; top: 0; height: 100%; max-height: calc(100% - 5px); background: var(--paper); border-bottom: 2px solid var(--ink); transition: height .6s ease; }
+.mk-col[data-none] i { max-height: none; border-bottom: 0; }
 .mk-yellow { background: var(--yellow); }
 .mk-yellow b { position: absolute; left: 50%; bottom: 18px; width: 22px; height: 22px; transform: translateX(-50%); background: var(--ink); }
 
@@ -135,7 +143,7 @@ a.lb-wait { text-decoration: none; }
 .meter > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--ink); }
 .meter > u { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, var(--red) 0 3px, transparent 3px 7px); }
 .meter > b { position: absolute; top: -9px; bottom: -9px; width: 3px; margin-left: -1.5px; background: var(--yellow); box-shadow: 0 0 0 1.5px var(--ink); }
-.meter-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-weight: 600; margin-top: -8px; }
+.meter-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-weight: 600; margin-top: -2px; }
 .verdict { border: 3px solid var(--ink); padding: 12px 14px 13px; display: grid; gap: 6px; background: var(--yellow); }
 .verdict[data-tone='clear'] { background: var(--blue); color: #fff; }
 .verdict[data-tone='out'] { background: var(--red-ink); color: #fff; }
@@ -160,6 +168,8 @@ a.lb-wait { text-decoration: none; }
 .burn { display: grid; gap: 7px; }
 .burn-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
 .burn-head b { font: 400 16px/1 var(--display); }
+.burn-sub { font-size: 12px; font-weight: 700; color: var(--muted); margin-top: 2px; }
+.burn-none { font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .burnbar { display: flex; height: 14px; gap: 2px; background: var(--paper-2); }
 .burnbar > span { min-width: 3px; }
 .burn-list { list-style: none; display: grid; gap: 3px; font-size: 12.5px; }
@@ -369,7 +379,11 @@ a.lb-wait { text-decoration: none; }
   .tagline { font-size: 10px; letter-spacing: .14em; }
   .tagline .tag { padding: 6px 8px; }
   .tagline .seg button { padding: 4px 7px; font-size: 10px; letter-spacing: .1em; min-height: 26px; }
-  .mark { grid-template-columns: 30px 34px; }
+  .mark { grid-template-columns: 40px 40px; }
+  .mk-cap { padding: 5px 3px 4px 4px; }
+  .mk-cap small { font-size: 8px; letter-spacing: .02em; }
+  .mk-cap b { font-size: 13px; }
+  .mk-cap .pc { display: none; }
   .mk-yellow { display: none; }
   .mast-nav { padding: 0 var(--pad); gap: 10px; }
   .tabs { gap: 16px; }

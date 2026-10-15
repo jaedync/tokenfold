@@ -49,7 +49,10 @@ export default {
       if (!f.missing(ref) && ref > 0) {
         const delta = (t.spend_usd / ref - 1) * 100;
         fill(cmp, h('b', null, `${delta >= 0 ? '+' : '−'}${Math.abs(delta).toFixed(0)}%`), ` vs typical by ${f.clock(now)} (${f.usd(ref, { cents: false })})`);
-      } else fill(cmp, 'No typical day yet.');
+      } else {
+        // A known full day means history exists: the by-hour profile is still building.
+        fill(cmp, f.missing(t.typical_day_usd) ? 'No typical day yet.' : 'The typical spend by this hour is not ready yet.');
+      }
       setText(facts, `${f.int(t.prompts)} prompts · ${f.dur(t.active_s)} active`);
       const scale = Math.max(t.spend_usd || 0, t.typical_day_usd || 0, ref || 0) * 1.08 || 1;
       barNow.style.width = `${(t.spend_usd || 0) / scale * 100}%`;

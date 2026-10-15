@@ -32,8 +32,14 @@ export default {
       item('lb-age lb-hide-m', 'Newest data', dataAge),
       clockEl,
     );
-    const markBind = document.getElementById('mk-bind');
-    const markShort = document.getElementById('mk-short');
+    const mark = document.getElementById('mark');
+    const markCol = (id) => ({
+      cover: document.getElementById(`mk-${id}`),
+      key: document.getElementById(`mk-${id}-k`),
+      value: document.getElementById(`mk-${id}-v`),
+    });
+    const markBind = markCol('bind');
+    const markShort = markCol('short');
 
     let last = ctx.store.get();
     const tickClock = () => {
@@ -54,8 +60,10 @@ export default {
       const bind = bindingWindow(dataOf(s.runway));
       const usdH = live && live.burn_usd_per_h ? live.burn_usd_per_h.m30 : null;
       const pctH = bind && bind.burn_pct_per_h ? bind.burn_pct_per_h.h1 : null;
-      setText(burnUsd, f.missing(usdH) ? '' : `≈${f.usd(usdH, { cents: false })}/h${f.missing(pctH) ? '' : ' · '}`);
-      setText(burnPct, f.missing(pctH) ? (f.missing(usdH) ? f.DASH : '') : `+${pctH.toFixed(1)}%/h ${windowTag(bind)}`);
+      // The phone hides the dollar part; with no window rate the dollars are all there is.
+      const usdText = f.missing(usdH) ? null : `≈${f.usd(usdH, { cents: false })}/h`;
+      setText(burnUsd, usdText && !f.missing(pctH) ? `${usdText} · ` : '');
+      setText(burnPct, !f.missing(pctH) ? `+${pctH.toFixed(1)}%/h ${windowTag(bind)}` : usdText || f.DASH);
       const waiting = live ? live.waiting : null;
       setText(waitN, f.int(waiting));
       setAttr(wait, 'data-n', String(waiting || 0));
@@ -65,11 +73,25 @@ export default {
       setText(machines, live ? `${f.int(live.machines_online)} / ${f.int(live.machines_total)} online` : f.DASH);
       if (!live) setText(dataAge, status === 'unavailable' ? 'feed down' : f.DASH);
       tickClock();
-      // The mark: paper covers the unused share of each column.
       const short = claudeShortWindow(dataOf(s.runway));
-      const cover = (w) => `${100 - Math.max(0, Math.min(100, w && typeof w.pct === 'number' ? w.pct : 0))}%`;
-      if (markBind) markBind.style.height = cover(bind);
-      if (markShort) markShort.style.height = cover(short);
+      setMark(markBind, bind, bind && bind.kind === 'month' ? 'month' : windowTag(bind) || 'limit');
+      setMark(markShort, short, '5h');
+      if (mark) {
+        mark.title = `Red column: ${bind ? `${bind.label}, ${f.pct(bind.pct)} used` : 'no binding window'}. `
+          + `Blue column: ${short ? `${short.label}, ${f.pct(short.pct)} used` : 'no 5-hour window'}.`;
+      }
+    }
+
+    // The mark: a gauge per column. Paper covers the unused share; the cap
+    // names the window and gives the value, so a low value still reads.
+    function setMark(col, w, tag) {
+      if (!col.cover) return;
+      const has = Boolean(w) && typeof w.pct === 'number';
+      const used = has ? Math.max(0, Math.min(100, w.pct)) : 0;
+      col.cover.style.height = `${100 - used}%`;
+      col.cover.parentElement.parentElement.toggleAttribute('data-none', !has);
+      setText(col.key, tag);
+      if (col.value) col.value.replaceChildren(has ? String(Math.floor(w.pct)) : f.DASH, ...(has ? [h('span', { class: 'pc' }, '%')] : []));
     }
 
     return { update, destroy: () => clearInterval(timer) };

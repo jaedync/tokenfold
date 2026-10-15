@@ -131,7 +131,8 @@ store.subscribe((s) => {
   const live = dataOf(s.now) && s.now.data.live;
   const parts = [];
   if (w && typeof w.pct === 'number') parts.push(`${Math.floor(w.pct)}% ${windowTag(w)}`);
-  if (live && live.waiting) parts.push(`${live.waiting} waiting`);
+  // Always say the count once the live feed answers, so the title keeps one shape.
+  if (live && typeof live.waiting === 'number') parts.push(`${live.waiting} waiting`);
   parts.push(baseTitle);
   const title = parts.join(' · ');
   if (document.title !== title) document.title = title;
