@@ -66,8 +66,8 @@ def load_granted(conn: sqlite3.Connection, since: float, source: Optional[str],
 # Inner query: one row per request (MAX per streaming repeat), canonical
 # twin filter so a Meridian Pi request and its SDK copy count once. Same
 # request key as app/cost_windows.py, so this endpoint and the dashboard
-# count the same requests (Pi rows copied between machines are a known
-# canonical-predicate gap, fixed there, not here).
+# count the same requests. The canonical predicate also drops Pi rows copied
+# to another machine or path (not_pi_copy).
 # Outer query: per-minute sums, so a 45-day scan returns tens of thousands of
 # rows, not one per request. Cost is linear in tokens, so pricing the sums
 # is exact; one minute is far below the 30-minute shortest interval. Rows
