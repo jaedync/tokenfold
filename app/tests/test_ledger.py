@@ -93,6 +93,9 @@ class LedgerTestBase(TempDBTestCase):
 class ClaudeCodeLedgerTest(LedgerTestBase):
     def setUp(self):
         super().setUp()
+        self.seed_claude_code()
+
+    def seed_claude_code(self):
         t = self.t0
         self.cc('cc-1.jsonl', [
             self.cc_user('u1', 'cc-1', t),
@@ -235,6 +238,47 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
 
     def test_session_detail_unknown_is_404(self):
         self.assertEqual(self.session('nope').status_code, 404)
+
+
+class LiveSnapshotThreadTest(LedgerTestBase):
+    """agent_state.snapshot() prunes the shared session dict, which only the
+    event loop may change: the ledger routes must take it there."""
+
+    def setUp(self):
+        super().setUp()
+        ClaudeCodeLedgerTest.seed_claude_code(self)
+
+    def _snapshot_on_loop(self, calls):
+        import asyncio
+
+        def snap(now=None):
+            try:
+                asyncio.get_running_loop()
+                calls.append("loop")
+            except RuntimeError:
+                calls.append("worker thread")
+            return {"sessions": {"cc-1": {"state": "working"}}}
+        return patch('app.agent_state.snapshot', side_effect=snap)
+
+    def test_ledger_takes_the_live_snapshot_on_the_event_loop(self):
+        calls = []
+        with self._snapshot_on_loop(calls):
+            body = self.ledger()
+        self.assertEqual(calls, ["loop"])
+        self.assertTrue(body['sessions'][0]['live'])
+
+    def test_session_detail_takes_the_live_snapshot_on_the_event_loop(self):
+        calls = []
+        with self._snapshot_on_loop(calls):
+            r = self.session('cc-1')
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(calls, ["loop"])
+        self.assertTrue(r.json()['live'])
+
+    def test_cached_ledger_shows_the_current_live_state(self):
+        self.assertFalse(self.ledger()['sessions'][0]['live'])
+        with self._snapshot_on_loop([]):
+            self.assertTrue(self.ledger()['sessions'][0]['live'])
 
 
 class TwinAndPiLineageTest(LedgerTestBase):

@@ -12,7 +12,7 @@ from collections import Counter
 from .aggregator import _conditional_model_names, display_tool_name
 from .config import scope_predicate
 from .event_dedupe import not_pi_copy
-from .ledger import live_session_ids, public_session
+from .ledger import public_session
 from .ledger_build import build_sessions
 from .pi_lineage import PiLineage, account_class, split_pi_id
 
@@ -105,7 +105,7 @@ def _served(conn, ids: list[str], scope: str, pred: str) -> dict:
     return served_state([(r[0], r[1], r[2]) for r in rows])
 
 
-def build_detail(conn, scope: str, sid: str) -> dict | None:
+def build_detail(conn, scope: str, sid: str, live=frozenset()) -> dict | None:
     pred = scope_predicate(scope)
     ids = [sid, *_descendants(conn, sid)]
     sessions = build_sessions(conn, pred, scope, *ALL_TIME, session_ids=ids,
@@ -116,7 +116,7 @@ def build_detail(conn, scope: str, sid: str) -> dict | None:
     members = sorted(ids)
     names = _conditional_model_names(set(found["_models"]))
     total = found["cost_usd"]
-    out = public_session(found, names, live_session_ids())
+    out = public_session(found, names, live)
     out.update({
         "prompt_times": _prompt_times(conn, sid, pred),
         "models": [{"model": names[i], "cost_usd": usd,

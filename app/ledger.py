@@ -87,14 +87,19 @@ def daily_by_model(conn, pred: str, start: float, end: float) -> list[dict]:
     return [{"day": day, "by_model": dict(models)} for day, models in days.items()]
 
 
-def live_session_ids() -> set:
+def live_session_ids() -> frozenset:
     """Sessions the hook relay reports now. Pi hooks use the raw Pi id, which
-    is the tail of the stored `pi:<ns>:<raw>` id; both forms are returned."""
+    is the tail of the stored `pi:<ns>:<raw>` id; both forms are returned.
+
+    Call it on the event loop only: snapshot() prunes the shared session
+    dict, which event-loop code iterates. The async routes take it before
+    they hand the build to a worker thread.
+    """
     try:
-        return set(agent_state.snapshot()["sessions"])
+        return frozenset(agent_state.snapshot()["sessions"])
     except Exception:
         logger.exception("agent state snapshot failed; live flags are false")
-        return set()
+        return frozenset()
 
 
 def _is_live(sid: str, live: set) -> bool:
@@ -150,12 +155,20 @@ def _part(name: str, fn):
         return None
 
 
-def build_ledger(conn, scope: str, start: float, end: float) -> dict:
+def with_live(body: dict, live) -> dict:
+    """A copy of a (cached) ledger body with the live flags of now."""
+    if body.get("sessions") is None:
+        return body
+    return {**body, "sessions": [{**s, "live": _is_live(s["id"], live)}
+                                 for s in body["sessions"]]}
+
+
+def build_ledger(conn, scope: str, start: float, end: float,
+                 live=frozenset()) -> dict:
     pred = scope_predicate(scope)
     daily = _part("daily", lambda: daily_by_model(conn, pred, start, end))
     sessions = _part("sessions", lambda: build_sessions(conn, pred, scope, start, end))
     names = model_names(daily, sessions)
-    live = live_session_ids()
     public = None if sessions is None else [public_session(s, names, live) for s in sessions]
     return {
         "from": start, "to": end,
@@ -175,7 +188,9 @@ async def ledger(scope: Optional[str] = Query(default=None),
                  to: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     start, end = parse_range(from_, to, time.time())
-    return await run_in_threadpool(cached_ledger, effective, start, end, to is not None)
+    live = live_session_ids()  # on the event loop (see live_session_ids)
+    body = await run_in_threadpool(cached_ledger, effective, start, end, to is not None)
+    return with_live(body, live)
 
 
 def cached_ledger(scope: str, start: float, end: float, closed: bool) -> dict:
@@ -205,9 +220,11 @@ async def session(session_id: str, scope: Optional[str] = Query(default=None)):
     if not session_id or len(session_id) > 1024:
         raise HTTPException(status_code=404, detail="session not found")
 
+    live = live_session_ids()  # on the event loop (see live_session_ids)
+
     def build():
         with read_conn() as conn:
-            return build_detail(conn, effective, session_id)
+            return build_detail(conn, effective, session_id, live)
     out = await run_in_threadpool(build)
     if out is None:
         raise HTTPException(status_code=404, detail="session not found")
