@@ -40,7 +40,7 @@ from .config import scope_predicate
 from .cost_windows import compute_window_cost, compute_window_cost_by_model
 from . import db
 from .db import get_conn, read_conn
-from .read_cache import ReadCache
+from .bg_cache import BackgroundCache
 # Thresholds single-sourced from limit_readings so a future tuning pass
 # changes burn-segmentation and window-segmentation together.
 from .limit_readings import (RESET_DROP_PTS, RESET_JUMP_S,
@@ -49,7 +49,16 @@ from .usage_buckets import normalize_usage_buckets
 from .quota_history import active_history_source, history_source_filter
 
 router = APIRouter()
-_history_cache = ReadCache()
+# A full build scans every month and every weekly window (about 6 s on the
+# production copy). A value younger than HISTORY_TTL_S is served as is; an
+# older one up to HISTORY_STALE_S more is served while one background build
+# refreshes it, so only a cold start waits. App startup warms both scopes
+# (app/prewarm.py).
+HISTORY_TTL_S = 30
+HISTORY_STALE_S = 3600
+COLD_WAIT_S = 120
+_HISTORY = BackgroundCache(ttl=HISTORY_TTL_S, wait_s=COLD_WAIT_S, max_entries=16,
+                           stale_s=HISTORY_STALE_S)
 
 WINDOW_S = 7 * 86400
 MERGE_S = 3600       # boundaries closer than this are one real-world event
@@ -264,8 +273,10 @@ def _build_segment(conn, scope, b0, end_epoch, end_kind, inferred, now=None, *, 
         "start_epoch": b0["epoch"],
         "end_epoch": end_epoch,
         "end_kind": end_kind,
+        # Claude-subscription spend only, as limit_window in /api/rate-limits:
+        # Codex/OpenCode Pi rows do not consume this limit window.
         "cost": round(compute_window_cost(conn, b0["epoch"], cost_end,
-                                          scope=scope), 2),
+                                          scope=scope, anthropic_only=True), 2),
         "peak_pct": peak["p"] if peak else None,
         "inferred": bool(inferred),
     }
@@ -322,15 +333,38 @@ def spend_history(scope: Optional[str] = Query(default=None)):
     except cfg.ScopeLocked:
         raise HTTPException(status_code=404, detail="not found")
 
+    result = cached_history(effective)
+    if result is None:
+        raise HTTPException(status_code=503, detail="spend history is not ready")
+    return result
+
+
+def cached_history(effective, wait_s=None):
+    """The cached /api/spend-history payload for a resolved scope, or None
+    when the build fails or takes longer than the wait."""
+    import sys
+    cfg = sys.modules["app.config"]
+    locked = cfg.LOCKED_SCOPE
+
     def build():
         with read_conn() as conn:
-            return _spend_history(conn, effective, cfg.LOCKED_SCOPE)
+            return _spend_history(conn, effective, locked)
     # A pre-transfer cached overlay must not survive under the new owner.
     source = None
-    if effective == "personal" and cfg.LOCKED_SCOPE != "enterprise":
+    if effective == "personal" and locked != "enterprise":
         with read_conn() as conn:
             source = active_history_source(conn)
-    return _history_cache.get((db.DB_PATH, effective, cfg.LOCKED_SCOPE, source), build)
+    return _HISTORY.get((db.DB_PATH, effective, locked, source), build, wait_s=wait_s)
+
+
+def warm(scope):
+    """Build the payload for this scope now (startup prewarm)."""
+    return cached_history(scope)
+
+
+def clear_cache():
+    """Test support."""
+    _HISTORY.clear()
 
 
 def _spend_history(conn, effective, locked_scope):

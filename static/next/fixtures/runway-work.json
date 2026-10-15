@@ -1,0 +1,45 @@
+{
+ "generated_at": 1792093450.0,
+ "scope": "enterprise",
+ "binding": "claude:month",
+ "windows": [
+  {
+   "id": "claude:month",
+   "provider": "claude",
+   "key": "month",
+   "label": "Claude \u00b7 October bill",
+   "kind": "month",
+   "window_s": 2678400.0,
+   "pct": 55.00000000000001,
+   "resets_at": 1793491200.0,
+   "window_start": 1790812800.0,
+   "observed_at": 1792093260.0,
+   "stale": false,
+   "age_s": 180,
+   "pace": {
+    "pace_state": "above",
+    "expected_pct": 49.2,
+    "projected_pct": 111.8,
+    "reaches_100_epoch": 1793205840.0,
+    "elapsed_fraction": 0.4919244528619529
+   },
+   "tight_epoch": null,
+   "burn_pct_per_h": {
+    "h1": null,
+    "h6": null
+   },
+   "usd_spent": 1650.0,
+   "usd_per_point": 30.0,
+   "usd_left": 1350.0,
+   "waitable": false,
+   "verdict": "runs_out"
+  }
+ ],
+ "budget": {
+  "budget_usd": 3000.0,
+  "spent_usd": 1650.0,
+  "projected_usd": 3354.1735736056894,
+  "pace_state": "above",
+  "per_workday_left_usd": 120.77659849857622
+ }
+}

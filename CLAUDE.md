@@ -41,7 +41,7 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
     -> app/ingest.py (privacy-safe normalization, source/provider metadata, namespaced IDs, dedup)
     -> SQLite events + tool_uses tables (WAL mode; Pi reported costs remain distinct from Claude pricing)
     -> app/aggregator.py (thread-safe cached rebuild on invalidation)
-    -> GET / (HTML dashboard) or GET /api/stats (JSON)
+    -> GET / (dashboard: Runway, Ledger, History, Lab; alias /next), GET /classic (old dashboard) or GET /api/stats (JSON)
 ```
 
 `/api/ingest/pi` requires `X-API-Key`, a dotfleet `work`/`personal` account class, and bounded, typed, privacy-scrubbed events. The class maps to separate synthetic rollup identities so work and personal Pi usage cannot merge. Pi costs use reported component/total fields and group by provider/model. `/api/usage` remains Anthropic OAuth quota ingestion only; Pi data never enters that path.
@@ -54,7 +54,8 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/ingest.py` | POST /api/ingest (Claude), POST /api/ingest/pi (Pi Agent), and POST /api/provider-usage - typed normalization, namespaced dedup, tool extraction |
 | `app/aggregator.py` | Core stats engine - session-by-session SQL aggregation with in-memory cache |
 | `app/pricing.py` | Model pricing (static + dynamic from LiteLLM GitHub, 24h DB cache) |
-| `app/dashboard.py` | GET / - Jinja2 HTML rendering with number formatting |
+| `app/next_page.py` | GET / and its alias GET /next - the dashboard shell (`templates/next.html`, `static/next/`, see `static/next/README.md`), CSP, hashed static path |
+| `app/dashboard.py` | GET /classic - the old Jinja2 dashboard with number formatting |
 | `app/api.py` | GET /api/stats - JSON passthrough of aggregator output |
 | `app/db.py` | SQLite schema, WAL pragmas, connection management |
 | `app/notify.py` | POST /api/notify - notification relay to Home Assistant |
@@ -79,6 +80,7 @@ Indexes on: `session_id+type+ts_epoch`, `day`, `request_id`, `model`, `source_ma
 - **Pi copies**: A Pi session file copied to another machine or path (or a Pi fork) is reported again under a new namespace. Ingest stores a location-independent `events.pi_copy_key` (`event_dedupe.pi_copy_key`: the Anthropic `msg_*` ID, else the entry content) and flags later-ingested rows with the key of an earlier row in another session of the same work/personal class (`events.pi_copy`, `tool_uses.pi_copy`). Each start keys and flags the Pi rows that have no key (`mark_pi_copies`; code without the key wrote them) and queues only the changed days in `meta.daily_summary_rebuild_days` for the startup re-roll. `canonical_assistant_predicate` and `counts_as_activity` exclude flagged rows; a raw Pi query must add `not_pi_copy()`.
 - **Main vs. subagent**: Events with `agent_id` are subagent invocations; tracked separately for cost attribution.
 - **Active time**: Gaps between user/assistant events < 300s (IDLE_THRESHOLD_S). Gaps after tool_use->tool_result = tool execution time; others = thinking time.
+- **Background threads and the shared connection**: closing a sqlite3 connection under a running statement crashes the process. Background work (cache rebuild, prewarm, limit-rate fit, `BackgroundCache` builds, `load_pricing`) reads on its own `read_conn()` and writes only through `db.background_write()`, which skips the write after `db.begin_shutdown()` and never opens the database. The lifespan shutdown signals and joins every background thread (`main._stop_background`) before `close_conn()`; after the shutdown starts `get_conn()` raises `DatabaseClosed` instead of reopening (`open_conn()` at startup clears it). `TOKENFOLD_PREWARM=0` turns the startup prewarm off; the test support sets it.
 - **Cache invalidation**: `aggregator.invalidate_cache()` called after successful ingest; dashboard rebuilt lazily on next request.
 - **Content stripping**: Client strips large message bodies before sending (privacy + bandwidth). Metadata (sizes, types) preserved.
 - **Pricing fallback chain**: LiteLLM GitHub -> DB cache -> static hardcoded prices.

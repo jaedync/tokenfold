@@ -54,7 +54,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         agg._cached_data.clear()
 
         c = self.client()
-        resp = c.get("/")
+        resp = c.get("/classic")
         self.assertEqual(resp.status_code, 200)
         html = resp.text
 
@@ -75,7 +75,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         agg._cached_data.clear()
 
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
 
         # The prefix must still appear (escaped form) — payload wasn't dropped.
         # Machine names are canonicalized (lowercased) at read time, so the
@@ -98,7 +98,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         agg._cached_data.clear()
 
         c = self.client()
-        resp = c.get("/")
+        resp = c.get("/classic")
         self.assertEqual(resp.status_code, 200)
         html = resp.text
 
@@ -131,7 +131,7 @@ class ScriptBreakoutTest(TempDBTestCase):
         agg._cached_data.clear()
 
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
 
         self.assertNotIn("</script><script>", html,
                          "raw </script><script> breakout token present")

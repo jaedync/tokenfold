@@ -39,7 +39,7 @@ class DashboardDomTest(TempDBTestCase):
             token = base64.b64encode(f"admin:{password}".encode()).decode()
             headers["Authorization"] = "Basic " + token
         with patch.object(self._config, "DASHBOARD_PASSWORD", password):
-            response = self.client().get(f"/?scope={scope}", headers=headers)
+            response = self.client().get(f"/classic?scope={scope}", headers=headers)
         self.assertEqual(response.status_code, 200)
         return response.text
 

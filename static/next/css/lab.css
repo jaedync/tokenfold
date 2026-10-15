@@ -1,0 +1,103 @@
+/* Lab view: served-model check, energy and water, price table, benchmarks
+ * and cost per hour. Tokens and atoms come from tokenfold.css; the shared
+ * .hl-lead, .hl-note and .hatch come from history.css. Light theme only. */
+
+.p-lab-served, .p-lab-energy, .p-lab-prices, .p-lab-bench { container-type: inline-size; }
+.p-lab-energy { grid-column: 1 / span 5; }
+.p-lab-prices { grid-column: 6 / -1; }
+@media (max-width: 1100px) { .p-lab-energy, .p-lab-prices { grid-column: 1 / -1; } }
+
+/* ================= shared table ================= */
+.tbl-scroll { overflow-x: auto; max-width: 100%; }
+.lab-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lab-tbl th, .lab-tbl td { padding: 7px 10px 7px 0; border-bottom: 2px solid var(--hair); text-align: left; vertical-align: middle; }
+.lab-tbl thead th { font: 700 10.5px/1.2 var(--text); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); border-bottom: 3px solid var(--ink); padding-bottom: 6px; vertical-align: bottom; }
+.lab-tbl tbody th { font-weight: 800; white-space: nowrap; }
+.lab-tbl tbody th .swatch { margin-right: 8px; vertical-align: -1px; }
+.lab-tbl .r { text-align: right; white-space: nowrap; }
+.lab-tbl td:last-child, .lab-tbl th:last-child { padding-right: 0; }
+.lab-tbl .strong { font-weight: 800; }
+.lab-tbl small { color: var(--muted); font-weight: 600; }
+
+/* ================= served-model check ================= */
+.sv-body { display: grid; gap: 14px; }
+.sv-now { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px; font-weight: 600; }
+.sv-now li { display: inline-flex; align-items: baseline; gap: 4px; }
+.sv-now li::before { content: ''; width: 10px; height: 10px; align-self: center; background: var(--muted); flex: none; margin-right: 4px; }
+.sv-now li[data-state='self']::before { background: color-mix(in srgb, var(--muted) 30%, var(--paper)); box-shadow: inset 0 0 0 1.5px var(--muted); }
+.sv-now b { font-weight: 800; }
+.sv-strips { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+.sv-name { font-weight: 800; font-size: 13px; white-space: nowrap; }
+.sv-row { display: flex; height: 26px; border: 3px solid var(--ink); background: var(--paper); }
+.sv-c { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column-reverse; }
+.sv-c > i { display: block; width: 100%; }
+.sv-axis { grid-column: 2; position: relative; height: 16px; font: 700 11px/1 var(--text); color: var(--muted); }
+.sv-axis span { position: absolute; top: 4px; transform: translateX(-50%); white-space: nowrap; }
+.sv-axis span::before { content: ''; position: absolute; left: 50%; top: -6px; width: 2px; height: 5px; background: var(--ink); }
+.sv-keys { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.sv-keys i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -2px; box-shadow: inset 0 0 0 1px rgba(22, 22, 22, .3); }
+.sv-log summary, .lab-method summary { cursor: pointer; font: 800 11.5px/1 var(--text); letter-spacing: .12em; text-transform: uppercase; padding: 10px 0; border-top: 3px solid var(--ink); list-style-position: inside; }
+.sv-log summary:hover, .lab-method summary:hover { color: var(--blue); }
+.sv-log tr[data-self] td { color: var(--muted); }
+@container (max-width: 560px) {
+  .sv-strips { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .sv-name { margin-top: 6px; }
+  .sv-axis { grid-column: 1; }
+}
+
+/* ================= energy and water ================= */
+.en-body { display: grid; gap: 14px; }
+.en-big { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.en-big > div { border-top: 3px solid var(--ink); padding-top: 8px; }
+.en-v { font: 400 40px/1 var(--display); letter-spacing: -.02em; white-space: nowrap; margin-top: 4px; }
+.en-v small { font: 700 15px/1 var(--text); margin-left: 6px; letter-spacing: 0; }
+.en-cmp { font-size: 13px; font-weight: 600; }
+.en-cmp b { font-weight: 800; }
+.en-list { list-style: none; display: grid; gap: 5px; font-size: 12.5px; }
+.en-list li { display: grid; grid-template-columns: 12px minmax(0, 9.5em) minmax(0, 1fr) 8ch; gap: 8px; align-items: center; }
+.en-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.en-b { height: 10px; background: var(--paper-2); position: relative; }
+.en-b i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--blue); }
+.en-x { text-align: right; font-weight: 800; white-space: nowrap; }
+.en-rest .en-n, .en-rest .en-x { color: var(--muted); }
+.lab-method { margin-top: 16px; font-size: 13px; }
+.lab-method > div { display: grid; gap: 8px; padding-bottom: 4px; max-width: 78ch; }
+.lab-method ul { margin-left: 18px; display: grid; gap: 3px; }
+.lab-src { font-size: 12px; color: var(--muted); }
+
+/* ================= price table ================= */
+.pr-tbl td { font-variant-numeric: tabular-nums; }
+.th-short { display: none; }
+@container (max-width: 640px) {
+  .pr-tbl { font-size: 12px; }
+  .th-long { display: none; }
+  .th-short { display: inline; }
+  .pr-tbl th, .pr-tbl td { padding-right: 8px; }
+  .pr-tbl tbody th .swatch { margin-right: 6px; }
+}
+
+/* ================= benchmarks and cost per hour ================= */
+.bh-body { display: grid; gap: 24px; }
+@container (min-width: 900px) { .bh-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); column-gap: 40px; } }
+.bh-col { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.bh-col > h3 { margin-bottom: 0; }
+.bh-lead { max-width: 70ch; }
+.bn-keys { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.bn-keys i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -2px; border: 1.5px solid var(--ink); }
+.bn-list { list-style: none; display: grid; gap: 10px; }
+.bn-list > li { border-top: 3px solid var(--ink); padding-top: 7px; display: grid; gap: 3px; }
+.bn-m { font-weight: 800; font-size: 13.5px; display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.bn-row { display: grid; grid-template-columns: 9.5em minmax(0, 1fr) 6ch; gap: 8px; align-items: center; font-size: 12px; }
+.bn-k { color: var(--muted); font-weight: 600; }
+.bn-b { height: 10px; background: var(--paper-2); position: relative; }
+.bn-b i { position: absolute; left: 0; top: 0; bottom: 0; box-shadow: inset 0 0 0 1px rgba(22, 22, 22, .35); }
+.bn-v { text-align: right; font-weight: 800; }
+.hr-tbl tbody th { max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+.hr-bar { width: 32%; }
+.hr-bar i { display: block; height: 10px; background: var(--ink); min-width: 2px; }
+@container (max-width: 560px) {
+  .hr-bar, .hr-act { display: none; }
+  .hr-tbl thead th:nth-child(2) { display: none; }
+  .hr-tbl { font-size: 12.5px; }
+  .bn-row { grid-template-columns: 7.5em minmax(0, 1fr) 6ch; }
+}

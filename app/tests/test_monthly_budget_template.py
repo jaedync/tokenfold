@@ -174,7 +174,7 @@ class MonthlyBudgetRenderInvariantTest(TempDBTestCase):
 
     def _get(self, scope):
         c = self.client()
-        return c.get(f"/?scope={scope}", auth=("jaedyn", "pw"))
+        return c.get(f"/classic?scope={scope}", auth=("jaedyn", "pw"))
 
     def test_personal_scope_has_no_monthly_affordance(self):
         """Personal must render zero trace of the monthly feature affordance.

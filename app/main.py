@@ -10,8 +10,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .db import (ROLLUP_DAYS_KEY, close_conn, get_conn, queued_rollup_days,
-                 write_txn)
+from .db import (ROLLUP_DAYS_KEY, begin_shutdown, close_conn, get_conn, open_conn,
+                 queued_rollup_days, write_txn)
 from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
 from .pricing import load_pricing
@@ -20,12 +20,14 @@ from . import usage_fetcher
 logger = logging.getLogger("tokenfold.main")
 # Progress note interval for the one-time all-days rollup rebuild (~75 s on prod).
 BACKFILL_PROGRESS_EVERY = 50
+# Total wait at shutdown for the background threads, before the DB closes.
+SHUTDOWN_JOIN_S = 10.0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: init DB and load pricing
-    get_conn()
+    open_conn()
     try:
         load_pricing()
     except Exception:
@@ -45,9 +47,18 @@ async def lifespan(app: FastAPI):
     start_watchdog()
 
     # Backfill daily_summary if empty, then warm the cache
-    from .aggregator import trigger_eager_rebuild, start_sweeps, stop_sweeps
+    from .aggregator import trigger_eager_rebuild, start_sweeps
     _backfill_if_needed()
     trigger_eager_rebuild()
+    if config.PREWARM:
+        # Exchange rate fit (1-3 s) in the background, so the first /next
+        # visit after a deploy does not wait for it.
+        from . import limit_rate
+        limit_rate.prewarm()
+        # Today's typical profile, ledger, spend history, window history and
+        # the second stats scope.
+        from . import prewarm
+        prewarm.start()
 
     # Start periodic sweep timers
     start_sweeps()
@@ -55,10 +66,28 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    stop_sweeps()
     stop_watchdog()
     usage_fetcher.stop()
+    _stop_background(SHUTDOWN_JOIN_S)
     close_conn()
+
+
+def _stop_background(timeout_s: float) -> None:
+    """Signal every background thread, then wait for them, before the shared
+    connection closes. A sqlite3 connection closed under a running statement
+    crashes the process. After begin_shutdown() a late thread's write is
+    skipped (db.background_write) and get_conn() never reopens the DB."""
+    from . import aggregator, bg_cache, limit_rate, prewarm
+    begin_shutdown()
+    deadline = time.monotonic() + timeout_s
+
+    def left():
+        return max(0.0, deadline - time.monotonic())
+    aggregator.stop_sweeps(left())
+    limit_rate.join_refresh(left())
+    prewarm.join(left())
+    aggregator.join_rebuild(left())
+    bg_cache.join_all(left())
 
 
 def _backfill_if_needed():
@@ -127,8 +156,9 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
-    if request.url.path == "/" or (request.url.path.startswith("/api/") and
-                                    "text/event-stream" not in response.headers.get("content-type", "")):
+    if request.url.path in ("/", "/classic", "/next") or (
+            request.url.path.startswith("/api/") and
+            "text/event-stream" not in response.headers.get("content-type", "")):
         # Authenticated snapshots must not be replayed by browser/proxy caches
         # after a scope change, wake-up, or reconnect.
         response.headers["Cache-Control"] = "private, no-store"
@@ -150,6 +180,12 @@ from .monthly_budget import router as monthly_budget_router
 from .stream import router as stream_router
 from .agent_state import router as agent_state_router
 from .agent_events import router as agent_events_router
+from .now import router as now_router
+from .today import router as today_router
+from .runway import router as runway_router
+from .limit_rate import router as limit_rate_router
+from .ledger import router as ledger_router
+from .next_page import router as next_page_router
 
 app.include_router(ingest_router)
 app.include_router(api_router)
@@ -166,6 +202,12 @@ app.include_router(monthly_budget_router)
 app.include_router(stream_router)
 app.include_router(agent_state_router)
 app.include_router(agent_events_router)
+app.include_router(now_router)
+app.include_router(today_router)
+app.include_router(runway_router)
+app.include_router(limit_rate_router)
+app.include_router(ledger_router)
+app.include_router(next_page_router)
 
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():

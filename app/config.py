@@ -145,6 +145,11 @@ if DEFAULT_SCOPE not in VALID_SCOPES:
 # hidden and the API refuses other scopes (fail-closed compliance posture).
 LOCKED_SCOPE = os.environ.get("TOKENFOLD_SCOPE") or None
 
+# Startup prewarm of the slow /next reads (app/prewarm.py and the limit-rate
+# fit). TOKENFOLD_PREWARM=0 turns it off; the test suite does so, since the
+# prewarm reads the database on background threads while tests swap it.
+PREWARM = os.environ.get("TOKENFOLD_PREWARM", "1") != "0"
+
 
 class InvalidScope(ValueError):
     pass

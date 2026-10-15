@@ -272,7 +272,7 @@ def trigger_eager_rebuild():
     SSE refetch. All warm scopes are gen-checked together under ONE lock hold,
     so a stale iteration never writes any scope's pre-invalidation data.
     """
-    global _rebuilding, _cache_gen
+    global _rebuilding, _cache_gen, _rebuild_thread
     with _cache_lock:
         _cache_gen += 1
         _cache_version_bump()
@@ -355,7 +355,26 @@ def trigger_eager_rebuild():
                 with _cache_lock:
                     _rebuilding = False
 
-    threading.Thread(target=_rebuild, daemon=True).start()
+    thread = threading.Thread(target=_rebuild, daemon=True, name="cache-rebuild")
+    with _cache_lock:
+        _rebuild_thread = thread
+    thread.start()
+
+
+_rebuild_thread: threading.Thread | None = None
+
+
+def join_rebuild(timeout: float) -> None:
+    """Wait up to timeout for the rebuild worker (app shutdown, tests).
+
+    The worker reads on its own connection (read_conn), so a late one
+    cannot crash on the shared one; the shutdown still waits for it so no
+    build outlives the app.
+    """
+    with _cache_lock:
+        thread = _rebuild_thread
+    if thread is not None:
+        thread.join(timeout)
 
 
 def _cache_version_bump():
@@ -1578,6 +1597,8 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
 
 _sweep_timers: list[threading.Timer] = []
 _last_full_sweep: float = 0.0
+# Set by stop_sweeps: a sweep that runs during the shutdown schedules no next one.
+_sweeps_stopped = threading.Event()
 
 PERIODIC_SWEEP_INTERVAL = 3600    # 1 hour
 FULL_SWEEP_INTERVAL = 86400       # 24 hours
@@ -1591,18 +1612,26 @@ def _jitter() -> float:
 
 def start_sweeps():
     """Start the periodic and full sweep background timers."""
+    _sweeps_stopped.clear()
     _schedule_periodic_sweep()
     _schedule_full_sweep()
 
 
-def stop_sweeps():
-    """Cancel all pending sweep timers."""
-    for t in _sweep_timers:
+def stop_sweeps(timeout: float = 0.0):
+    """Cancel the pending sweep timers and wait up to timeout for a running
+    sweep: it writes through the shared connection, which closes next."""
+    _sweeps_stopped.set()
+    deadline = _time.monotonic() + timeout
+    for t in list(_sweep_timers):
         t.cancel()
+        if t is not threading.current_thread():
+            t.join(max(0.0, deadline - _time.monotonic()))
     _sweep_timers.clear()
 
 
 def _schedule_periodic_sweep():
+    if _sweeps_stopped.is_set():
+        return
     delay = PERIODIC_SWEEP_INTERVAL + _jitter()
     t = threading.Timer(delay, _run_periodic_sweep)
     t.daemon = True
@@ -1611,6 +1640,8 @@ def _schedule_periodic_sweep():
 
 
 def _schedule_full_sweep():
+    if _sweeps_stopped.is_set():
+        return
     delay = FULL_SWEEP_INTERVAL + _jitter()
     t = threading.Timer(delay, _run_full_sweep)
     t.daemon = True

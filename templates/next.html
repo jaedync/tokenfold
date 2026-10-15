@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex, nofollow">
+<title>Tokenfold</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="shortcut icon" href="/static/favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+<link rel="preload" href="{{ static_base }}/fonts/archivo-black-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{{ static_base }}/fonts/dm-sans-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ static_base }}/vendor/uplot/uPlot.min.css">
+<link rel="stylesheet" href="{{ static_base }}/css/tokenfold.css">
+<link rel="modulepreload" href="{{ static_base }}/js/main.js">
+<link rel="stylesheet" href="{{ static_base }}/css/history.css">
+<link rel="stylesheet" href="{{ static_base }}/css/lab.css">
+</head>
+<body data-scope="{{ scope }}" data-scope-locked="{{ '1' if scope_locked else '0' }}" data-owner="{{ owner }}" data-view="{{ default_view }}" data-version="{{ version }}" data-static="{{ static_base }}">
+<a class="skip" href="#view">Skip to content</a>
+
+<header class="masthead">
+  <div class="brand">
+    <div class="wordmark">Tokenfold</div>
+    <div class="tagline">
+      <span class="tag">Agent usage</span>
+      {% if scope_locked %}
+      <span class="chip chip-ink scope-fixed">{{ 'Work' if scope == 'enterprise' else 'Personal' }}</span>
+      {% else %}
+      <div class="seg" role="group" aria-label="Scope">
+        <button type="button" data-scope="personal" aria-pressed="{{ 'true' if scope == 'personal' else 'false' }}">Personal</button>
+        <button type="button" data-scope="enterprise" aria-pressed="{{ 'true' if scope == 'enterprise' else 'false' }}">Work</button>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  <nav class="mast-nav" aria-label="Views">
+    <ul class="tabs">
+      <li><a href="#runway" data-view-link="runway">Runway</a></li>
+      <li><a href="#ledger" data-view-link="ledger">Ledger</a></li>
+      <li><a href="#history" data-view-link="history">History</a></li>
+      <li><a href="#lab" data-view-link="lab">Lab</a></li>
+    </ul>
+  </nav>
+  <div class="mark" id="mark" aria-hidden="true" title="Blue column: Claude 5-hour window used. Red column: binding window used.">
+    <span class="mk-col mk-blue"><span class="mk-cap"><small id="mk-short-k">5h</small><b id="mk-short-v">—</b></span><span class="mk-g"><i id="mk-short"></i></span></span>
+    <span class="mk-col mk-red"><span class="mk-cap"><small id="mk-bind-k">limit</small><b id="mk-bind-v">—</b></span><span class="mk-g"><i id="mk-bind"></i></span></span>
+    <span class="mk-yellow"><b></b></span>
+  </div>
+</header>
+
+<div class="livebar" id="livebar" role="region" aria-label="Live status"></div>
+<div class="sr-only" aria-live="polite" id="announce"></div>
+
+<main id="view" tabindex="-1"></main>
+
+<footer class="foot">
+  <span>Sources: Claude quota feed (every 2 min), Pi provider snapshots, live agent state, event ingest.</span>
+  <span>{% if owner %}{{ owner }} · {% endif %}<a href="/classic?scope={{ scope }}">Classic dashboard</a></span>
+  <noscript><span>This dashboard needs JavaScript. Use the <a href="/classic">classic dashboard</a>.</span></noscript>
+</footer>
+
+<script type="module" src="{{ static_base }}/js/main.js"></script>
+</body>
+</html>

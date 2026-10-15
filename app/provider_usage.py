@@ -109,6 +109,11 @@ def _month_reported_costs(conn, now, scope):
     month_start = current.replace(day=1, hour=0, minute=0, second=0,
                                   microsecond=0).timestamp()
     pred = sys.modules["app.config"].scope_predicate(scope)
+    # Only the providers reported below: the filter also lets SQLite read
+    # idx_events_pi_provider_ts instead of every assistant row of the month.
+    provider_ids = tuple(pid for ids in _PROVIDER_EVENT_IDS.values()
+                         for pid in ids)
+    slots = ",".join("?" for _ in provider_ids)
     rows = conn.execute(
         "SELECT provider, SUM(CASE WHEN reported_total IS NOT NULL "
         "THEN reported_total ELSE COALESCE(reported_input,0) + "
@@ -120,11 +125,12 @@ def _month_reported_costs(conn, now, scope):
         " MAX(reported_cost_cache_read) reported_cache_read,"
         " MAX(reported_cost_cache_write) reported_cache_write"
         " FROM events WHERE type='assistant' AND source_client='pi-agent'"
+        f" AND provider IN ({slots})"
         f" AND {not_pi_copy()}"
         " AND request_id IS NOT NULL AND ts_epoch>=? AND ts_epoch<?"
         f" AND {pred} GROUP BY provider, request_id"
         ") GROUP BY provider",
-        (month_start, now),
+        (*provider_ids, month_start, now),
     ).fetchall()
     raw = {row["provider"]: float(row["cost"] or 0) for row in rows}
     return {
@@ -206,12 +212,19 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
     return result
 
 
-def provider_usage_block(scope, now=None, *, conn=None, include_costs=True):
-    """Build one scope's provider block, omitting stale snapshots."""
+def provider_usage_block(scope, now=None, *, conn=None, include_costs=True,
+                         include_month_cost=True):
+    """Build one scope's provider block, omitting stale snapshots.
+
+    include_month_cost=False keeps the window dollars but skips the month
+    scan of Pi events (/api/runway does not show month_cost). A provider
+    with no fresh window is then omitted, as it has nothing to show.
+    """
     now = now if now is not None else time.time()
     conn = conn if conn is not None else get_conn()
     snapshots = _load_scopes(conn).get(scope, {})
-    costs = _month_reported_costs(conn, now, scope) if include_costs else {}
+    month_cost = include_costs and include_month_cost
+    costs = _month_reported_costs(conn, now, scope) if month_cost else {}
     result = {}
 
     for provider in _PROVIDER_EVENT_IDS:
@@ -225,7 +238,7 @@ def provider_usage_block(scope, now=None, *, conn=None, include_costs=True):
         plan = snapshot.get("plan") if fresh else None
         result[provider] = {
             "windows": windows,
-            **({"month_cost": cost} if include_costs else {}),
+            **({"month_cost": cost} if month_cost else {}),
             **({"updated_at_epoch": observed} if fresh else {}),
             **({"plan": plan} if isinstance(plan, str) else {}),
         }

@@ -480,3 +480,22 @@ class SpendHistoryEndpointTest(_SegBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SegmentClaudeOnlyCostTest(_SegBase):
+    """A weekly segment is a Claude-subscription limit window, so its cost
+    counts Claude spend only (anthropic_only, as limit_window in
+    /api/rate-limits): Codex/OpenCode Pi rows do not consume that limit."""
+
+    def test_non_anthropic_pi_rows_do_not_count(self):
+        from app.tests.test_bucket_windows import _ins_pi_event
+        now = 1751500800.0
+        anchor = now + 3 * 86400
+        self._row(now - 3600, 10.0, anchor)
+        _ins_event(self.conn, "e1", "r1", now - 1800, inp=1_000_000)   # $5
+        _ins_pi_event(self.conn, "p1", "q1", now - 1700, "anthropic",
+                      "claude-opus-4-8", 2.0)                          # counts
+        _ins_pi_event(self.conn, "p2", "q2", now - 1600, "openai-codex",
+                      "gpt-5", 40.0)                                   # not
+        segs = self._segments(now)
+        self.assertAlmostEqual(segs[-1]["cost"], 7.0, places=2)

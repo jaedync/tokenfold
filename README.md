@@ -177,7 +177,7 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
                         |
               app/aggregator.py  (cached rebuild on invalidation)
                         |
-              GET /  (Bauhaus HTML dashboard)
+              GET /  (dashboard; GET /classic: the old one)
               GET /api/stats  (JSON API)
 ```
 
@@ -185,7 +185,8 @@ Claude Code CLI  ->  ~/.claude/projects/**/*.jsonl
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/` | No | HTML dashboard |
+| `GET` | `/` | No | Dashboard: Runway, Ledger, History, Lab (`/next` is an alias) |
+| `GET` | `/classic` | No | The old dashboard |
 | `GET` | `/api/stats` | No | Full stats JSON |
 | `GET` | `/api/stats/version` | No | Cache version (for polling) |
 | `POST` | `/api/ingest` | `X-API-Key` | Ingest Claude Code JSONL session events |

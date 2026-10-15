@@ -39,26 +39,14 @@ class SecurityHeadersTest(TempDBTestCase):
         )
 
     def test_security_headers_on_root(self):
-        """GET / (dashboard) must carry all three security headers."""
+        """Both dashboards (/ and /classic) carry all three security headers."""
         c = self.client()
-        r = c.get("/")
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(
-            r.headers.get("x-content-type-options"),
-            "nosniff",
-            "X-Content-Type-Options missing or wrong on /",
-        )
-        self.assertEqual(
-            r.headers.get("x-frame-options"),
-            "DENY",
-            "X-Frame-Options missing or wrong on /",
-        )
-        self.assertEqual(
-            r.headers.get("referrer-policy"),
-            "same-origin",
-            "Referrer-Policy missing or wrong on /",
-        )
-
+        for path in ("/", "/classic"):
+            r = c.get(path)
+            self.assertEqual(r.status_code, 200, path)
+            self.assertEqual(r.headers.get("x-content-type-options"), "nosniff", path)
+            self.assertEqual(r.headers.get("x-frame-options"), "DENY", path)
+            self.assertEqual(r.headers.get("referrer-policy"), "same-origin", path)
 
 if __name__ == "__main__":
     unittest.main()

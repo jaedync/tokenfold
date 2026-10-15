@@ -305,7 +305,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         c = self.client()
         # Check both scopes
         for scope in ("enterprise", "personal"):
-            html = c.get(f"/?scope={scope}").text
+            html = c.get(f"/classic?scope={scope}").text
             import re as _re
             # data_json ships in a type=application/json tag (guarded JSON.parse
             # boot), not an inline `const D = {...}` assignment.
@@ -373,7 +373,7 @@ class EnterpriseOnlyGateTest(TempDBTestCase):
         summarize_days(None)
         agg._cached_data.clear()
         c = self.client()
-        html = c.get("/").text
+        html = c.get("/classic").text
         # Scope label badge: band markup must be present and show "ENTERPRISE" scope.
         # The org VALUE (Acme) must NOT appear — we serve scope label, not org name.
         self.assertIn("header-enterprise-band", html)

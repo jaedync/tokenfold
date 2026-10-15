@@ -9,6 +9,14 @@ import os
 import tempfile
 import unittest
 
+# Startup prewarm (app/prewarm.py, limit_rate.prewarm) reads the database on
+# background threads. It stays off under tests; the tests of the prewarm turn
+# it on (app.config.PREWARM) or call it directly. Set before app.config is
+# imported here, and patched in setUp for a config imported earlier.
+os.environ["TOKENFOLD_PREWARM"] = "0"
+# The suite runs offline: no LiteLLM price fetch when the cache is empty.
+os.environ["TOKENFOLD_PRICING_FETCH"] = "0"
+
 
 class TempDBTestCase(unittest.TestCase):
     api_key = "test-key"
@@ -29,28 +37,35 @@ class TempDBTestCase(unittest.TestCase):
         _db._conn = None
         # Patch app.config so the shared require_api_key dependency sees the key.
         _config.STATS_API_KEY = self.api_key
-        self.conn = _db.get_conn()
+        # open_conn: a previous test's app shutdown leaves the database closed.
+        self.conn = _db.open_conn()
         # Reset scope-keyed aggregator cache so tests don't leak scope state
         import app.aggregator as _agg
         _agg._cached_data.clear()
         _agg._previous_data.clear()
         _agg._cached_at.clear()
         self.addCleanup(self._restore)
+        from unittest.mock import patch as _patch
+        _prewarm = _patch.object(_config, "PREWARM", False)
+        _prewarm.start()
+        self.addCleanup(_prewarm.stop)
 
     def _restore(self):
-        # A background rebuild worker (spawned by an ingest in this test) may
-        # still be mid-drain, running _build_dashboard_data_inner on the shared
-        # sqlite connection. close_conn() below would close it out from under
-        # that thread → segfault. Wait the worker out, and clear _warm_scopes so
-        # a following test's worker can't rebuild THIS test's leaked scopes.
+        # Background threads of this test (the cache rebuild worker an ingest
+        # spawned, a limit-rate fit, background cache builds, the prewarm) must
+        # not outlive its database. They read on their own connections and
+        # write through db.background_write, so a late one cannot crash on the
+        # close below; joining them keeps their reads off the next test's
+        # database. Clear _warm_scopes so a following test's worker can't
+        # rebuild THIS test's leaked scopes.
         import app.aggregator as _agg
-        import time as _t
-        _deadline = _t.time() + 5.0
-        while _t.time() < _deadline:
-            with _agg._cache_lock:
-                if not _agg._rebuilding:
-                    break
-            _t.sleep(0.01)
+        import app.bg_cache as _bg
+        import app.limit_rate as _lr
+        import app.prewarm as _pw
+        _agg.join_rebuild(5.0)
+        _lr.join_refresh(5.0)
+        _pw.join(5.0)
+        _bg.join_all(5.0)
         with _agg._cache_lock:
             _agg._warm_scopes.clear()
         self._db.close_conn()

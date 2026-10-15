@@ -1,0 +1,195 @@
+{
+ "months": [
+  {
+   "month": "2025-11",
+   "total": 2150.69,
+   "by_model": {
+    "Haiku 4.5": 50.32,
+    "OpenAI Codex / GPT-5.6 Sol": 142.35,
+    "OpenCode Go / GLM-5.3": 66.21,
+    "Opus 4.7": 302.79,
+    "Opus 4.8": 1255.99,
+    "Sonnet 5": 333.03
+   },
+   "partial": false
+  },
+  {
+   "month": "2025-12",
+   "total": 3018.92,
+   "by_model": {
+    "Haiku 4.5": 63.45,
+    "OpenAI Codex / GPT-5.6 Sol": 214.66,
+    "OpenCode Go / GLM-5.3": 81.41,
+    "Opus 4.7": 492.19,
+    "Opus 4.8": 1637.75,
+    "Sonnet 5": 529.46
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-01",
+   "total": 4060.77,
+   "by_model": {
+    "Haiku 4.5": 89.29,
+    "OpenAI Codex / GPT-5.6 Sol": 294.48,
+    "OpenCode Go / GLM-5.3": 131.71,
+    "Opus 4.7": 608.69,
+    "Opus 4.8": 2371.73,
+    "Sonnet 5": 564.87
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-02",
+   "total": 4018.15,
+   "by_model": {
+    "Haiku 4.5": 86.18,
+    "OpenAI Codex / GPT-5.6 Sol": 299.07,
+    "OpenCode Go / GLM-5.3": 116.77,
+    "Opus 4.7": 560.74,
+    "Opus 4.8": 2333.63,
+    "Sonnet 5": 621.76
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-03",
+   "total": 5345.55,
+   "by_model": {
+    "Anthropic / Opus 5": 454.52,
+    "Fable 5": 2656.19,
+    "Haiku 4.5": 54.88,
+    "OpenAI Codex / GPT-5.6 Sol": 492.34,
+    "OpenCode Go / DeepSeek V4 Flash": 94.34,
+    "OpenCode Go / GLM-5.3": 141.67,
+    "OpenCode Go / Kimi K3": 19.43,
+    "OpenRouter / Gemini 3.8 Flash": 30.13,
+    "Opus 5": 1128.11,
+    "Sonnet 5": 273.94
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-04",
+   "total": 4810.38,
+   "by_model": {
+    "Anthropic / Opus 5": 394.81,
+    "Fable 5": 2280.28,
+    "Haiku 4.5": 49.7,
+    "OpenAI Codex / GPT-5.6 Sol": 413.39,
+    "OpenCode Go / DeepSeek V4 Flash": 100.77,
+    "OpenCode Go / GLM-5.3": 144.8,
+    "OpenCode Go / Kimi K3": 18.03,
+    "OpenRouter / Gemini 3.8 Flash": 30.43,
+    "Opus 5": 1124.67,
+    "Sonnet 5": 253.5
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-05",
+   "total": 6372.23,
+   "by_model": {
+    "Anthropic / Opus 5": 553.71,
+    "Fable 5": 3158.03,
+    "Haiku 4.5": 52.26,
+    "OpenAI Codex / GPT-5.6 Sol": 555.7,
+    "OpenCode Go / DeepSeek V4 Flash": 121.76,
+    "OpenCode Go / GLM-5.3": 174.53,
+    "OpenCode Go / Kimi K3": 24.11,
+    "OpenRouter / Gemini 3.8 Flash": 32.22,
+    "Opus 5": 1427.32,
+    "Sonnet 5": 272.59
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-06",
+   "total": 7736.45,
+   "by_model": {
+    "Anthropic / Opus 5": 565.46,
+    "Fable 5": 3466.1,
+    "Haiku 4.5": 77.23,
+    "OpenAI Codex / GPT-5.6 Sol": 759.26,
+    "OpenCode Go / DeepSeek V4 Flash": 170.06,
+    "OpenCode Go / GLM-5.3": 194.27,
+    "OpenCode Go / Kimi K3": 29.08,
+    "OpenRouter / Gemini 3.8 Flash": 50.95,
+    "Opus 5": 2056.43,
+    "Sonnet 5": 367.61
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-07",
+   "total": 9275.55,
+   "by_model": {
+    "Anthropic / Opus 5": 761.37,
+    "Fable 5": 4341.87,
+    "Haiku 4.5": 78.15,
+    "OpenAI Codex / GPT-5.6 Sol": 738.91,
+    "OpenCode Go / DeepSeek V4 Flash": 203.27,
+    "OpenCode Go / GLM-5.3": 255.53,
+    "OpenCode Go / Kimi K3": 37.77,
+    "OpenRouter / Gemini 3.8 Flash": 59.49,
+    "Opus 5": 2407.6,
+    "Sonnet 5": 391.59
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-08",
+   "total": 8215.49,
+   "by_model": {
+    "Anthropic / Opus 5.5": 1714.39,
+    "Anthropic / Sonnet 5.5": 166.84,
+    "Fable 5.1": 1120.16,
+    "Haiku 5.5": 49.61,
+    "OpenAI Codex / GPT-6 Astra": 669.43,
+    "OpenAI Codex / GPT-6.1 Sol": 254.26,
+    "OpenCode Go / DeepSeek V4.1 Flash": 89.38,
+    "OpenCode Go / GLM-5.3": 83.89,
+    "Opencode / GLM-5.3": 17.66,
+    "Opus 5.5": 3645.12,
+    "Sonnet 5.5": 404.75
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-09",
+   "total": 10055.02,
+   "by_model": {
+    "Anthropic / Opus 5.5": 1898.97,
+    "Anthropic / Sonnet 5.5": 200.1,
+    "Fable 5.1": 1058.51,
+    "Haiku 5.5": 61.21,
+    "OpenAI Codex / GPT-6 Astra": 835.3,
+    "OpenAI Codex / GPT-6.1 Sol": 332.4,
+    "OpenCode Go / DeepSeek V4.1 Flash": 118.52,
+    "OpenCode Go / GLM-5.3": 115.48,
+    "Opencode / GLM-5.3": 19.61,
+    "Opus 5.5": 4919.65,
+    "Sonnet 5.5": 495.27
+   },
+   "partial": false
+  },
+  {
+   "month": "2026-10",
+   "total": 5230.28,
+   "by_model": {
+    "Anthropic / Opus 5.5": 879.05,
+    "Anthropic / Sonnet 5.5": 93.47,
+    "Fable 5.1": 663.87,
+    "Haiku 5.5": 33.92,
+    "OpenAI Codex / GPT-6 Astra": 458.47,
+    "OpenAI Codex / GPT-6.1 Sol": 141.77,
+    "OpenCode Go / DeepSeek V4.1 Flash": 67.98,
+    "OpenCode Go / GLM-5.3": 46.76,
+    "Opencode / GLM-5.3": 9.04,
+    "Opus 5.5": 2547.91,
+    "Sonnet 5.5": 288.04
+   },
+   "partial": true
+  }
+ ]
+}

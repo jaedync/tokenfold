@@ -406,7 +406,11 @@ class TrendEndpointTest(TempDBTestCase):
     def test_pace_block_and_tight_warning(self):
         # 5h window, 3h left: 40% used over 2h -> projects 100%. Make it 30%:
         # projects 75% (below pace) while the last hour climbed fast enough
-        # to hit 100% before the reset (TIGHT).
+        # to hit 100% before the reset (TIGHT). The server floors resets_at
+        # to the minute and reads the clock again at request time, so the
+        # elapsed fraction lands anywhere in [0.400, 0.404): check the rule
+        # against the fraction it reports, not a fixed 75 (that flaked by
+        # up to 0.6 points depending on the second the test ran).
         now = time.time()
         self._seed_oauth(now + 3 * 3600, five=30)
         self._seed_readings("five_hour", now, n=40, span_s=3600,
@@ -415,7 +419,10 @@ class TrendEndpointTest(TempDBTestCase):
             "weekly_budget"]["oauth"]
         pace = oauth["five_hour_pace"]
         self.assertEqual(pace["pace_state"], "below")
-        self.assertAlmostEqual(pace["projected_pct"], 75.0, delta=0.5)
+        self.assertGreaterEqual(pace["elapsed_fraction"], 0.399)
+        self.assertLess(pace["elapsed_fraction"], 0.405)
+        self.assertAlmostEqual(pace["projected_pct"],
+                               round(30 / pace["elapsed_fraction"], 1), delta=0.06)
         self.assertIsNone(pace["reaches_100_epoch"])
         by_key = {b["key"]: b for b in oauth["buckets"]}
         self.assertEqual(by_key["five_hour"]["pace"], pace)
