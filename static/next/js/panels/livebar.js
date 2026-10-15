@@ -1,5 +1,6 @@
 // Live bar (sticky, every view): burn now, the waiting queue, working sessions,
-// subagents, machines online, data age and the clock. It also drives the
+// subagents, machines online, data age and the clock. Narrow screens drop the
+// low-priority cells first (css), so the data age and the clock stay in view. It also drives the
 // masthead mark, a two-column gauge of the binding and Claude 5-hour windows.
 import { h, setText, setAttr } from '../dom.js';
 import * as f from '../format.js';
@@ -27,8 +28,8 @@ export default {
       h('span', { class: 'lb-live' }, h('span', { class: 'lb-dot', 'aria-hidden': 'true' }), 'Live'),
       item('lb-burn', 'Burn now', burn), wait,
       item('lb-work', 'Working', work),
-      item('lb-hide-m', 'Subagents', subs),
-      item('lb-hide-m', 'Machines', machines),
+      item('lb-subs lb-hide-m', 'Subagents', subs),
+      item('lb-mach lb-hide-m', 'Machines', machines),
       item('lb-age lb-hide-m', 'Newest data', dataAge),
       clockEl,
     );

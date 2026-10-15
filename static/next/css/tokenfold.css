@@ -117,6 +117,21 @@ a.lb-wait { text-decoration: none; }
 .lb-clock { margin-left: auto; border-right: 0 !important; border-left: 1px solid rgba(243, 238, 227, .18); min-width: 13ch; justify-content: flex-end; }
 .lb-burn .lb-val { min-width: 13.5ch; }
 .lb-age .lb-val { min-width: 4.5ch; }
+/* Tablet and small laptop: the bar must fit without a sideways scroll, so the
+ * newest-data age and the clock stay in view. Lowest priority goes first:
+ * subagents, the long labels, then machines and the burn dollars. */
+@media (max-width: 1279px) {
+  .livebar > * { padding: 11px 11px; }
+  .lb-subs, .lb-wait .lb-label .long, .lb-mach .lb-label { display: none !important; }
+  .lb-clock { min-width: 0; }
+}
+@media (max-width: 1023px) {
+  .lb-mach, .lb-burn .b-usd { display: none !important; }
+  .lb-burn .lb-val { min-width: 0; }
+}
+@media (max-width: 860px) {
+  .lb-burn .lb-label { display: none; }
+}
 
 /* ================= view grid ================= */
 .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--rule); background: var(--ink); border-bottom: var(--rule) solid var(--ink); }

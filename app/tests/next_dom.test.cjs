@@ -110,6 +110,26 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('live bar: fits at 1440, 1024, 800 and 390 with no sideways scroll; the clock and data age stay in view above 700 px', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-hero .verdict-word');
+      for (const width of [1440, 1024, 800, 390]) {
+        await page.setViewportSize({width, height: 900});
+        const bar = await page.evaluate(() => {
+          const el = document.getElementById('livebar');
+          const shown = (sel) => {
+            const r = el.querySelector(sel).getBoundingClientRect();
+            return r.width > 0 && r.right <= el.getBoundingClientRect().right + 0.5;
+          };
+          return {over: el.scrollWidth - el.clientWidth, clock: shown('.lb-clock'), age: shown('.lb-age')};
+        });
+        assert.equal(bar.over, 0, `live bar scrolls at ${width}`);
+        if (width > 700) assert.ok(bar.clock && bar.age, `clock or data age hidden at ${width}`);
+      }
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('real mode without endpoints: each panel says unavailable, the page stays up', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?scope=personal', api404: true});
       await page.waitForFunction(() => document.querySelectorAll('.p-state').length >= 6);
