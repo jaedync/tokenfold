@@ -500,61 +500,30 @@ def read_account(claude_dir):
 
 
 def _get_oauth_token() -> str | None:
-    """Read OAuth access token from Claude credentials, refreshing if expired."""
+    """The access token from the Claude credentials file while it is valid.
+
+    Read only. A refresh-token grant would rotate the token on Anthropic's
+    side and leave Claude Code (and Meridian) on this machine with a spent
+    refresh token, so the client never refreshes or writes the file. Claude
+    Code renews it when it runs; until then the usage fetch is skipped.
+    """
     if not CREDENTIALS_FILE.exists():
         return None
     try:
         creds = json.loads(CREDENTIALS_FILE.read_text())
-        oauth = creds.get("claudeAiOauth", {})
+        oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
     except (json.JSONDecodeError, OSError) as e:
         err(f"Cannot read credentials: {e}")
+        return None
+    if not isinstance(oauth, dict):
         return None
 
     token = oauth.get("accessToken")
     if not token:
         return None
-
-    expires_at = oauth.get("expiresAt", 0)
-    now_ms = time.time() * 1000
-    if expires_at - now_ms < 300_000:
-        refresh_token = oauth.get("refreshToken")
-        if not refresh_token:
-            return None
-        log("Refreshing OAuth token")
-        try:
-            body = json.dumps({
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-                "scope": "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
-            }).encode()
-            req = urllib.request.Request(
-                "https://platform.claude.com/v1/oauth/token",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-            new_token = data.get("access_token")
-            new_refresh = data.get("refresh_token", refresh_token)
-            new_expires = int(time.time() * 1000) + data.get("expires_in", 7200) * 1000
-            oauth["accessToken"] = new_token
-            oauth["refreshToken"] = new_refresh
-            oauth["expiresAt"] = new_expires
-            creds["claudeAiOauth"] = oauth
-            # Atomic write: tmp file + rename to avoid corruption on concurrent reads
-            tmp = CREDENTIALS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(creds, indent=2))
-            tmp.rename(CREDENTIALS_FILE)
-            log("Token refreshed successfully")
-            return new_token
-        except Exception as e:
-            err(f"Token refresh failed: {e}")
-            return None
-
+    if (oauth.get("expiresAt") or 0) <= time.time() * 1000:
+        err("The Claude OAuth token expired; skipping the usage fetch. Claude Code renews it when it runs.")
+        return None
     return token
 
 
