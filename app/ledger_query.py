@@ -182,15 +182,12 @@ def tool_names(conn: sqlite3.Connection, session_ids: list[str],
                start: float, end: float) -> dict:
     """{session: Counter(display tool name -> calls)} in [start, end)."""
     if not session_ids:
-        return Counter()
-    return Counter({r[0]: r[1] for r in conn.execute(
-        f"SELECT session_id, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
-        f"AND {not_pi_copy('tool_uses')} AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id",
-        (json.dumps(session_ids), start, end))})
         return {}
     out: dict = {}
     for sid, name, n in conn.execute(
+            # counts_as_activity drops Meridian twin and Pi copy tool rows.
             f"SELECT session_id, name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
+            f"AND {counts_as_activity('tool_uses')} "
             "AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id, name",
             (json.dumps(session_ids), start, end)):
         out.setdefault(sid, Counter())[display_tool_name(name)] += n
@@ -209,7 +206,7 @@ def run_tool_counts(conn: sqlite3.Connection, session_ids: list[str],
     return Counter({(r[0], r[1]): r[2] for r in conn.execute(
         "SELECT t.session_id, e.agent_id, COUNT(*) FROM tool_uses AS t "
         "JOIN events AS e ON e.uuid = t.event_uuid "
-        f"WHERE t.session_id IN {_IDS} AND {not_pi_copy('t')} "
+        f"WHERE t.session_id IN {_IDS} AND {counts_as_activity('t')} "
         "AND t.ts_epoch >= ? AND t.ts_epoch < ? "
         "AND e.agent_id IS NOT NULL GROUP BY t.session_id, e.agent_id",
         (json.dumps(session_ids), start, end))})

@@ -28,7 +28,9 @@ async function open(browser, {viewport, url, api404 = false}) {
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
     if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML});
-    if (u.pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, u.pathname)});
+    // The shell serves static/next under /static/next-<version>/ (cache busting).
+    const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
+    if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     if (u.pathname.startsWith('/api/') && api404) return route.fulfill({status: 404, json: {detail: 'Not Found'}});
     return route.fulfill({status: 404, body: ''});
   });
