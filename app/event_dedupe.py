@@ -1,6 +1,8 @@
 """Canonical event filters shared by live and rolled-up usage accounting."""
 
+import hashlib
 import logging
+import re
 import sqlite3
 from .config import enterprise_predicate
 
@@ -20,6 +22,124 @@ def _positive_reported_cost(alias: str) -> str:
     """
     parts = ' + '.join(f'COALESCE({alias}.reported_cost_{f},0)' for f in _COMPONENTS)
     return f'(COALESCE({alias}.reported_cost_total, {parts}) > 0)'
+
+
+# ── Pi copies (cost and activity) ──
+# A Pi session file copied to another machine, or moved to another path, is
+# reported again under a new namespace (ingest._pi_namespace hashes the
+# machine and the session file), so its uuids, session ids and request ids
+# all differ, and so do the client's event ids when the path changed. A Pi
+# /fork writes the history into a new native session. The provider response
+# ID and each entry's content stay the same (production 2026-10: 19,484
+# duplicated requests, identical timestamps, tokens and reported costs).
+#
+# pi_copy_key identifies one Pi entry independent of where it was reported.
+# The first-ingested row of a key is the original (in production the machine
+# that ran the session, in every cluster but one row). A row is a copy when
+# an earlier row in another session of the same work/personal class has its
+# key. The flag is stored at ingest, so an arriving copy never changes the
+# original or any earlier rollup. Copies are excluded from cost and activity.
+
+_PI_NAMESPACE = re.compile(r'pi:[0-9a-f]{40}:')
+_KEY_BACKFILL_ROWS = 50_000
+_PI_ENTRY_FIELDS = (
+    'type', 'ts_epoch', 'is_human_prompt', 'is_sidechain', 'text_length',
+    'thinking_length', 'has_text', 'has_thinking', 'has_tool_use',
+    'has_tool_result', 'has_image', 'model', 'provider', 'usage_kind',
+    'input_tokens', 'output_tokens', 'cache_read_tokens',
+    'cache_creation_tokens', 'reasoning_tokens', 'stop_reason')
+
+
+def _native(value):
+    """The client's own ID inside a ``pi:<40 hex>:`` namespaced value."""
+    if isinstance(value, str) and _PI_NAMESPACE.match(value):
+        return value[44:]
+    return value
+
+
+def pi_copy_key(row) -> str | None:
+    """Location-independent identity of a Pi row (an events row mapping).
+
+    An Anthropic msg_* ID is globally unique, so it alone names the request.
+    Any other row is named by its content: timestamp, flags, sizes, model
+    and tokens, plus a real provider response ID (an 'event:' fallback ID
+    hashes the file path, so it is left out). Subagent rows also keep their
+    native session: equal content in two child sessions is not proof of one
+    request (production has a few such rows, none with a shared response ID).
+    """
+    if row['source_client'] != 'pi-agent':
+        return None
+    message_id = row['message_id']
+    if (row['type'] == 'assistant' and isinstance(message_id, str)
+            and message_id.startswith('msg_') and len(message_id) > 4):
+        basis = 'msg\0' + message_id
+    else:
+        response = _native(row['request_id']) or ''
+        if response.startswith('event:'):
+            response = ''
+        session = (_native(row['session_id']) or '') if row['is_sidechain'] else ''
+        basis = '\0'.join(['entry', session, response]
+                          + [repr(row[f]) for f in _PI_ENTRY_FIELDS])
+    return hashlib.sha256(basis.encode('utf-8', 'surrogatepass')).hexdigest()[:32]
+
+
+def not_pi_copy(alias: str = 'events') -> str:
+    """Row filter for events or tool_uses. Aliases are internal trusted names."""
+    return f'COALESCE({alias}.pi_copy,0)=0'
+
+
+def pi_copy_flag_sql(target: str) -> str:
+    """UPDATE that flags the copies among the rows matching ``target``.
+
+    ``target`` is trusted SQL over the outer events row. INDEXED BY pins the
+    partial key index: the planner must not walk the rowid range instead.
+    """
+    return (
+        f"UPDATE events SET pi_copy=1 WHERE {target} AND pi_copy_key IS NOT NULL "
+        "AND COALESCE(pi_copy,0)=0 AND EXISTS (SELECT 1 FROM events AS first_seen "
+        "INDEXED BY idx_events_pi_copy_key "
+        "WHERE first_seen.pi_copy_key=events.pi_copy_key "
+        "AND first_seen.rowid<events.rowid "
+        "AND first_seen.session_id IS NOT events.session_id "
+        f"AND {enterprise_predicate('first_seen')}={enterprise_predicate('events')})")
+
+
+def flag_new_pi_copies(conn: sqlite3.Connection, events_after: int,
+                       tools_after: int) -> int:
+    """Flag copies among rows inserted after the given rowids (caller owns
+    the write transaction, so the order is the ingest order)."""
+    flagged = conn.execute(pi_copy_flag_sql('events.rowid > ?'),
+                           (events_after,)).rowcount
+    if flagged:
+        conn.execute(
+            "UPDATE tool_uses SET pi_copy=1 WHERE rowid > ? AND event_uuid IN "
+            "(SELECT uuid FROM events WHERE rowid > ? AND pi_copy=1)",
+            (tools_after, events_after))
+    return flagged
+
+
+def mark_pi_copies(conn: sqlite3.Connection) -> int:
+    """Key and flag all history (migration; caller owns the transaction)."""
+    columns = {r[1] for r in conn.execute('PRAGMA table_info(events)')}
+    if not columns.issuperset(('session_id', 'request_id', *_PI_ENTRY_FIELDS)):
+        return 0  # a legacy table from before Pi ingest holds no Pi rows
+    select = (
+        "SELECT rowid, source_client, message_id, request_id, session_id, "
+        f"{', '.join(_PI_ENTRY_FIELDS)} FROM events "
+        "WHERE rowid > ? AND rowid <= ? AND source_client='pi-agent' "
+        "AND pi_copy_key IS NULL")
+    # rowid ranges keep memory bounded (production: 515k Pi rows of 2.9M).
+    last = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM events').fetchone()[0]
+    for start in range(0, last, _KEY_BACKFILL_ROWS):
+        rows = conn.execute(select, (start, start + _KEY_BACKFILL_ROWS)).fetchall()
+        conn.executemany("UPDATE events SET pi_copy_key=? WHERE rowid=?",
+                         [(pi_copy_key(r), r['rowid']) for r in rows])
+    flagged = conn.execute(pi_copy_flag_sql("events.source_client='pi-agent'")).rowcount
+    conn.execute(
+        "UPDATE tool_uses SET pi_copy=1 WHERE source_client='pi-agent' "
+        "AND COALESCE(pi_copy,0)=0 AND event_uuid IN "
+        "(SELECT uuid FROM events WHERE pi_copy=1)")
+    return flagged
 
 
 def _billable(alias: str) -> str:
@@ -46,6 +166,7 @@ def canonical_assistant_predicate(alias: str = 'events') -> str:
         "EXISTS (SELECT 1 FROM events AS canonical_pi WHERE "
         f"{_billable('canonical_pi')} AND canonical_pi.source_client='pi-agent' "
         "AND LOWER(canonical_pi.provider)='anthropic' "
+        f"AND {not_pi_copy('canonical_pi')} "
         f"AND {_positive_reported_cost('canonical_pi')} "
         f"AND {_same_response('canonical_pi', alias)})"
     )
@@ -61,6 +182,7 @@ def canonical_assistant_predicate(alias: str = 'events') -> str:
         "AND EXISTS (SELECT 1 FROM events AS empty_pi WHERE "
         f"{_billable('empty_pi')} AND empty_pi.source_client='pi-agent' "
         "AND LOWER(empty_pi.provider)='anthropic' "
+        f"AND {not_pi_copy('empty_pi')} "
         f"AND {_same_response('empty_pi', alias)})"
     )
     sdk = (
@@ -80,7 +202,9 @@ def canonical_assistant_predicate(alias: str = 'events') -> str:
         "+ COALESCE(fallback_sdk.cache_read_tokens,0)) > 0 "
         f"AND {_same_response('fallback_sdk', alias)})"
     )
-    return f'NOT ({sdk}) AND NOT ({pi})'
+    # Twin lookups see only original Pi rows, so a copy with different cost
+    # evidence cannot make the SDK row and the original both yield.
+    return f'{not_pi_copy(alias)} AND NOT ({sdk}) AND NOT ({pi})'
 
 
 def _matching_days(conn: sqlite3.Connection, message_ids: set[str], source: str) -> set[str]:
@@ -132,7 +256,7 @@ _REPLY = "{a}.type='assistant' AND COALESCE({a}.model, '') != '<synthetic>'"
 
 def counts_as_activity(alias: str = 'events') -> str:
     """Activity filter for events or tool_uses rows. Aliases are internal."""
-    return (f"NOT ({alias}.source_client='claude-code' AND {alias}.session_id IS NOT NULL "
+    return (f"{not_pi_copy(alias)} AND NOT ({alias}.source_client='claude-code' AND {alias}.session_id IS NOT NULL "
             "AND (EXISTS (SELECT 1 FROM pi_mirror_sessions AS mirror "
             f"WHERE mirror.session_id={alias}.session_id) "
             "OR NOT EXISTS (SELECT 1 FROM events AS reply "

@@ -305,10 +305,14 @@ _ADDED_COLUMNS = {
         "reported_cost_input": "REAL", "reported_cost_output": "REAL",
         "reported_cost_cache_read": "REAL", "reported_cost_cache_write": "REAL",
         "reported_cost_total": "REAL",
+        # Pi copies (event_dedupe.pi_copy_key): key set at ingest, flag set
+        # on the later-ingested rows of a key. NULL flag = not a copy.
+        "pi_copy_key": "TEXT", "pi_copy": "INTEGER",
     },
     "tool_uses": {
         "source_client": "TEXT NOT NULL DEFAULT 'claude-code'",
         "provider": "TEXT", "api": "TEXT",
+        "pi_copy": "INTEGER",
     },
 }
 
@@ -334,6 +338,9 @@ _POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_pi_provider_ts "
     "ON events(provider, ts_epoch) WHERE source_client='pi-agent' "
     "AND type='assistant'",
+    # Only Pi rows carry a key, so the index holds Pi rows alone.
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_copy_key "
+    "ON events(pi_copy_key) WHERE pi_copy_key IS NOT NULL",
 )
 
 # Covering index for the ledger's per-session activity scan (active time,
@@ -398,6 +405,21 @@ def _migrate(conn) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) "
             "VALUES('meridian_pi_dedupe_version','2')")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key,value) "
+            "VALUES('daily_summary_rebuild_pending','1')")
+
+    # Pi copies: key and flag all history once, then ingest keeps it current.
+    # Same commit as the rollup invalidation and the durable rebuild marker.
+    pi_copy_version = conn.execute(
+        "SELECT value FROM meta WHERE key='pi_copy_dedupe_version'").fetchone()
+    if pi_copy_version is None or pi_copy_version[0] != '1':
+        from .event_dedupe import mark_pi_copies
+        mark_pi_copies(conn)
+        conn.execute("DELETE FROM daily_summary")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key,value) "
+            "VALUES('pi_copy_dedupe_version','1')")
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) "
             "VALUES('daily_summary_rebuild_pending','1')")
