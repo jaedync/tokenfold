@@ -109,16 +109,27 @@ async function settle(page) {
   throw new Error('the view did not finish loading');
 }
 
-// Watch layout shifts, removed nodes and any "Loading" text from now on.
-const watch = (page) => page.evaluate(() => {
-  const w = window.__watch = {cls: 0, removed: 0, loading: 0, nodes: [...document.querySelectorAll('#view *')]};
+// Watch layout shifts, removed nodes and any "Loading" text from now on, in
+// the view, the masthead and the live bar. removedWhat: the first removed
+// elements, for the failure message.
+const WATCHED = ['#view', '.masthead', '#livebar'];
+const watch = (page) => page.evaluate((roots) => {
+  const w = window.__watch = {cls: 0, removed: 0, removedWhat: [], loading: 0,
+    nodes: [...document.querySelectorAll(roots.map((r) => `${r} *`).join(', '))]};
   new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) w.cls += e.value; })
     .observe({type: 'layout-shift'});
-  new MutationObserver((ms) => {
-    for (const m of ms) for (const n of m.removedNodes) if (n.nodeType === 1) w.removed += 1;
+  const mo = new MutationObserver((ms) => {
+    for (const m of ms) {
+      for (const n of m.removedNodes) {
+        if (n.nodeType !== 1) continue;
+        w.removed += 1;
+        if (w.removedWhat.length < 5) w.removedWhat.push(`${m.target.className || m.target.localName} > ${n.localName}.${n.className || ''}`);
+      }
+    }
     if ([...document.querySelectorAll('#view .panel:not([hidden])')].some((p) => /Loading/.test(p.innerText))) w.loading += 1;
-  }).observe(document.getElementById('view'), {childList: true, subtree: true});
-});
+  });
+  for (const r of roots) mo.observe(document.querySelector(r), {childList: true, subtree: true});
+}, WATCHED);
 
 // Three poll cycles of the slowest polled feed (120 s), an SSE bump every 30 s.
 async function polls(page, seconds = 360) {
@@ -133,7 +144,8 @@ async function polls(page, seconds = 360) {
 
 const watched = (page) => page.evaluate(() => {
   const w = window.__watch;
-  return {cls: w.cls, removed: w.removed, loading: w.loading, lost: w.nodes.filter((n) => !n.isConnected).length, total: w.nodes.length};
+  return {cls: w.cls, removed: w.removed, removedWhat: w.removedWhat, loading: w.loading,
+    lost: w.nodes.filter((n) => !n.isConnected).length, total: w.nodes.length};
 });
 
 function assertCalm(r, fetched) {
@@ -141,6 +153,8 @@ function assertCalm(r, fetched) {
   assert.ok(r.cls < 0.01, `layout shift ${r.cls.toFixed(4)}`);
   assert.equal(r.loading, 0, 'a "Loading" line came back');
   assert.equal(r.lost, 0, `${r.lost} of ${r.total} nodes were replaced`);
+  // Data of the same shape adds and removes no node, also none made after the watch began.
+  assert.equal(r.removed, 0, `${r.removed} nodes were removed: ${r.removedWhat.join(', ')}`);
 }
 
 const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y, document.documentElement.scrollHeight - innerHeight)), y);

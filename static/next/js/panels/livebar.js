@@ -2,7 +2,7 @@
 // subagents, machines online, data age and the clock. Narrow screens drop the
 // low-priority cells first (css), so the data age and the clock stay in view. It also drives the
 // masthead mark, a two-column gauge of the binding and Claude 5-hour windows.
-import { h, setText, setAttr } from '../dom.js';
+import { h, patch, setText, setAttr } from '../dom.js';
 import * as f from '../format.js';
 import { bindingWindow, claudeShortWindow, dataOf, nowFrom } from '../select.js';
 import { windowTag } from '../palette.js';
@@ -92,7 +92,8 @@ export default {
       col.cover.style.height = `${100 - used}%`;
       col.cover.parentElement.parentElement.toggleAttribute('data-none', !has);
       setText(col.key, tag);
-      if (col.value) col.value.replaceChildren(has ? String(Math.floor(w.pct)) : f.DASH, ...(has ? [h('span', { class: 'pc' }, '%')] : []));
+      // patch(): the 5 s poll changes the number, never the nodes.
+      if (col.value) patch(col.value, has ? String(Math.floor(w.pct)) : f.DASH, has ? h('span', { class: 'pc' }, '%') : null);
     }
 
     return { update, destroy: () => clearInterval(timer) };
