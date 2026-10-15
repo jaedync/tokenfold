@@ -84,10 +84,15 @@ account class where the session's events say so; say in the code what is not fil
    "waitable": false, "verdict": "clear|tight|runs_out|too_early"}],
  "budget": null}
 ```
-- Build from the existing `_build_rate_limits` result (do not duplicate its SQL). `binding` = the
-  long window with the highest `projected_pct` (fallback: highest pct). Short windows (5 h)
-  never bind; `waitable` = short window that resets within 60 min, or a long window whose
-  reset is sooner than its 100% time.
+- Build from the existing `_build_rate_limits` result (do not duplicate its SQL). `binding`
+  (`app/runway_rules.py`): when no long window is at risk (no `runs_out`/`tight` verdict and
+  every `projected_pct` < 90), `claude:seven_day` binds if present (work scope: `claude:month`).
+  Otherwise the long window with the highest `projected_pct` (fallback per window: its pct)
+  binds. Owner decision 2026-10-15: right after a weekly reset the Claude window is too early
+  to project, and another provider's small projection must not take the hero. Short windows
+  (≤ 1 day, e.g. 5 h) never bind; `waitable` = short window that resets within 60 min, or a
+  long window whose reset comes within 60 min of its 100% time (pace `reaches_100_epoch`,
+  else `tight_epoch`).
 - `verdict`: `runs_out` when `reaches_100_epoch` < `resets_at`; `tight` when `tight_epoch` is set;
   `too_early` when pace says so; else `clear`.
 - Work scope: `windows` holds the monthly billing meter as one `kind: "month"` window and
