@@ -34,3 +34,17 @@ class PricingModifiersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PricingFetchSwitchTest(unittest.TestCase):
+    """The suite runs offline: TOKENFOLD_PRICING_FETCH=0 (set in _support)
+    keeps load_pricing off the network when the cache is empty."""
+
+    def test_no_fetch_when_the_switch_is_off(self):
+        from unittest.mock import patch
+        import app.pricing as pricing
+        import app.tests._support  # noqa: F401  (sets the test environment)
+        with patch.object(pricing, "_cached_row", return_value=None), \
+                patch("urllib.request.urlopen") as urlopen:
+            pricing.load_pricing()
+        urlopen.assert_not_called()

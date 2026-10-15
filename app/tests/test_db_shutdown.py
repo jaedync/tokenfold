@@ -133,7 +133,8 @@ class PricingConnectionTest(TempDBTestCase):
                 return body
 
         self._db.begin_shutdown()
-        with patch("urllib.request.urlopen", return_value=Resp()), \
+        with patch.dict("os.environ", {"TOKENFOLD_PRICING_FETCH": "1"}), \
+                patch("urllib.request.urlopen", return_value=Resp()), \
                 patch("builtins.print") as printed:
             pricing.load_pricing()
         printed.assert_not_called()

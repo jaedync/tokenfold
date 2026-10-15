@@ -1,6 +1,7 @@
 """Model pricing: static rates + LiteLLM dynamic fetch with caching."""
 
 import json
+import os
 import re
 import time
 import urllib.request
@@ -236,14 +237,17 @@ def load_pricing(force=False):
         except (json.JSONDecodeError, KeyError):
             pass
 
-    # Fetch from LiteLLM
+    # Fetch from LiteLLM. TOKENFOLD_PRICING_FETCH=0 keeps it offline (the
+    # test suite sets it); the DB cache or the static prices still apply.
+    # Read per call, so the switch holds whatever imported this module first.
     fetched = None
-    try:
-        req = urllib.request.Request(LITELLM_URL, headers={"User-Agent": "tokenfold/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            fetched = json.loads(resp.read())
-    except Exception:
-        pass
+    if os.environ.get("TOKENFOLD_PRICING_FETCH", "1") != "0":
+        try:
+            req = urllib.request.Request(LITELLM_URL, headers={"User-Agent": "tokenfold/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                fetched = json.loads(resp.read())
+        except Exception:
+            pass
 
     if fetched:
         pricing = {}

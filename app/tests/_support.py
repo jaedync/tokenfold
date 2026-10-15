@@ -14,6 +14,8 @@ import unittest
 # it on (app.config.PREWARM) or call it directly. Set before app.config is
 # imported here, and patched in setUp for a config imported earlier.
 os.environ["TOKENFOLD_PREWARM"] = "0"
+# The suite runs offline: no LiteLLM price fetch when the cache is empty.
+os.environ["TOKENFOLD_PRICING_FETCH"] = "0"
 
 
 class TempDBTestCase(unittest.TestCase):
