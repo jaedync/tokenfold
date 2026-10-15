@@ -18,6 +18,11 @@ SHORT_MAX_S = 86400
 # below 5% the integer-quantized meter makes $/point meaningless.
 MIN_PCT_FOR_RATE = 5.0
 LONG_KINDS = ("long", "month")
+# Owner decision (2026-10-15): a long window projected at this percent or
+# more counts as at risk, so it may take the hero from the main limit.
+AT_RISK_PROJECTED_PCT = 90.0
+# The main limit of each scope, in order: the hero when nothing is at risk.
+CALM_DEFAULTS = ("claude:seven_day", "claude:month")
 
 
 def _num(value):
@@ -44,14 +49,32 @@ def _score(window):
     return window.get("pct") if _num(window.get("pct")) else None
 
 
+def at_risk(window):
+    """A long window that runs out, is TIGHT, or projects >= 90%."""
+    projected = _projected(window)
+    return (verdict(window) in ("runs_out", "tight")
+            or (_num(projected) and projected >= AT_RISK_PROJECTED_PCT))
+
+
 def binding(windows):
     """id of the long window most likely to stop work, or None.
 
-    The highest score among long (and month) windows. A stale window binds
-    only when every candidate is stale: an old snapshot must not keep the
-    hero after a fresh window exists.
+    When no long window is at risk, the main limit binds (claude:seven_day,
+    or the month meter in work scope): early in a window the other
+    providers' projections would otherwise take the hero from a limit that
+    is merely too early to project (owner decision, 2026-10-15).
+
+    Otherwise the highest score among long (and month) windows. A stale
+    window binds only when every candidate is stale: an old snapshot must
+    not keep the hero after a fresh window exists.
     """
-    scored = [(w, _score(w)) for w in windows if w.get("kind") in LONG_KINDS]
+    long_windows = [w for w in windows if w.get("kind") in LONG_KINDS]
+    if not any(at_risk(w) for w in long_windows):
+        ids = {w.get("id") for w in long_windows}
+        calm = next((d for d in CALM_DEFAULTS if d in ids), None)
+        if calm is not None:
+            return calm
+    scored = [(w, _score(w)) for w in long_windows]
     scored = [(w, s) for w, s in scored if s is not None]
     fresh = [(w, s) for w, s in scored if not w.get("stale")]
     pool = fresh or scored

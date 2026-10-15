@@ -52,6 +52,52 @@ class BindingTest(unittest.TestCase):
         self.assertIsNone(binding([]))
 
 
+class CalmBindingTest(unittest.TestCase):
+    """When no long window is at risk, the hero stays on the main limit."""
+
+    def test_calm_binds_claude_seven_day(self):
+        # Production copy, 2026-10-15: 3.7% into the Claude week (too
+        # early), OpenCode Go monthly projected 24.4%.
+        ws = [_w("claude:seven_day", pct=9.0, state="too_early"),
+              _w("opencode-go:monthly", pct=24.0, projected=24.4,
+                 state="below"),
+              _w("claude:five_hour", kind="short", projected=99.0)]
+        self.assertEqual(binding(ws), "claude:seven_day")
+
+    def test_calm_work_scope_binds_the_month_meter(self):
+        ws = [_w("claude:month", kind="month", projected=50.0),
+              _w("codex:primary", projected=70.0)]
+        self.assertEqual(binding(ws), "claude:month")
+
+    def test_projected_90_is_at_risk(self):
+        ws = [_w("claude:seven_day", projected=40.0),
+              _w("opencode-go:monthly", projected=90.0)]
+        self.assertEqual(binding(ws), "opencode-go:monthly")
+
+    def test_tight_window_is_at_risk(self):
+        ws = [_w("claude:seven_day", projected=60.0),
+              _w("codex:primary", projected=70.0, tight=NOW + H)]
+        self.assertEqual(binding(ws), "codex:primary")
+
+    def test_runs_out_window_is_at_risk(self):
+        ws = [_w("claude:seven_day", projected=40.0),
+              _w("codex:primary", pct=30.0, projected=70.0,
+                 reaches=NOW + H, state="above")]
+        self.assertEqual(binding(ws), "codex:primary")
+
+    def test_short_window_risk_does_not_count(self):
+        ws = [_w("claude:seven_day", pct=5.0, projected=20.0),
+              _w("x:monthly", projected=60.0),
+              _w("claude:five_hour", kind="short", reaches=NOW + 60,
+                 state="above", projected=300.0)]
+        self.assertEqual(binding(ws), "claude:seven_day")
+
+    def test_calm_without_a_default_uses_the_rule(self):
+        ws = [_w("codex:primary", projected=30.0),
+              _w("opencode-go:weekly", projected=50.0)]
+        self.assertEqual(binding(ws), "opencode-go:weekly")
+
+
 class WaitableTest(unittest.TestCase):
     def test_short_window_resetting_within_an_hour(self):
         self.assertTrue(waitable(_w("fh", kind="short", resets_in=59 * 60), NOW))
