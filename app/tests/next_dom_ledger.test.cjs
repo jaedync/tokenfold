@@ -169,6 +169,8 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
       await page.waitForSelector('.drawer.is-open');
       await page.waitForSelector('.drawer .served-word');
       assert.equal(await text(page, '.dr-title'), title.replace(/\s*Live$/i, ''));
+      // The fan-out chart draws on the next animation frame (ledger-fanout.js).
+      await page.waitForSelector('.drawer .gantt svg', {timeout: 5000});
       assert.ok(await page.locator('.drawer .gantt svg').count() === 1, 'fan-out chart');
       assert.ok(await page.locator('.drawer .tree li').count() >= 2, 'run tree');
       assert.ok(await page.locator('.drawer .mix-bar i').count() >= 1, 'model mix');
