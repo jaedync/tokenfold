@@ -358,6 +358,78 @@ class PiCopyTest(_PiCopyBase):
             "SELECT value FROM meta WHERE key='daily_summary_rebuild_pending'").fetchone())
         self.assertEqual(self.metrics(), base)
 
+    def test_every_start_keys_rows_from_code_without_keys(self):
+        """Code without the key (a rollback, or another branch deployed
+        first) writes Pi rows with no key. The next start keys them, flags
+        their copies and re-rolls only the days of the flagged rows."""
+        from app import db, main, summarizer
+        base = self.baseline()
+        self.post(self.pi('orig', 'proj-a/s1.jsonl', pi_events(self.t0)))
+        # Another session two days earlier, rolled up and then marked, so a
+        # re-roll of its day would show.
+        other = pi_events(self.t0 - 2 * 86400, ids='o-', native='native-s9')
+        for event in other:
+            if event.get('request_id'):
+                event['request_id'] += '-other'
+        self.post(self.pi('other', 'proj-c/s9.jsonl', other))
+        other_day = self.conn.execute(
+            "SELECT day FROM events WHERE source_machine='other'").fetchone()[0]
+        self.post(self.pi('copy', 'proj-b/s1.jsonl', pi_events(self.t0, ids='x-')))
+        # As the old code wrote them: the copy and the other session have no
+        # key and no flag, and the rollups count the copy.
+        self.conn.execute("UPDATE events SET pi_copy_key=NULL, pi_copy=NULL "
+                          "WHERE source_machine IN ('copy', 'other')")
+        self.conn.execute('UPDATE tool_uses SET pi_copy=NULL')
+        self.conn.commit()
+        summarizer.summarize_days(sorted({r[0] for r in self.conn.execute(
+            'SELECT DISTINCT day FROM events')}))
+        self.conn.execute('UPDATE daily_summary SET cost=999 WHERE day=?', (other_day,))
+        # A server that has run before: its startup rebuild is done.
+        self.conn.execute("DELETE FROM meta WHERE key='daily_summary_rebuild_pending'")
+        self.conn.commit()
+        self.assertNotEqual(self.metrics(), base)
+
+        rebuilt = []
+        real_summarize = summarizer.summarize_days
+
+        def start():
+            rebuilt.clear()
+            with patch.object(summarizer, 'summarize_days',
+                              side_effect=lambda days: rebuilt.extend(days)
+                              or real_summarize(days)):
+                db._migrate(self.conn)
+                main._backfill_if_needed()
+        start()
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE source_client='pi-agent' "
+            'AND pi_copy_key IS NULL').fetchone()[0], 0)
+        self.assertEqual({r[0] for r in self.conn.execute(
+            'SELECT DISTINCT source_machine FROM events WHERE pi_copy=1')}, {'copy'})
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) FROM tool_uses WHERE pi_copy=1').fetchone()[0], 1)
+        copy_days = sorted({r[0] for r in self.conn.execute(
+            'SELECT day FROM events WHERE pi_copy=1')})
+        self.assertEqual(rebuilt, copy_days)
+        self.assertEqual(self.conn.execute(
+            'SELECT SUM(cost) FROM daily_summary WHERE day=?', (other_day,)).fetchone()[0], 999)
+        # Drop the other session so the metrics compare to one turn.
+        self.conn.execute('DELETE FROM daily_summary WHERE day=?', (other_day,))
+        self.conn.execute("DELETE FROM tool_uses WHERE source_machine='other'")
+        self.conn.execute("DELETE FROM events WHERE source_machine='other'")
+        self.conn.commit()
+        self.assertEqual(self.metrics(), base)
+        self.assertEqual(self.survivors(), ['orig'])
+        # A second start finds nothing to key, flag or re-roll.
+        start()
+        self.assertEqual(rebuilt, [])
+        self.assertEqual(self.metrics(), base)
+
+    def test_start_finds_unkeyed_rows_through_a_partial_index(self):
+        from app.event_dedupe import _UNKEYED_PI
+        plan = '\n'.join(r['detail'] for r in self.conn.execute(
+            f'EXPLAIN QUERY PLAN SELECT 1 FROM events WHERE {_UNKEYED_PI} LIMIT 1'))
+        self.assertIn('SEARCH events USING INDEX idx_events_pi_unkeyed', plan)
+
 
 class PiCopyHAWindowTest(_HABase):
     def test_copied_pi_session_counts_once_in_window_spend(self):

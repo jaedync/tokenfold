@@ -118,28 +118,50 @@ def flag_new_pi_copies(conn: sqlite3.Connection, events_after: int,
     return flagged
 
 
-def mark_pi_copies(conn: sqlite3.Connection) -> int:
-    """Key and flag all history (migration; caller owns the transaction)."""
+# Pi rows with no key: written by code without the key (the first start after
+# the upgrade, or a rollback). The partial index idx_events_pi_unkeyed (db.py)
+# holds only these rows, so the check on each start costs nothing otherwise.
+_UNKEYED_PI = "source_client='pi-agent' AND pi_copy_key IS NULL"
+
+
+def mark_pi_copies(conn: sqlite3.Connection) -> set[str]:
+    """Key the unkeyed Pi rows and flag copies among all rows of their keys.
+
+    Runs on each start; the caller owns the transaction. All rows of a new
+    key are checked, so a row keyed here can also be the original of a row
+    keyed earlier. Returns the days of the newly flagged rows: only their
+    rollups change.
+    """
     columns = {r[1] for r in conn.execute('PRAGMA table_info(events)')}
     if not columns.issuperset(('session_id', 'request_id', *_PI_ENTRY_FIELDS)):
-        return 0  # a legacy table from before Pi ingest holds no Pi rows
+        return set()  # a legacy table from before Pi ingest holds no Pi rows
+    if conn.execute(f'SELECT 1 FROM events WHERE {_UNKEYED_PI} LIMIT 1').fetchone() is None:
+        return set()
     select = (
         "SELECT rowid, source_client, message_id, request_id, session_id, "
         f"{', '.join(_PI_ENTRY_FIELDS)} FROM events "
-        "WHERE rowid > ? AND rowid <= ? AND source_client='pi-agent' "
-        "AND pi_copy_key IS NULL")
-    # rowid ranges keep memory bounded (production: 515k Pi rows of 2.9M).
-    last = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM events').fetchone()[0]
-    for start in range(0, last, _KEY_BACKFILL_ROWS):
-        rows = conn.execute(select, (start, start + _KEY_BACKFILL_ROWS)).fetchall()
-        conn.executemany("UPDATE events SET pi_copy_key=? WHERE rowid=?",
-                         [(pi_copy_key(r), r['rowid']) for r in rows])
-    flagged = conn.execute(pi_copy_flag_sql("events.source_client='pi-agent'")).rowcount
-    conn.execute(
-        "UPDATE tool_uses SET pi_copy=1 WHERE source_client='pi-agent' "
-        "AND COALESCE(pi_copy,0)=0 AND event_uuid IN "
-        "(SELECT uuid FROM events WHERE pi_copy=1)")
-    return flagged
+        f"WHERE {_UNKEYED_PI} AND rowid > ? ORDER BY rowid LIMIT ?")
+    conn.execute('CREATE TEMP TABLE pi_copy_new_keys(key TEXT PRIMARY KEY)')
+    try:
+        # Pages keep memory bounded (production: 515k Pi rows of 2.9M).
+        last = 0
+        while rows := conn.execute(select, (last, _KEY_BACKFILL_ROWS)).fetchall():
+            keys = [(pi_copy_key(r), r['rowid']) for r in rows]
+            conn.executemany('UPDATE events SET pi_copy_key=? WHERE rowid=?', keys)
+            conn.executemany('INSERT OR IGNORE INTO temp.pi_copy_new_keys VALUES(?)',
+                             [(key,) for key, _ in keys])
+            last = rows[-1]['rowid']
+        days = {r[0] for r in conn.execute(pi_copy_flag_sql(
+            'events.pi_copy_key IN (SELECT key FROM temp.pi_copy_new_keys)')
+            + ' RETURNING day')}
+    finally:
+        conn.execute('DROP TABLE temp.pi_copy_new_keys')
+    if days:
+        conn.execute(
+            "UPDATE tool_uses SET pi_copy=1 WHERE source_client='pi-agent' "
+            "AND COALESCE(pi_copy,0)=0 AND event_uuid IN "
+            "(SELECT uuid FROM events WHERE pi_copy=1)")
+    return days
 
 
 def _billable(alias: str) -> str:

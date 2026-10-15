@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -338,6 +339,29 @@ _POST_MIGRATION_INDEXES = (
 )
 
 
+# Created after the first key pass, so it is built empty instead of holding
+# every Pi row until that pass removes them again.
+_PI_UNKEYED_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_unkeyed ON events(source_client) "
+    "WHERE source_client='pi-agent' AND pi_copy_key IS NULL")
+
+# JSON list of days whose rollups are stale. main._backfill_if_needed
+# re-rolls them; daily_summary_rebuild_pending re-rolls every day instead.
+ROLLUP_DAYS_KEY = 'daily_summary_rebuild_days'
+
+
+def queued_rollup_days(conn) -> set[str]:
+    row = conn.execute('SELECT value FROM meta WHERE key=?', (ROLLUP_DAYS_KEY,)).fetchone()
+    return set(json.loads(row[0])) if row else set()
+
+
+def queue_rollup_days(conn, days) -> None:
+    """Add days to the durable re-roll list (caller owns the transaction)."""
+    if days:
+        conn.execute('INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)',
+                     (ROLLUP_DAYS_KEY, json.dumps(sorted(queued_rollup_days(conn) | set(days)))))
+
+
 def _migrate(conn) -> None:
     for table, cols in _ADDED_COLUMNS.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -389,13 +413,17 @@ def _migrate(conn) -> None:
             "INSERT OR REPLACE INTO meta(key,value) "
             "VALUES('daily_summary_rebuild_pending','1')")
 
-    # Pi copies: key and flag all history once, then ingest keeps it current.
-    # Same commit as the rollup invalidation and the durable rebuild marker.
+    # Pi copies: ingest keys and flags its own rows. Each start keys and flags
+    # the Pi rows that code without the key wrote, in the same commit as the
+    # durable rebuild obligation for the days that changed.
+    from .event_dedupe import mark_pi_copies
+    copy_days = mark_pi_copies(conn)
+    conn.execute(_PI_UNKEYED_INDEX)
     pi_copy_version = conn.execute(
         "SELECT value FROM meta WHERE key='pi_copy_dedupe_version'").fetchone()
-    if pi_copy_version is None or pi_copy_version[0] != '1':
-        from .event_dedupe import mark_pi_copies
-        mark_pi_copies(conn)
+    if pi_copy_version is not None and pi_copy_version[0] == '1':
+        queue_rollup_days(conn, copy_days)
+    else:
         conn.execute("DELETE FROM daily_summary")
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) "
