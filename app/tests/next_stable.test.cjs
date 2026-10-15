@@ -50,7 +50,8 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
     const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
     if (fixture && fs.existsSync(path.join(FIXTURES, fixture[1] + '.json'))) {
-      if (hold && hold.test(fixture[1])) await new Promise((resolve) => { page.__release = resolve; });
+      // A held fixture answers when the check calls page.__release().
+      if (hold && hold.test(fixture[1]) && page.__holding) await new Promise((resolve) => page.__held.push(resolve));
       const n = (counts[fixture[1]] = (counts[fixture[1]] || 0) + 1);
       const body = JSON.parse(fs.readFileSync(path.join(FIXTURES, fixture[1] + '.json'), 'utf8'));
       return route.fulfill({json: n === 1 ? body : drift(body, null, n)});
@@ -62,6 +63,9 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     return route.fulfill({status: 404, body: ''});
   });
+  page.__held = [];
+  page.__holding = true;
+  page.__release = () => { page.__holding = false; for (const r of page.__held.splice(0)) r(); };
   await page.clock.install({time: START});
   await page.goto(ORIGIN + url);
   if (scope === 'enterprise') {
@@ -271,6 +275,50 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
         await context.close();
       });
     }
+    await check('runway 1440: a scope switch keeps the old content, marked busy, until the work data is in', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway', hold: /-work$/});
+      await settle(page);
+      const shot = () => page.evaluate(() => ({
+        hero: document.querySelector('.p-hero .hero-v').textContent,
+        text: [...document.querySelectorAll('#view .panel')].map((p) => p.innerText).join('|'),
+        busy: document.getElementById('view').getAttribute('aria-busy'),
+      }));
+      const before = await shot();
+      await watch(page);
+      await page.click('button[data-scope="enterprise"]');
+      await page.clock.runFor(1500);
+      await page.waitForTimeout(50);
+      const held = await shot();
+      assert.equal(held.busy, 'true', 'the view is not marked busy');
+      assert.equal(held.text, before.text, 'the old content changed before the work data was in');
+      page.__release();
+      await page.clock.runFor(500);
+      await page.waitForTimeout(100);
+      const after = await shot();
+      assert.equal(after.busy, null, 'the view stays busy');
+      assert.notEqual(after.hero, before.hero, 'the work data did not replace the old content');
+      assert.equal((await watched(page)).loading, 0, 'a "Loading" line showed');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
+      const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
+      await settle(page);
+      await page.clock.runFor(5000);
+      await page.waitForTimeout(100);
+      assert.ok(counts.ledger >= 1, 'the ledger was not prefetched');
+      const n = counts.ledger;
+      await page.click('[data-view-link="ledger"]');
+      await page.clock.runFor(50);
+      await page.waitForTimeout(30);
+      const text = await page.evaluate(() => document.getElementById('view').innerText);
+      assert.doesNotMatch(text, /Loading/, 'the ledger says "Loading"');
+      assert.match(text, /\$/, 'the ledger shows no amounts');
+      assert.equal(counts.ledger, n, 'the switch read the fresh ledger again');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
   } finally {
     await browser.close();
   }

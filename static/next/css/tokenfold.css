@@ -36,6 +36,10 @@ button { cursor: pointer; }
 a { color: inherit; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 main:focus { outline: none; }
+/* Scope switch: the old content stays while the new data loads (main.js sets
+ * aria-busy). A bar over the top edge says so; it takes no layout space. */
+main[aria-busy='true']::before { content: ''; position: fixed; z-index: 11; top: 0; left: 0; right: 0; height: 3px; background: var(--yellow); transform-origin: left; animation: busy 1.2s ease-in-out infinite; }
+@keyframes busy { 0% { transform: scaleX(0); } 70% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(1); opacity: 0; } }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip { position: absolute; left: 8px; top: -60px; background: var(--yellow); padding: 8px 12px; font-weight: 700; z-index: 20; }
@@ -114,8 +118,8 @@ a.lb-wait { text-decoration: none; }
 .lb-wait[data-n]:not([data-n='0']) { background: var(--red-ink); color: #fff; }
 .lb-wait[data-n]:not([data-n='0']) .lb-label { color: #fff; }
 .lb-wait .lb-val { font-weight: 800; }
-/* Tabular digits and room for the widest day name: the clock does not move each second. */
-.lb-clock { margin-left: auto; border-right: 0 !important; border-left: 1px solid rgba(243, 238, 227, .18); min-width: 16ch; justify-content: flex-end; font-variant-numeric: tabular-nums; }
+/* Room for the widest day name and time: the clock does not move each second. */
+.lb-clock { margin-left: auto; border-right: 0 !important; border-left: 1px solid rgba(243, 238, 227, .18); min-width: 16ch; justify-content: flex-end; }
 .lb-burn .lb-val { min-width: 13.5ch; }
 .lb-age .lb-val { min-width: 4.5ch; }
 /* Tablet and small laptop: the bar must fit without a sideways scroll, so the
@@ -432,6 +436,7 @@ a.lb-wait { text-decoration: none; }
   .foot { padding: 16px var(--pad) 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
+  main[aria-busy='true']::before { animation: none; }
   .row.flash { animation: none; outline: 3px solid var(--yellow); outline-offset: -3px; }
   .mk-red i, .mk-blue i { transition: none; }
 }

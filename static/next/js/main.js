@@ -19,6 +19,8 @@ const body = document.body;
 const query = new URLSearchParams(location.search);
 const mock = query.get('mock') === '1';
 const SKEW_TOLERANCE_S = 2;
+// The other views' feeds are read once this long after the first view mounts.
+const PREFETCH_DELAY_MS = 1500;
 
 const store = createStore({
   scope: body.dataset.scope || 'personal',
@@ -80,7 +82,8 @@ function mountView(view) {
   container.dataset.view = view.id;
   viewRoot.replaceChildren(container);
   const panels = (view.panels || []).map((p) => mountPanel(p, container, ctx));
-  const update = (s) => { for (const p of panels) p.update(s); };
+  // During a scope switch the panels keep the old content (feeds.js reset).
+  const update = (s) => { if (s.switching) return; for (const p of panels) p.update(s); };
   const unsubscribe = store.subscribe(update);
   update(store.get());
   return {
@@ -122,7 +125,34 @@ function setScope(scope) {
   skewFixed = false;
   feeds.reset();
 }
+// aria-busy, and the bar in tokenfold.css, while the new scope loads.
+let wasSwitching = false;
+store.subscribe((s) => {
+  const switching = Boolean(s.switching);
+  if (switching === wasSwitching) return;
+  wasSwitching = switching;
+  if (switching) viewRoot.setAttribute('aria-busy', 'true'); else viewRoot.removeAttribute('aria-busy');
+  if (!switching) prefetchOthers();
+});
 for (const b of document.querySelectorAll('button[data-scope]')) b.addEventListener('click', () => setScope(b.dataset.scope));
+
+// ---------------------------------------------------------------- idle prefetch
+// Read every other view's feeds once while the page is idle, so a view
+// switch shows content at once. Again after each scope switch.
+let prefetchTimer = null;
+function prefetchOthers() {
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(() => {
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
+    idle(() => {
+      if (document.hidden) return;
+      for (const view of Object.values(VIEWS)) {
+        if (active && view.id === active.id) continue;
+        for (const [key, spec] of Object.entries(view.feeds || {})) feeds.prefetch(key, spec);
+      }
+    }, { timeout: 3000 });
+  }, PREFETCH_DELAY_MS);
+}
 
 // ---------------------------------------------------------------- tab title
 const baseTitle = document.title;
@@ -160,7 +190,8 @@ document.addEventListener('visibilitychange', () => (document.hidden ? closeStre
 
 // ---------------------------------------------------------------- boot
 const bar = mountInto(livebar, document.getElementById('livebar'), ctx);
-store.subscribe((s) => bar.update(s));
+store.subscribe((s) => { if (!s.switching) bar.update(s); });
 bar.update(store.get());
 show(hashView() || body.dataset.view || 'runway', false);
 openStream();
+prefetchOthers();
