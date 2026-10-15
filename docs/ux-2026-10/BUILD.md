@@ -165,6 +165,7 @@ and say so. Twins are already excluded by the canonical predicates; use them.
 - TDD: a failing test first for each endpoint and each pure function. Tests use the existing
   unittest style (`app/tests/_support.py` `TempDBTestCase`). Run the full suite with
   `TOKENFOLD_PLAYWRIGHT="$PWD/.ux/node_modules/playwright" .venv/bin/python -m unittest discover -s app/tests -t .`
+  (`TOKENFOLD_PLAYWRIGHT` is the path of a `playwright` module; the browser checks skip without one).
   Known failure on main, not yours: `test_cache_invalidation ... prints_no_traceback`.
 - Performance on real data: a scrubbed production copy (OAuth credentials removed) is at
   `~/.cache/tokenfold-prod/prod-20261015.db` (read-only). Copy it to your own scratch path
