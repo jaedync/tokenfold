@@ -260,6 +260,47 @@ class NowEndpointTests(TempDBTestCase):
         self.assertEqual(self.client.get("/api/now?scope=nope").status_code, 400)
 
 
+class PiParentCacheLockTest(unittest.TestCase):
+    """pi_parents runs on worker threads (/api/now and /api/today at once):
+    its shared link cache is read and written under the module lock."""
+
+    def test_link_cache_is_used_under_the_lock(self):
+        from app import now_sessions as ns
+        misuse = []
+
+        class Guarded(dict):
+            def _check(self):
+                if not ns._pi_lock.locked():
+                    misuse.append("unlocked")
+
+            def __contains__(self, k):
+                self._check()
+                return super().__contains__(k)
+
+            def __getitem__(self, k):
+                self._check()
+                return super().__getitem__(k)
+
+            def update(self, *a, **k):
+                self._check()
+                return super().update(*a, **k)
+
+            def clear(self):
+                self._check()
+                return super().clear()
+
+            def __len__(self):
+                self._check()
+                return super().__len__()
+        guarded = Guarded({"known-child": "parent"})
+        with mock.patch.object(ns, "_parent_of", guarded), \
+                mock.patch.object(ns, "_subagent_files", return_value=[]):
+            out = ns.pi_parents(None, {"known-child": ["pi:x:known-child"],
+                                       "new-child": ["pi:y:new-child"]}, time.time())
+        self.assertEqual(out, {"known-child": "parent"})
+        self.assertEqual(misuse, [])
+
+
 class NowPureTests(unittest.TestCase):
     def test_burn_rate_window(self):
         from app.now import burn_rate

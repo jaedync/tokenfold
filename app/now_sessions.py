@@ -100,8 +100,12 @@ def pi_parents(conn, children: dict[str, list[str]], now: float) -> dict[str, st
 
     A child's events id is pi:<ns>:<sid> with ns = ingest._pi_namespace(class,
     machine, session_file, sid); the cursor whose file reproduces ns names
-    the parent folder. Found links are kept (they never change)."""
-    out = {c: _parent_of[c] for c in children if c in _parent_of}
+    the parent folder. Found links are kept (they never change).
+
+    Runs on worker threads (/api/now and /api/today at once): the link
+    cache is read and written under _pi_lock."""
+    with _pi_lock:
+        out = {c: _parent_of[c] for c in children if c in _parent_of}
     todo = {c: eids for c, eids in children.items() if c not in out}
     if not todo:
         return out
@@ -114,9 +118,10 @@ def pi_parents(conn, children: dict[str, list[str]], now: float) -> dict[str, st
             if _pi_namespace(cls, machine, f, child) in wanted:
                 out[child] = f.split("/", 2)[1]
                 break
-    if len(_parent_of) > 4096:
-        _parent_of.clear()
-    _parent_of.update(out)
+    with _pi_lock:
+        if len(_parent_of) > 4096:
+            _parent_of.clear()
+        _parent_of.update(out)
     return out
 
 
