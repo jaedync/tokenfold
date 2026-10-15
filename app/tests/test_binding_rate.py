@@ -38,7 +38,9 @@ class BindingRateTests(TempDBTestCase):
         self.assertEqual(r["bucket"], "seven_day")
         self.assertAlmostEqual(r["usd_per_point"], 0.5, places=6)
 
-    def test_highest_projected_long_window_binds(self):
+    def test_the_hero_window_binds_not_the_highest_projection(self):
+        # Opus projects 70%: not at risk, so the hero stays on the main
+        # 7-day limit (runway_rules.binding), and so does this rate.
         set_oauth(self.conn, {
             "seven_day": {"utilization": 10.0,
                           "resets_at": _iso(self.now + 3 * 86400)},
@@ -47,9 +49,31 @@ class BindingRateTests(TempDBTestCase):
         }, observed=self.now - 60)
         insert_event(self.conn, "a", session="s", ts=self.now - 3600, inp=1_000_000)
         r = self._build()
+        self.assertEqual(r["bucket"], "seven_day")
+        self.assertAlmostEqual(r["usd_per_point"], 5.0 / 10.0, places=6)
+
+    def test_an_at_risk_scoped_window_binds(self):
+        set_oauth(self.conn, {
+            "seven_day": {"utilization": 10.0,
+                          "resets_at": _iso(self.now + 3 * 86400)},
+            "seven_day_opus": {"utilization": 80.0,
+                               "resets_at": _iso(self.now + 3 * 86400)},
+        }, observed=self.now - 60)
+        insert_event(self.conn, "a", session="s", ts=self.now - 3600, inp=1_000_000)
+        r = self._build()
         self.assertEqual(r["bucket"], "scoped:opus")
         # Scoped windows count only their family's spend: Opus 4.8 is opus.
-        self.assertAlmostEqual(r["usd_per_point"], 5.0 / 40.0, places=6)
+        self.assertAlmostEqual(r["usd_per_point"], 5.0 / 80.0, places=6)
+
+    def test_none_when_a_provider_window_binds(self):
+        set_oauth(self.conn, {
+            "seven_day": {"utilization": 95.0,
+                          "resets_at": _iso(self.now + 3 * 86400)},
+        }, observed=self.now - 60)
+        insert_event(self.conn, "a", session="s", ts=self.now - 3600, inp=1_000_000)
+        from unittest.mock import patch
+        with patch("app.runway.binding", return_value="codex:weekly"):
+            self.assertIsNone(self._build())
 
     def test_none_for_enterprise_missing_or_tiny_pct(self):
         self.assertIsNone(self._build())                     # no snapshot

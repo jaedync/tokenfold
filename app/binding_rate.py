@@ -8,9 +8,11 @@ of up to 7 days of events (about 0.5 s on the production copy), so it is
 served from a background cache: /api/now never waits for it, and reports
 null until the first build lands.
 
-Binding window: the long (7-day) Claude window with the highest projected
-percent at reset (fallback: highest percent). Short windows never bind.
-Only personal scope has Claude subscription windows.
+Binding window: the hero window of /api/runway (runway_rules.binding), so
+the share and the hero's burn rate are points of one window. When that
+window is not a Claude 7-day window (a Codex or OpenCode Go window, or the
+month meter), the rate is None. Only personal scope has Claude
+subscription windows.
 """
 import json
 import sys
@@ -22,7 +24,7 @@ from .db import read_conn
 from .limit_windows import _bucket_window_start, _iso_to_epoch
 from .quota_freshness import MAX_OBSERVATION_AGE_S
 from .usage_buckets import normalize_usage_buckets
-from .usage_pace import MIN_USED_PCT, WEEK_S, usage_pace
+from .usage_pace import MIN_USED_PCT, WEEK_S
 
 # A rate is stable for minutes; the window cost moves a few dollars per
 # minute against thousands, so two minutes of age is invisible.
@@ -50,7 +52,7 @@ def build_binding_rate(scope: str, now: float | None = None) -> dict | None:
             return None
         source = stored.get("source")
         best = _binding_bucket(conn, stored.get("data") or {}, observed,
-                               source, now)
+                               source, now, _hero_key(scope, conn))
         if best is None:
             return None
         key, pct, start = best
@@ -73,28 +75,33 @@ def _oauth_row(conn) -> dict | None:
     return stored if isinstance(stored, dict) else None
 
 
-def _binding_bucket(conn, usage, observed, source, now):
-    """(key, pct, window_start) of the binding long window, or None.
+def _hero_key(scope, conn) -> str | None:
+    """Bucket key of the /api/runway hero window when it is a Claude 7-day
+    window (seven_day or scoped:*), else None."""
+    from .runway import build_runway  # runway imports the api module
+    hero = build_runway(scope, conn).get("binding") or ""
+    provider, _, key = hero.partition(":")
+    if provider != "claude" or not (key == "seven_day" or key.startswith("scoped:")):
+        return None
+    return key
 
-    Pace runs at the observation time: the pct describes that moment. A
-    window that has reset since the observation no longer binds."""
-    ranked = []
+
+def _binding_bucket(conn, usage, observed, source, now, hero_key):
+    """(key, pct, window_start) of the hero window, or None.
+
+    A window that has reset since the observation no longer binds."""
+    if hero_key is None:
+        return None
     for b in normalize_usage_buckets(usage):
-        key = b["key"]
-        if key != "seven_day" and not key.startswith("scoped:"):
+        if b["key"] != hero_key:
             continue
         pct = b["utilization"]
         reset = _iso_to_epoch(b["resets_at"])
         if reset is None or reset <= max(observed, now) or pct < MIN_USED_PCT:
-            continue
-        start = _bucket_window_start(conn, key, reset, WEEK_S, observed, source=source)
-        pace = usage_pace(pct, reset, WEEK_S, observed, window_start_epoch=start)
-        projected = (pace or {}).get("projected_pct")
-        ranked.append(((projected if projected is not None else -1.0, pct),
-                       (key, pct, start)))
-    if not ranked:
-        return None
-    return max(ranked, key=lambda r: r[0])[1]
+            return None
+        start = _bucket_window_start(conn, hero_key, reset, WEEK_S, observed, source=source)
+        return hero_key, pct, start
+    return None
 
 
 def _counts_for(key: str, display_model: str) -> bool:
