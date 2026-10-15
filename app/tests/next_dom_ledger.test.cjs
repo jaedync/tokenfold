@@ -10,6 +10,9 @@ const {chromium} = require(process.env.TOKENFOLD_PLAYWRIGHT || 'playwright');
 const ROOT = path.resolve(__dirname, '..', '..');
 const ORIGIN = 'http://tokenfold.test';
 const HTML = fs.readFileSync(process.env.TOKENFOLD_HTML_NEXT, 'utf8');
+// The page's real Content-Security-Policy, so a check fails on a violation
+// (Chromium logs each one as a console error).
+const CSP = process.env.TOKENFOLD_CSP_NEXT || '';
 const failures = [];
 async function check(name, action) {
   try { await action(); console.log('ok - ' + name); }
@@ -27,7 +30,7 @@ async function open(browser, {viewport, url, api404 = false}) {
   await page.route('**/*', route => {
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
-    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML});
+    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML, headers: CSP ? {'Content-Security-Policy': CSP} : {}});
     // The shell serves static/next under /static/next-<version>/ (cache busting).
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});

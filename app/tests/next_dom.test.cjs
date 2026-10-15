@@ -9,6 +9,9 @@ const {chromium} = require(process.env.TOKENFOLD_PLAYWRIGHT || 'playwright');
 const ROOT = path.resolve(__dirname, '..', '..');
 const ORIGIN = 'http://tokenfold.test';
 const HTML = fs.readFileSync(process.env.TOKENFOLD_HTML_NEXT, 'utf8');
+// The page's real Content-Security-Policy, so a check fails on a violation
+// (Chromium logs each one as a console error).
+const CSP = process.env.TOKENFOLD_CSP_NEXT || '';
 const FIXTURES = path.join(ROOT, 'static', 'next', 'fixtures');
 const failures = [];
 async function check(name, action) {
@@ -30,7 +33,7 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
   await page.route('**/*', route => {
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
-    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML});
+    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML, headers: CSP ? {'Content-Security-Policy': CSP} : {}});
     // The shell serves static/next under /static/next-<version>/ (cache busting).
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
     const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
@@ -183,6 +186,22 @@ const text = (page, sel) => page.locator(sel).first().innerText();
         assert.deepEqual(errors, []);
         await context.close();
       }
+    });
+
+    await check('the page runs under its Content-Security-Policy', async () => {
+      assert.match(CSP, /default-src 'self'/, 'TOKENFOLD_CSP_NEXT is set');
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('[data-panel="hero"] .verdict-word');
+      // An inline style is refused, so the policy is in force.
+      const applied = await page.evaluate(() => {
+        const s = document.createElement('style');
+        s.textContent = 'body { outline: 7px solid red; }';
+        document.head.append(s);
+        return getComputedStyle(document.body).outlineWidth;
+      });
+      assert.notEqual(applied, '7px', 'inline style was applied');
+      assert.ok(errors.some(e => /Content Security Policy/i.test(e)), 'the refusal is logged');
+      await context.close();
     });
 
     // ---------------------------------------------------------- Runway polish

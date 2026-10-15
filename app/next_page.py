@@ -96,6 +96,12 @@ def page_scope(requested, cookie_scope):
     return DEFAULT_SCOPE
 
 
+# The shell and its modules are same-origin files and the panels style through
+# CSSOM (el.style), never inline style or script, so the page needs no
+# 'unsafe-inline'. img-src also allows data: URIs (none are used today).
+CSP = "default-src 'self'; style-src 'self'; img-src 'self' data:"
+
+
 @router.get("/next", response_class=HTMLResponse, dependencies=[Depends(require_dashboard_auth)])
 def next_dashboard(request: Request, scope: Optional[str] = None):
     effective = page_scope(scope, request.cookies.get("tf_scope"))
@@ -111,6 +117,7 @@ def next_dashboard(request: Request, scope: Optional[str] = None):
     # The security middleware sets no-store only on / and /api/*; this page
     # is behind the same auth, so a shared cache must not keep it either.
     response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Content-Security-Policy"] = CSP
     return response
 
 

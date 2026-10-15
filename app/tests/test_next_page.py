@@ -47,6 +47,13 @@ class NextPageAuthTest(TempDBTestCase):
         response = self.client().get("/next")
         self.assertEqual(response.headers.get("cache-control"), "private, no-store")
 
+    def test_page_sets_a_content_security_policy(self):
+        # Same-origin scripts, styles, fonts and fetches only; no inline
+        # style or script. The browser checks run with this header on.
+        response = self.client().get("/next")
+        self.assertEqual(response.headers.get("content-security-policy"),
+                         "default-src 'self'; style-src 'self'; img-src 'self' data:")
+
 
 class NextPageScopeTest(TempDBTestCase):
     def get(self, url, cookies=None):

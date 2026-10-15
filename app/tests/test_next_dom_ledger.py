@@ -28,7 +28,8 @@ class NextLedgerDomTest(TempDBTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             page = Path(tmp, "next.html")
             page.write_text(response.text)
-            env = dict(os.environ, TOKENFOLD_PLAYWRIGHT=playwright, TOKENFOLD_HTML_NEXT=str(page))
+            env = dict(os.environ, TOKENFOLD_PLAYWRIGHT=playwright, TOKENFOLD_HTML_NEXT=str(page),
+                       TOKENFOLD_CSP_NEXT=response.headers.get("content-security-policy", ""))
             result = subprocess.run(["node", str(SCRIPTS / "next_dom_ledger.test.cjs")], cwd=ROOT, env=env,
                                     capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
