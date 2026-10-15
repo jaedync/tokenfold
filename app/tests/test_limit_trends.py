@@ -406,9 +406,12 @@ class TrendEndpointTest(TempDBTestCase):
     def test_pace_block_and_tight_warning(self):
         # 5h window, 3h left: 40% used over 2h -> projects 100%. Make it 30%:
         # projects 75% (below pace) while the last hour climbed fast enough
-        # to hit 100% before the reset (TIGHT).
+        # to hit 100% before the reset (TIGHT). The reset is minute-aligned:
+        # the server floors resets_at to the minute, and an unaligned reset
+        # moved the projection by up to 0.6 points depending on the second
+        # the test ran (a flaky delta failure).
         now = time.time()
-        self._seed_oauth(now + 3 * 3600, five=30)
+        self._seed_oauth((now // 60) * 60 + 3 * 3600, five=30)
         self._seed_readings("five_hour", now, n=40, span_s=3600,
                             start_pct=0.0, end_pct=30.0)
         oauth = self.client().get("/api/rate-limits?scope=personal").json()[
