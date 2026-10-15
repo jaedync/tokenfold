@@ -108,6 +108,11 @@ def _month_reported_costs(conn, now, scope):
     month_start = current.replace(day=1, hour=0, minute=0, second=0,
                                   microsecond=0).timestamp()
     pred = sys.modules["app.config"].scope_predicate(scope)
+    # Only the providers reported below: the filter also lets SQLite read
+    # idx_events_pi_provider_ts instead of every assistant row of the month.
+    provider_ids = tuple(pid for ids in _PROVIDER_EVENT_IDS.values()
+                         for pid in ids)
+    slots = ",".join("?" for _ in provider_ids)
     rows = conn.execute(
         "SELECT provider, SUM(CASE WHEN reported_total IS NOT NULL "
         "THEN reported_total ELSE COALESCE(reported_input,0) + "
@@ -119,10 +124,11 @@ def _month_reported_costs(conn, now, scope):
         " MAX(reported_cost_cache_read) reported_cache_read,"
         " MAX(reported_cost_cache_write) reported_cache_write"
         " FROM events WHERE type='assistant' AND source_client='pi-agent'"
+        f" AND provider IN ({slots})"
         " AND request_id IS NOT NULL AND ts_epoch>=? AND ts_epoch<?"
         f" AND {pred} GROUP BY provider, request_id"
         ") GROUP BY provider",
-        (month_start, now),
+        (*provider_ids, month_start, now),
     ).fetchall()
     raw = {row["provider"]: float(row["cost"] or 0) for row in rows}
     return {

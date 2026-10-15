@@ -328,6 +328,12 @@ _POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_claude_message "
     "ON events(message_id) WHERE source_client='claude-code' "
     "AND type='assistant'",
+    # Provider quota dollars (app/provider_usage.py) need the Codex/OpenCode
+    # Pi rows of up to a month. Through idx_events_billable_ts that was a
+    # scan of every assistant row in the month on each /api/rate-limits.
+    "CREATE INDEX IF NOT EXISTS idx_events_pi_provider_ts "
+    "ON events(provider, ts_epoch) WHERE source_client='pi-agent' "
+    "AND type='assistant'",
 )
 
 
