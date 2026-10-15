@@ -179,16 +179,14 @@ def personal_trajectory():
 
 
 def work_trajectory():
-    # The server keeps no per-poll meter history yet: points are empty (be-runway).
-    return {"points": [], "resets": [], "start": MONTH_START, "end": MONTH_END}
-
-
-def work_trajectory_shape():
+    # Billed meter readings as percent of the budget (app/month_trajectory.py).
+    # Its own random stream, so the other fixtures keep their values.
+    local = random.Random(7)
     points, acc, t = [], 0.0, MONTH_START
     while t <= NOW:
         dt = datetime.fromtimestamp(t, TZ)
         if dt.weekday() < 5 and 8 <= dt.hour < 19:
-            acc += 0.7 + rng.random() * 0.6
+            acc += 0.7 + local.random() * 0.6
         points.append([t, acc])
         t += 2 * H
     scale = (SPENT / BUDGET * 100) / (acc or 1)
