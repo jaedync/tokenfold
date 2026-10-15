@@ -123,7 +123,7 @@ const watch = (page) => page.evaluate((roots) => {
       for (const n of m.removedNodes) {
         if (n.nodeType !== 1) continue;
         w.removed += 1;
-        if (w.removedWhat.length < 5) w.removedWhat.push(`${m.target.className || m.target.localName} > ${n.localName}.${n.className || ''}`);
+        if (w.removedWhat.length < 50) w.removedWhat.push(`${m.target.className || m.target.localName} > ${n.localName}.${n.className || ''}`);
       }
     }
     if ([...document.querySelectorAll('#view .panel:not([hidden])')].some((p) => /Loading/.test(p.innerText))) w.loading += 1;
@@ -380,6 +380,7 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       }));
       const before = await shot();
       await watch(page);
+      await page.evaluate(() => { window.__frame = [...document.querySelectorAll('#view .panel, #view .panel-head, #view h2')]; });
       await page.click('button[data-scope="enterprise"]');
       await page.clock.runFor(1500);
       await page.waitForTimeout(50);
@@ -387,12 +388,23 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       assert.equal(held.busy, 'true', 'the view is not marked busy');
       assert.equal(held.text, before.text, 'the old content changed before the work data was in');
       page.__release();
-      await page.clock.runFor(500);
-      await page.waitForTimeout(100);
+      // The trajectory refetch for the work window is a fake-clock timer: run
+      // the clock in small steps until the switch ends, as settle() does.
+      for (let i = 0; i < 300 && (await shot()).busy; i += 1) {
+        await page.clock.runFor(50);
+        await page.waitForTimeout(5);
+      }
       const after = await shot();
       assert.equal(after.busy, null, 'the view stays busy');
       assert.notEqual(after.hero, before.hero, 'the work data did not replace the old content');
-      assert.equal((await watched(page)).loading, 0, 'a "Loading" line showed');
+      const r = await watched(page);
+      assert.equal(r.loading, 0, 'a "Loading" line showed');
+      // The work data has other rows (fewer windows, models and machines), so
+      // rows go; the frame of every panel stays. The fixtures need 26 removed
+      // rows and parts; far more means a panel drew again from scratch.
+      assert.ok(r.removed > 0 && r.removed <= 40, `${r.removed} nodes were removed: ${r.removedWhat.join(', ')}`);
+      assert.deepEqual(r.removedWhat.filter((x) => /(^|> )(section|h2)\b|\.(panel|panel-head|grid)\b/.test(x)), [], 'a panel frame was removed');
+      assert.ok(await page.evaluate(() => window.__frame.every((n) => n.isConnected)), 'a panel or its title was replaced');
       assert.deepEqual(errors, []);
       await context.close();
     });
