@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     stop_sweeps()
     stop_watchdog()
     usage_fetcher.stop()
+    # A running limit-rate fit stores through the shared connection.
+    from .limit_rate import join_refresh as join_limit_rate
+    join_limit_rate(10.0)
     close_conn()
 
 

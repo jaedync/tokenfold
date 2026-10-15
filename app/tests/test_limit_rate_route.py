@@ -233,3 +233,31 @@ class LifespanPrewarmTest(_Base):
         with patch("builtins.print"):
             asyncio.run(run())
         self.lr.prewarm.assert_called_once_with()
+
+    def test_shutdown_waits_for_a_running_fit_before_closing_the_db(self):
+        # The fit stores its result through the shared connection; closing
+        # that connection under a running fit crashes sqlite.
+        import asyncio
+        import app.main as main
+        order = []
+        stubs = [patch.object(main, "load_pricing"),
+                 patch.object(main.usage_fetcher, "should_run", return_value=False),
+                 patch.object(main, "init_light", new=lambda: asyncio.sleep(0)),
+                 patch.object(main, "start_watchdog"), patch.object(main, "stop_watchdog"),
+                 patch.object(main, "_backfill_if_needed"),
+                 patch("app.aggregator.trigger_eager_rebuild"),
+                 patch("app.aggregator.start_sweeps"), patch("app.aggregator.stop_sweeps"),
+                 patch.object(self.lr, "prewarm"),
+                 patch.object(self.lr, "join_refresh", side_effect=lambda t: order.append("join")),
+                 patch.object(main, "close_conn", side_effect=lambda: order.append("close"))]
+        for p in stubs:
+            p.start()
+            self.addCleanup(p.stop)
+
+        async def run():
+            async with main.lifespan(main.app):
+                pass
+
+        with patch("builtins.print"):
+            asyncio.run(run())
+        self.assertEqual(order, ["join", "close"])
