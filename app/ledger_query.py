@@ -145,6 +145,11 @@ def accumulate_activity(rows) -> dict:
     return out
 
 
+def has_activity_index(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                        (ACTIVITY_INDEX,)).fetchone() is not None
+
+
 def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
              end: float, exact_pred: str | None = None) -> dict:
     """Active time, span and human prompts per (session, agent) in [start, end).
@@ -155,7 +160,8 @@ def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
     if not session_ids:
         return {}
     if exact_pred is None:
-        source, scope = f"events INDEXED BY {ACTIVITY_INDEX}", ""
+        source = f"events INDEXED BY {ACTIVITY_INDEX}" if has_activity_index(conn) else "events"
+        scope = ""
     else:
         source, scope = "events", f" AND {exact_pred}"
     rows = conn.execute(

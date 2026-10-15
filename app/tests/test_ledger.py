@@ -211,6 +211,12 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertEqual(d['served_model'], {'state': 'unknown', 'blocks': 0})
         self.assertEqual(len(d['runs']), 1)
 
+    def test_works_without_activity_index(self):
+        self.conn.execute("DROP INDEX idx_events_session_activity")
+        self.conn.commit()
+        s = self.ledger()['sessions'][0]
+        self.assertEqual((s['active_s'], s['prompts']), (110, 2))
+
     def test_session_detail_unknown_is_404(self):
         self.assertEqual(self.session('nope').status_code, 404)
 

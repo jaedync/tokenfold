@@ -337,10 +337,19 @@ _POST_MIGRATION_INDEXES = (
     # Covering index for the ledger's per-session activity scan (active time,
     # prompts): it answers from the index alone instead of one table read per
     # event. 172 MB and 2.4 s to build on the 2026-10-15 production copy.
+)
+
+# Covering index for the ledger's per-session activity scan (active time,
+# prompts): it answers from the index alone instead of one table read per
+# event. 172 MB and 2.4 s to build on the 2026-10-15 production copy. Its
+# columns are SCHEMA columns, but very old databases lack some of them and
+# are not repaired by _ADDED_COLUMNS, so it is built only when they exist
+# (app/ledger_query.py falls back to the table without it).
+_ACTIVITY_INDEX_COLUMNS = {"session_id", "agent_id", "ts_epoch", "is_human_prompt", "type"}
+_ACTIVITY_INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_events_session_activity "
     "ON events(session_id, agent_id, ts_epoch, is_human_prompt) "
-    "WHERE type IN ('user','assistant')",
-)
+    "WHERE type IN ('user','assistant')")
 
 
 def _migrate(conn) -> None:
@@ -352,6 +361,8 @@ def _migrate(conn) -> None:
 
     for ddl in _POST_MIGRATION_INDEXES:
         conn.execute(ddl)
+    if _ACTIVITY_INDEX_COLUMNS <= {r[1] for r in conn.execute("PRAGMA table_info(events)")}:
+        conn.execute(_ACTIVITY_INDEX_DDL)
 
     # Pi request IDs are ``pi:<40 hex>:<provider response ID>``. Older rows
     # predate message_id preservation, so recover Anthropic msg_* IDs in place.
