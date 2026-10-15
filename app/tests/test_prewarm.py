@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from app.prewarm import start as START
 from app.tests._now_support import WORK, insert_event
 from app.tests._support import TempDBTestCase
 
@@ -90,6 +91,27 @@ class SpendHistoryWarmTest(_Base):
         self.assertAlmostEqual(r.json()["months"][-1]["total"], 5.0, places=2)
 
 
+class LedgerWarmTest(_Base):
+    def test_warm_caches_the_closed_days_of_the_default_window(self):
+        import app.ledger as ledger
+        import app.ledger_days as ledger_days
+        ledger._cache._entries.clear()
+        ledger_days._days._entries.clear()
+        self.addCleanup(ledger._cache._entries.clear)
+        self.addCleanup(ledger_days._days._entries.clear)
+        self.seed()
+        ledger.warm("personal")
+        ledger._cache._entries.clear()          # the route's 30 s cache is not the point
+        scans = []
+        real = ledger_days.billable_groups
+        with patch.object(ledger_days, "billable_groups",
+                          side_effect=lambda *a, **k: scans.append(a[2]) or real(*a, **k)):
+            body = self.client().get("/api/ledger?scope=personal").json()
+        self.assertEqual(len(body["sessions"]), 1)
+        # Only the open day is scanned again: yesterday came from the cache.
+        self.assertEqual(len(scans), 1)
+
+
 class PrewarmTest(_Base):
     def test_start_never_blocks_and_warms_every_scope(self):
         self.seed()
@@ -104,7 +126,7 @@ class PrewarmTest(_Base):
         with patch.object(self.tt, "warm", side_effect=slow), \
                 patch.object(self.pw, "_warm_stats"):
             t0 = time.monotonic()
-            thread = self.pw.start()
+            thread = START()
             self.assertLess(time.monotonic() - t0, 0.5, "prewarm must not block startup")
             gate.set()
             thread.join(10)
@@ -121,8 +143,21 @@ class PrewarmTest(_Base):
                 patch.object(self.tt, "warm", side_effect=lambda s, *a, **k: seen.append(s)), \
                 patch.object(self.sh, "warm", side_effect=lambda s: seen.append("sh:" + s)), \
                 patch.object(self.pw, "_warm_stats", side_effect=lambda s: seen.append("st:" + s)):
-            self.pw.start().join(10)
+            START().join(10)
         self.assertEqual(seen, ["enterprise", "sh:enterprise"])
+
+    def test_steps_run_in_order(self):
+        seen = []
+        with patch("app.config.DEFAULT_SCOPE", "personal"), \
+                patch.object(self.tt, "warm", side_effect=lambda s, *a, **k: seen.append("typical:" + s)), \
+                patch("app.ledger.warm", side_effect=lambda s: seen.append("ledger:" + s)), \
+                patch.object(self.sh, "warm", side_effect=lambda s: seen.append("history:" + s)), \
+                patch.object(self.pw, "_warm_stats", side_effect=lambda s: seen.append("stats:" + s)):
+            START().join(10)
+        self.assertEqual(seen, ["typical:personal", "typical:enterprise",
+                                "ledger:personal", "ledger:enterprise",
+                                "history:personal", "history:enterprise",
+                                "stats:enterprise"])
 
     def test_the_second_stats_scope_is_built_after_the_default(self):
         built = []
@@ -130,7 +165,7 @@ class PrewarmTest(_Base):
                 patch("app.config.DEFAULT_SCOPE", "personal"), \
                 patch("app.aggregator.build_dashboard_data",
                       side_effect=lambda s: built.append(s) or {}):
-            self.pw.start().join(10)
+            START().join(10)
         self.assertEqual(built, ["personal", "enterprise"])
 
     def test_a_failing_step_does_not_stop_the_rest(self):
@@ -138,7 +173,7 @@ class PrewarmTest(_Base):
         with patch.object(self.tt, "warm", side_effect=RuntimeError("boom")), \
                 patch.object(self.pw, "_warm_stats"), \
                 self.assertLogs("app.prewarm", "ERROR"):
-            self.pw.start().join(10)
+            START().join(10)
         with patch.object(self.sh, "_spend_history", side_effect=AssertionError("warm")):
             self.sh.cached_history("personal")
 
@@ -150,7 +185,7 @@ class PrewarmTest(_Base):
         with patch.object(self.pw, "_warm_stats"):
             with write_txn(self.conn):
                 self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('x', '1')")
-                thread = self.pw.start()
+                thread = START()
                 thread.join(10)
                 self.assertFalse(thread.is_alive(), "prewarm waited for the writer")
         with patch.object(self.sh, "_spend_history", side_effect=AssertionError("warm")):
@@ -166,7 +201,7 @@ class PrewarmTest(_Base):
         with patch.object(self.tt, "warm", side_effect=slow), \
                 patch.object(self.sh, "warm", side_effect=AssertionError("stopped")), \
                 patch.object(self.pw, "_warm_stats", side_effect=AssertionError("stopped")):
-            self.pw.start()
+            START()
             while not calls:
                 time.sleep(0.01)
             threading.Timer(0.05, gate.set).start()

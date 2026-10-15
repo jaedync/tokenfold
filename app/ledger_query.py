@@ -31,6 +31,15 @@ ACTIVITY_INDEX = "idx_events_session_activity"
 _IDS = "(SELECT value FROM json_each(?))"
 
 
+def _billable_where(pred: str) -> str:
+    # Term order matters: the twin test is a primary-key probe and drops
+    # most Meridian rows before the canonical EXISTS probes run.
+    return ("type='assistant' AND request_id IS NOT NULL "
+            "AND ts_epoch >= ? AND ts_epoch < ? AND session_id IS NOT NULL "
+            "AND model IS NOT NULL AND model != '<synthetic>' "
+            f"AND {pred} AND {counts_as_activity()} AND {canonical_assistant_predicate()}")
+
+
 def _billable_sql(pred: str, bounds: list) -> str:
     era = ""
     if bounds:
@@ -63,21 +72,17 @@ def _billable_sql(pred: str, bounds: list) -> str:
         "  MAX(reported_cost_total) AS reported_total, "
         "  MAX(source_machine) AS machine, MAX(project_dir) AS project_dir, "
         "  MAX(org_type) AS org_type "
-        # Term order matters: the twin test is a primary-key probe and drops
-        # most Meridian rows before the canonical EXISTS probes run.
-        "  FROM events WHERE type='assistant' AND request_id IS NOT NULL "
-        "  AND ts_epoch >= ? AND ts_epoch < ? AND session_id IS NOT NULL "
-        "  AND model IS NOT NULL AND model != '<synthetic>' "
-        f"  AND {pred} AND {counts_as_activity()} AND {canonical_assistant_predicate()} "
+        f"  FROM events WHERE {_billable_where(pred)} "
         "  GROUP BY session_id, agent_id, model, provider, source_client, request_id"
         ") GROUP BY session_id, agent_id, model, provider, source_client, speed, "
         f"inference_geo{', era' if era else ''}"
     )
 
 
-def billable_groups(conn: sqlite3.Connection, pred: str, start: float,
-                    end: float, session_ids: list[str] | None = None) -> list[sqlite3.Row]:
-    """Deduped billable groups per (session, agent, model, pricing inputs).
+def billable_groups_exact(conn: sqlite3.Connection, pred: str, start: float,
+                          end: float, session_ids: list[str] | None = None) -> list[sqlite3.Row]:
+    """Deduped billable groups per (session, agent, model, pricing inputs):
+    MAX() per request, then the sum per group.
 
     The optional session filter is for the detail route (it then probes the
     session index per id).
@@ -89,6 +94,74 @@ def billable_groups(conn: sqlite3.Connection, pred: str, start: float,
         sql = sql.replace("AND session_id IS NOT NULL", f"AND session_id IN {_IDS}", 1)
         params.append(json.dumps(session_ids))
     return conn.execute(sql, params).fetchall()
+
+
+# The one-level scan sums rows directly. That is exact only for a group with
+# one row per request id, no speed or geo value (the exact scan takes those per
+# request) and one pricing era. Pi stores one row per request, so its groups
+# qualify; a Claude Code stream repeats rows, so its sessions do not.
+_ROW_REPORTED_SUM = (
+    REPORTED_COST_SUM_SQL.replace("reported_total", "reported_cost_total")
+    .replace("reported_input", "reported_cost_input")
+    .replace("reported_output", "reported_cost_output")
+    .replace("reported_cache_read", "reported_cost_cache_read")
+    .replace("reported_cache_write", "reported_cost_cache_write"))
+_KEYS = ("session_id", "agent_id", "model", "provider", "source_client", "speed",
+         "inference_geo")
+
+
+def _one_level_sql(pred: str, era: bool) -> str:
+    return (
+        f"SELECT {', '.join(_KEYS)}, {'? AS era, ' if era else ''}"
+        "COUNT(*) AS requests, COUNT(DISTINCT request_id) AS distinct_requests, "
+        "MIN(ts_epoch) AS first_ts, MAX(ts_epoch) AS last_ts, "
+        "SUM(input_tokens) AS inp, SUM(output_tokens) AS outp, "
+        "SUM(cache_creation_tokens) AS cc, SUM(cache_read_tokens) AS cr, "
+        "SUM(cache_ephemeral_5m) AS c5m, SUM(cache_ephemeral_1h) AS c1h, "
+        "SUM(web_search_requests) AS ws, "
+        "SUM(reported_cost_input) AS reported_input, "
+        "SUM(reported_cost_output) AS reported_output, "
+        "SUM(reported_cost_cache_read) AS reported_cache_read, "
+        "SUM(reported_cost_cache_write) AS reported_cache_write, "
+        f"{_ROW_REPORTED_SUM} AS reported_total, "
+        "MAX(source_machine) AS machine, MAX(project_dir) AS project_dir, "
+        "MAX(org_type) AS org_type "
+        f"FROM events WHERE {_billable_where(pred)} GROUP BY {', '.join(_KEYS)}")
+
+
+def _needs_exact(row) -> bool:
+    return (row["source_client"] != "pi-agent" or row["requests"] != row["distinct_requests"]
+            or row["speed"] is not None or row["inference_geo"] is not None)
+
+
+def _order(row) -> tuple:
+    """The exact scan's GROUP BY order (NULL first), so callers that take the
+    first machine or project of a thread see the same row first."""
+    return tuple((row[k] is not None, row[k] or "") for k in _KEYS)
+
+
+def billable_groups(conn: sqlite3.Connection, pred: str, start: float,
+                    end: float, session_ids: list[str] | None = None) -> list[sqlite3.Row]:
+    """billable_groups_exact, faster for a window scan.
+
+    The exact scan groups every row by its long per-request key first; that
+    sort is half of a cold 30-day ledger. Here one GROUP BY sums the rows,
+    and the sessions with a group the sum cannot handle (_needs_exact) are
+    scanned again with the exact query, by session id. A pricing era that
+    starts inside the range splits a request's rows, so it takes the exact
+    scan too.
+    """
+    bounds = era_boundaries()
+    if session_ids is not None or any(start < b < end for b in bounds):
+        return billable_groups_exact(conn, pred, start, end, session_ids)
+    params: list = ([sum(1 for b in bounds if b <= start)] if bounds else []) + [start, end]
+    rows = conn.execute(_one_level_sql(pred, bool(bounds)), params).fetchall()
+    redo = {r["session_id"] for r in rows if _needs_exact(r)}
+    if not redo:
+        return rows
+    kept = [r for r in rows if r["session_id"] not in redo]
+    exact = billable_groups_exact(conn, pred, start, end, sorted(redo))
+    return sorted(kept + exact, key=_order)
 
 
 def group_cost(row, enterprise: bool) -> float:

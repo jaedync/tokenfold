@@ -175,13 +175,27 @@ async def ledger(scope: Optional[str] = Query(default=None),
                  to: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     start, end = parse_range(from_, to, time.time())
+    return await run_in_threadpool(cached_ledger, effective, start, end, to is not None)
+
+
+def cached_ledger(scope: str, start: float, end: float, closed: bool) -> dict:
     # An open-ended range keys on "now" so repeat polls share one build.
-    key = (db.DB_PATH, effective, start, end if to is not None else None)
+    key = (db.DB_PATH, scope, start, end if closed else None)
 
     def build():
         with read_conn() as conn:
-            return build_ledger(conn, effective, start, end)
-    return await run_in_threadpool(_cache.get, key, build)
+            return build_ledger(conn, scope, start, end)
+    return _cache.get(key, build)
+
+
+def warm(scope: str) -> None:
+    """Build the default 30-day ledger (startup prewarm, app/prewarm.py).
+
+    The closed days' billable scans (ledger_days) and the Pi lineage links
+    stay cached after it, so the first visit after a restart reads them.
+    """
+    start, end = parse_range(None, None, time.time())
+    cached_ledger(scope, start, end, False)
 
 
 @router.get("/api/sessions/{session_id:path}", dependencies=[Depends(require_dashboard_auth)])

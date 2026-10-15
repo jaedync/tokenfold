@@ -4,8 +4,10 @@ After a restart the first visit used to wait for builds that only a request
 started: today's typical-spend profile (Runway said "not ready"), the
 /api/spend-history scan (History said "Loading" for about 6 s) and the
 /api/stats build of the scope that is not the default (about 11 s for the
-work scope). start() runs those builds once, in order, on one background
-thread, so startup never waits for them.
+work scope). It also builds the default 30-day ledger, which leaves the
+closed days and the Pi lineage cached (a cold ledger read is about 2 s).
+start() runs those builds once, in order, on one background thread, so
+startup never waits for them.
 
 Every build reads on its own read-only connection (db.read_conn), never on
 the shared ingest connection, so the prewarm cannot hold ingest back and
@@ -45,6 +47,11 @@ def _warm_typical(scope: str) -> None:
     today_typical.warm(scope, time.time(), wait_s=TYPICAL_WAIT_S)
 
 
+def _warm_ledger(scope: str) -> None:
+    from . import ledger
+    ledger.warm(scope)
+
+
 def _warm_history(scope: str) -> None:
     from . import spend_history
     spend_history.warm(scope)
@@ -67,6 +74,7 @@ def _warm_stats(scope: str) -> None:
 def _steps() -> list[tuple[str, object, str]]:
     scopes = _scopes()
     steps = [("typical", _warm_typical, s) for s in scopes]
+    steps += [("ledger", _warm_ledger, s) for s in scopes]
     steps += [("spend history", _warm_history, s) for s in scopes]
     # A scope-locked instance serves one scope: the eager rebuild has it.
     if len(scopes) > 1:

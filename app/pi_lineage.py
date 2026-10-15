@@ -85,6 +85,7 @@ class PiLineage:
             if ids:
                 self._by_raw[ids[1]].append(sid)
         self._index: dict | None = None
+        self._stored: set | None = None
         self._parent: dict[str, str | None] = {}
         self._raw_memo: dict[tuple, str | None] = {}
 
@@ -106,6 +107,17 @@ class PiLineage:
                     top[(machine, stem.partition("_")[2] or stem)].append(session_file)
             self._index = {"children": children, "child_files": child_files, "top": top}
         return self._index
+
+    def _stored_raw_ids(self) -> set:
+        """Raw ids of every stored Pi session (a few thousand ids; one
+        covering-index range read). A raw id outside it cannot match any
+        hashed candidate, so its miss costs no hashing and no probe."""
+        if self._stored is None:
+            rows = self._conn.execute(
+                "SELECT DISTINCT session_id FROM events "
+                "WHERE session_id >= 'pi:' AND session_id < 'pi;'")
+            self._stored = {ids[1] for ids in map(split_pi_id, (r[0] for r in rows)) if ids}
+        return self._stored
 
     def _identity(self, sid: str) -> tuple | None:
         if sid not in self._known:
@@ -153,7 +165,7 @@ class PiLineage:
             if ident and ident[:2] == (cls, machine):
                 found = sid
                 break
-        if found is None:
+        if found is None and raw in self._stored_raw_ids():
             cm, index = f"pi:{cls}:{machine}", self._cursor_index()
             for group in (index["top"].get((cm, raw), ()), index["child_files"].get(cm, ())):
                 found = self._first_stored(

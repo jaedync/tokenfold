@@ -36,6 +36,13 @@ class TempDBTestCase(unittest.TestCase):
         _agg._previous_data.clear()
         _agg._cached_at.clear()
         self.addCleanup(self._restore)
+        # The app's startup prewarm (app/prewarm.py) would read this temp DB on
+        # a background thread while the test runs. app/tests/test_prewarm.py
+        # calls the real start() directly.
+        from unittest.mock import patch as _patch
+        _prewarm = _patch("app.prewarm.start", return_value=None)
+        _prewarm.start()
+        self.addCleanup(_prewarm.stop)
 
     def _restore(self):
         # A background rebuild worker (spawned by an ingest in this test) may

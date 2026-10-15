@@ -294,6 +294,24 @@ class TwinAndPiLineageTest(LedgerTestBase):
         self.assertAlmostEqual(o['agent_cost_usd'], 0.75)
         self.assertEqual([r['label'] for r in o['runs']], ['lonely'])
 
+    def test_unknown_parent_is_a_miss_without_probing_child_files(self):
+        import app.pi_lineage as lineage
+        lineage._LINKS.clear()
+        lineage._MISSES.clear()
+        probes = []
+        real = lineage.PiLineage._first_stored
+
+        def spy(inst, candidates):
+            probes.extend(candidates)
+            return real(inst, candidates)
+        with patch.object(lineage.PiLineage, '_first_stored', spy):
+            sessions = self.by_suffix(self.ledger())
+        self.assertEqual(sessions['O1']['title'], 'lonely')
+        self.assertFalse([c for c in probes if c.endswith(':MISSING')])
+        # The nested child still finds its parent (a child file of the machine).
+        runs = {r['label']: r for r in sessions['P1']['runs']}
+        self.assertEqual(runs['deep-dive']['parent'], runs['be-ledger']['id'])
+
     def test_session_detail_includes_children(self):
         sid = self.by_suffix(self.ledger())['P1']['id']
         d = self.session(sid).json()
