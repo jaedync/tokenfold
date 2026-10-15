@@ -19,7 +19,7 @@ from collections import Counter
 from itertools import groupby
 from operator import itemgetter
 
-from .aggregator import _make_display_names
+from .aggregator import _make_display_names, display_tool_name
 from .config import IDLE_THRESHOLD_S
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity, not_pi_copy
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
@@ -178,15 +178,23 @@ def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
     return accumulate_activity(rows)
 
 
-def tool_counts(conn: sqlite3.Connection, session_ids: list[str],
-                start: float, end: float) -> Counter:
-    """Tool calls per session in [start, end)."""
+def tool_names(conn: sqlite3.Connection, session_ids: list[str],
+               start: float, end: float) -> dict:
+    """{session: Counter(display tool name -> calls)} in [start, end)."""
     if not session_ids:
         return Counter()
     return Counter({r[0]: r[1] for r in conn.execute(
         f"SELECT session_id, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
         f"AND {not_pi_copy('tool_uses')} AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id",
         (json.dumps(session_ids), start, end))})
+        return {}
+    out: dict = {}
+    for sid, name, n in conn.execute(
+            f"SELECT session_id, name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
+            "AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id, name",
+            (json.dumps(session_ids), start, end)):
+        out.setdefault(sid, Counter())[display_tool_name(name)] += n
+    return out
 
 
 def run_tool_counts(conn: sqlite3.Connection, session_ids: list[str],

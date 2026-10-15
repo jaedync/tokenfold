@@ -135,6 +135,22 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertIsNone(run['label'])  # Task descriptions do not survive ingest
         self.assertEqual((run['start'], run['end']), (self.t0 + 20, self.t0 + 30))
 
+    def test_session_row_carries_pivot_breakdowns(self):
+        # The Ledger pivots (model, tool) and its cache share run in the browser.
+        body = self.ledger()
+        s = body['sessions'][0]
+        self.assertEqual(set(s['orch_models']), {'Opus 4.8'})
+        self.assertAlmostEqual(s['orch_models']['Opus 4.8'], 6.0)
+        self.assertEqual(s['tool_calls'], {'Task': 1, 'Bash': 1, 'Edit': 1, 'Write': 1})
+        self.assertEqual(s['tokens'], {'input': 2_200_000, 'output': 0,
+                                       'cache_read': 0, 'cache_write': 0})
+        self.assertEqual(body['model_providers'], {'Opus 4.8': 'Anthropic',
+                                                   'Sonnet 4.6': 'Anthropic'})
+
+    def test_window_bounds_tool_calls(self):
+        s = self.ledger(**{'from': self.t0 + 50})['sessions'][0]
+        self.assertEqual(s['tool_calls'], {'Write': 1})
+
     def test_totals_and_cost_match_window_cost(self):
         from app.config import scope_predicate  # noqa: F401 - scope import path check
         from app.cost_windows import compute_window_cost
@@ -264,6 +280,12 @@ class TwinAndPiLineageTest(LedgerTestBase):
         self.assertEqual(runs['be-ledger']['tools'], 2)
         self.assertEqual(runs['be-ledger']['model'], 'Sonnet 4.6')
         self.assertEqual(p['end'], self.t0 + 900)
+
+    def test_pi_session_breakdowns_include_children(self):
+        p = self.by_suffix(self.ledger())['P1']
+        self.assertEqual(p['tool_calls'], {'subagent': 1, 'bash': 1, 'edit': 1})
+        self.assertEqual(set(p['orch_models']), {'Opus 4.8'})
+        self.assertAlmostEqual(p['orch_models']['Opus 4.8'], 3.0)
 
     def test_unlinked_child_stands_alone_as_agent_cost(self):
         o = self.by_suffix(self.ledger())['O1']

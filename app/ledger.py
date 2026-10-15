@@ -107,9 +107,18 @@ def public_run(run: dict, names: dict) -> dict:
     return out
 
 
+TOKEN_KEYS = ("input", "output", "cache_read", "cache_write")
+
+
 def public_session(s: dict, names: dict, live: set) -> dict:
     out = {k: v for k, v in s.items() if not k.startswith("_")}
     out["model"] = names.get(s["model"])
+    # Per-session breakdowns for the browser's pivots: the orchestrator's
+    # dollars by model (runs carry their own), tool calls of the session and
+    # its Pi children, and tokens of every thread.
+    out["orch_models"] = {names[i]: usd for i, usd in s["_orch_models"].items()}
+    out["tool_calls"] = dict(s["_tool_calls"])
+    out["tokens"] = {k: s["_tokens"].get(k, 0) for k in TOKEN_KEYS}
     out["runs"] = [public_run(r, names) for r in s["runs"]]
     out["live"] = _is_live(s["id"], live)
     return out
@@ -150,6 +159,8 @@ def build_ledger(conn, scope: str, start: float, end: float) -> dict:
     public = None if sessions is None else [public_session(s, names, live) for s in sessions]
     return {
         "from": start, "to": end,
+        # display name -> provider display name, for a provider-grouped legend
+        "model_providers": {name: identity[0] for identity, name in names.items()},
         "daily": None if daily is None else [
             {"day": d["day"], "by_model": {names[i]: usd for i, usd in d["by_model"].items()}}
             for d in daily],

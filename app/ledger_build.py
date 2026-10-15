@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from .aggregator import _summary_model_identity, canonical_machine
 from .ledger_days import billable_threads
 from .ledger_query import (activity, billable_groups, group_cost, mixed_scope,
-                           project_names, run_tool_counts, titles, tool_counts)
+                           project_names, run_tool_counts, titles, tool_names)
 from .pi_lineage import PiLineage, account_class, agent_name
 from .pricing import display_model_for_row
 
@@ -147,7 +147,7 @@ def _meta(conn: sqlite3.Connection, root: str, tree: Tree) -> dict:
             "client": row[2] if row else None}
 
 
-def _session(conn, root, tree, act, runs, title) -> dict:
+def _session(conn, root, tree, act, runs, title, tool_calls) -> dict:
     main = tree.threads.get((root, None))
     meta, a = _meta(conn, root, tree), act.get((root, None), {})
     start, end = _bounds(*(([main["start"], main["end"]] if main else [])
@@ -172,12 +172,15 @@ def _session(conn, root, tree, act, runs, title) -> dict:
         # The route sets live from the hook relay state at response time.
         "runs": runs, "live": False,
         "_models": models, "_tokens": tokens,
+        "_orch_models": Counter(main["models"]) if main else Counter(),
+        "_tool_calls": tool_calls,
     }
 
 
 def assemble(conn, tree: Tree, act: dict, span: tuple) -> list[dict]:
     """Session dicts, internal _models/_tokens keys still attached."""
-    tools = tool_counts(conn, sorted(tree.agents), *span)
+    by_name = tool_names(conn, sorted(tree.agents), *span)
+    tools = Counter({sid: sum(c.values()) for sid, c in by_name.items()})
     inline = sorted({sid for (sid, aid) in tree.threads
                      if aid is not None and not tree.is_child(sid)})
     run_tools = run_tool_counts(conn, inline, *span)
@@ -187,7 +190,10 @@ def assemble(conn, tree: Tree, act: dict, span: tuple) -> list[dict]:
         runs = sorted((_run(sid, aid, tree, act, tools, run_tools)
                        for sid in members for aid in tree.agents[sid] if aid is not None),
                       key=lambda r: (r["start"], r["id"]))
-        out.append(_session(conn, root, tree, act, runs, names.get(root)))
+        calls = Counter()
+        for sid in members:
+            calls.update(by_name.get(sid, {}))
+        out.append(_session(conn, root, tree, act, runs, names.get(root), calls))
     return out
 
 

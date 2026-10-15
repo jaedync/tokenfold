@@ -144,6 +144,10 @@ pure-Python NNLS for ≤ 8 features is fine. Show a family only with ≥ $100 sp
 `/api/sessions/{id}` adds: `prompt_times[]`, `models[{model, cost_usd, share}]`,
 `tools[{name, calls, errors}]`, `tokens{input, output, cache_read, cache_write}`,
 `file_edits`, `served_model{state: "as_asked|partly_hidden|rerouted|unknown"}`.
+For the browser pivots, each `/api/ledger` session row also carries `orch_models{model: usd}`
+(orchestrator cost by model), `tool_calls{name: calls}` and `tokens{input, output, cache_read,
+cache_write}`, all inside the window; the payload adds `model_providers{model: provider}` for
+the provider-grouped legend.
 Pivots (project/model/machine/tool/day) are computed in the browser from `/api/ledger`. If the
 payload for 30 days is over ~2 MB or ~1 s on the production copy, add a `/api/ledger/pivot`
 and say so. Twins are already excluded by the canonical predicates; use them.
