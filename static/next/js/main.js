@@ -111,7 +111,7 @@ window.addEventListener('hashchange', () => { const id = hashView(); if (id) sho
 // ---------------------------------------------------------------- scope
 function setScope(scope) {
   if (scope === store.get().scope || store.get().scopeLocked) return;
-  for (const b of document.querySelectorAll('[data-scope]')) b.setAttribute('aria-pressed', String(b.dataset.scope === scope));
+  for (const b of document.querySelectorAll('button[data-scope]')) b.setAttribute('aria-pressed', String(b.dataset.scope === scope));
   // Same cookie as the classic dashboard, so / and /next open on the same scope.
   document.cookie = `tf_scope=${scope};path=/;max-age=31536000;SameSite=Lax`;
   try { localStorage.setItem('tf_scope', scope); } catch { /* private mode: the cookie is enough */ }
@@ -122,7 +122,7 @@ function setScope(scope) {
   skewFixed = false;
   feeds.reset();
 }
-for (const b of document.querySelectorAll('[data-scope]')) b.addEventListener('click', () => setScope(b.dataset.scope));
+for (const b of document.querySelectorAll('button[data-scope]')) b.addEventListener('click', () => setScope(b.dataset.scope));
 
 // ---------------------------------------------------------------- tab title
 const baseTitle = document.title;

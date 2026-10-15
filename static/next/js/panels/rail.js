@@ -57,7 +57,7 @@ export default {
       const runway = dataOf(s.runway);
       const line = feedLine(s.runway, 'the limit feed');
       fill(state, line, staleNote(s.runway, now));
-      if (line) { fill(list); fill(foot); return; }
+      if (line) { fill(list); fill(foot); sub.hidden = true; return; }
       const rows = otherWindows(runway);
       sub.hidden = !rows.length;
       if (!rows.length) {
