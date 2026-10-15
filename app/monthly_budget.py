@@ -22,7 +22,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 import app.config as config
+from . import db
 from .auth import require_dashboard_auth
+from .bg_cache import BackgroundCache
 from .cost_windows import compute_window_cost
 from .db import get_conn, write_txn
 from .models import EnterpriseBudgetRequest
@@ -33,6 +35,19 @@ META_KEY = "enterprise_monthly_budget_usd"
 BUDGET_MAX = 1_000_000
 EARLY_MONTH_FRACTION = 0.05
 PACE_DEADBAND = 0.10  # +/-10%, same as limit_trends.bucket_trend
+
+
+# The month-to-date event scan costs ~0.3 s on a production copy, and the
+# Runway polls run it twice (runway + trajectory) every 30 s. A live read
+# reuses a scan up to MTD_TTL_S old; past that the cached figure is served
+# while one background scan refreshes it. Only a cold start waits.
+MTD_TTL_S = 30
+MTD_STALE_S = 900
+MTD_COLD_WAIT_S = 120
+# A caller's now within this of the wall clock counts as a live read.
+LIVE_SKEW_S = 5
+_MTD = BackgroundCache(ttl=MTD_TTL_S, wait_s=MTD_COLD_WAIT_S, max_entries=8,
+                       stale_s=MTD_STALE_S)
 
 
 def log(msg, *args):
@@ -122,6 +137,25 @@ def _business_elapsed_utc(now_epoch: float):
     return elapsed / (business_days * 86400.0), business_days
 
 
+def _measured_mtd(conn: sqlite3.Connection, month_start: float,
+                  now: float) -> float:
+    """Estimated enterprise spend from month_start to now.
+
+    A live read (now is the wall clock) goes through the shared cache, keyed
+    by the database connection so a swapped database never sees another's
+    figure. A fixed past now (tests, backfills) is computed inline.
+    """
+    if abs(now - time.time()) <= LIVE_SKEW_S:
+        def build():
+            with db.read_conn() as rc:
+                return compute_window_cost(rc, month_start, time.time(),
+                                           scope="enterprise")
+        value = _MTD.get((db.DB_PATH, db.generation(), month_start), build)
+        if value is not None:
+            return value
+    return compute_window_cost(conn, month_start, now, scope="enterprise")
+
+
 def monthly_budget_block(conn: sqlite3.Connection,
                          now: Optional[float] = None) -> Optional[dict]:
     """Enterprise-scope monthly pacing block, or None when there is neither
@@ -173,8 +207,7 @@ def monthly_budget_block(conn: sqlite3.Connection,
     # per-day bar ticks.
     elapsed_fraction, business_days = _business_elapsed_utc(now)
 
-    measured_mtd = compute_window_cost(
-        conn, month_start, now, scope="enterprise")
+    measured_mtd = _measured_mtd(conn, month_start, now)
     if use_meter:
         mtd_cost = meter["used_usd"]
     elif anchor is not None:

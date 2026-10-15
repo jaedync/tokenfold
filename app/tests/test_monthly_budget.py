@@ -453,6 +453,50 @@ class ScopeGatingTest(TempDBTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Measured MTD cache: a live poll does not rescan the month every time
+# ---------------------------------------------------------------------------
+
+class MeasuredMtdCacheTest(TempDBTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        set_budget(self.conn, 1000.0)
+
+    def _count_scans(self):
+        from unittest.mock import patch
+        import app.monthly_budget as mb
+        calls = []
+        real = mb.compute_window_cost
+
+        def counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+        p = patch.object(mb, "compute_window_cost", side_effect=counting)
+        p.start()
+        self.addCleanup(p.stop)
+        return calls
+
+    def test_live_polls_reuse_one_month_scan(self):
+        import time
+        calls = self._count_scans()
+        now = time.time()
+        _ins_event(self.conn, "e1", now - 60)  # $5
+        first = monthly_budget_block(self.conn)
+        second = monthly_budget_block(self.conn)
+        self.assertEqual(first["mtd_cost"], 5.0)
+        self.assertEqual(second["mtd_cost"], 5.0)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_fixed_past_time_is_computed_each_call(self):
+        calls = self._count_scans()
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        monthly_budget_block(self.conn, now)
+        monthly_budget_block(self.conn, now)
+        self.assertEqual(len(calls), 2)
+
+
+# ---------------------------------------------------------------------------
 # Month boundary math
 # ---------------------------------------------------------------------------
 
