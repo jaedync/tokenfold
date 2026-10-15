@@ -9,10 +9,12 @@ with no orchestrator cost and itself as its only run, so no dollar is lost.
 """
 
 import sqlite3
+import time
 from collections import Counter, defaultdict
 
 from .aggregator import _summary_model_identity, canonical_machine
-from .ledger_query import (activity, billable_groups, group_cost,
+from .ledger_days import billable_threads
+from .ledger_query import (activity, billable_groups, group_cost, mixed_scope,
                            project_names, run_tool_counts, titles, tool_counts)
 from .pi_lineage import PiLineage, account_class, agent_name
 from .pricing import display_model_for_row
@@ -33,14 +35,10 @@ def _span(acc: dict, lo, hi) -> None:
         acc["end"] = hi if acc["end"] is None else max(acc["end"], hi)
 
 
-def collect_threads(rows, enterprise: bool) -> tuple[dict, set]:
-    """Billable rows -> ({(session, agent): thread}, mixed-scope sessions)."""
+def collect_threads(rows, enterprise: bool) -> dict:
+    """In-scope billable rows -> {(session, agent): thread}."""
     threads: dict = defaultdict(_thread)
-    flags: dict = defaultdict(set)
     for r in rows:
-        flags[r["session_id"]].add(bool(r["in_scope"]))
-        if not r["in_scope"]:
-            continue
         t = threads[(r["session_id"], r["agent_id"])]
         cost = group_cost(r, enterprise)
         identity = _summary_model_identity(
@@ -53,9 +51,8 @@ def collect_threads(rows, enterprise: bool) -> tuple[dict, set]:
         t["machine"] = t["machine"] or r["machine"]
         t["project_dir"] = t["project_dir"] or r["project_dir"]
         t["client"] = r["source_client"]
-        t["account"] = t["account"] or r["account_email"]
-    mixed = {sid for sid, f in flags.items() if len(f) > 1}
-    return dict(threads), mixed
+        t["account"] = t["account"] or r["org_type"]
+    return dict(threads)
 
 
 class Tree:
@@ -197,9 +194,18 @@ def assemble(conn, tree: Tree, act: dict, span: tuple) -> list[dict]:
 def build_sessions(conn, pred: str, scope: str, start: float, end: float,
                    session_ids: list[str] | None = None,
                    force_root: str | None = None) -> list[dict]:
-    """Ledger sessions in [start, end). Internal keys start with '_'."""
-    rows = billable_groups(conn, pred, start, end, session_ids)
-    threads, mixed = collect_threads(rows, scope == "enterprise")
+    """Ledger sessions in [start, end). Internal keys start with '_'.
+
+    The window path reuses cached closed days (app/ledger_days.py); the
+    detail path (session_ids) scans its few sessions directly.
+    """
+    def collect(rows):
+        return collect_threads(rows, scope == "enterprise")
+
+    if session_ids is None:
+        threads = billable_threads(conn, pred, scope, start, end, time.time(), collect)
+    else:
+        threads = collect(billable_groups(conn, pred, start, end, session_ids))
     known = {}
     for (sid, aid), t in threads.items():
         if t["client"] == PI:
@@ -207,6 +213,8 @@ def build_sessions(conn, pred: str, scope: str, start: float, end: float,
             known[sid] = (account_class(t["account"]), t["machine"], None if top else aid)
     tree = Tree(threads, PiLineage(conn, known), force_root)
     ids = set(tree.agents) | set(tree.members)
+    mixed = mixed_scope(conn, sorted(i for i in ids if not i.startswith("pi:")),
+                        start, end, pred)
     act = activity(conn, sorted(ids - mixed), start, end)
     act.update(activity(conn, sorted(ids & mixed), start, end, exact_pred=pred))
     sessions = assemble(conn, tree, act, (start, end))

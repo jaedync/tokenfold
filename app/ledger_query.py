@@ -9,13 +9,15 @@ rollup and the old recent-sessions card do.
 The activity scan is the expensive part: tens of thousands of rows per day.
 It reads the covering index idx_events_session_activity (app/db.py) instead of
 the table, so it cannot test the scope predicate per row. The session list
-comes from the billable query, which does test it, and a session with
-billable rows in both scopes takes the slow exact path instead.
+comes from the billable query, which does test it, and a Claude Code session
+with any row of the other scope (mixed_scope) takes the exact path instead.
 """
 
 import json
 import sqlite3
 from collections import Counter
+from itertools import groupby
+from operator import itemgetter
 
 from .aggregator import _make_display_names
 from .config import IDLE_THRESHOLD_S
@@ -35,7 +37,7 @@ def _billable_sql(pred: str, bounds: list) -> str:
         era = "(" + " + ".join("(first_ts >= ?)" for _ in bounds) + ")"
     return (
         "SELECT session_id, agent_id, model, provider, source_client, speed, "
-        "inference_geo, in_scope, "
+        "inference_geo, "
         f"{era + ' AS era, ' if era else ''}"
         "COUNT(*) AS requests, MIN(first_ts) AS first_ts, MAX(last_ts) AS last_ts, "
         "SUM(inp) AS inp, SUM(outp) AS outp, SUM(cc) AS cc, SUM(cr) AS cr, "
@@ -45,10 +47,9 @@ def _billable_sql(pred: str, bounds: list) -> str:
         "SUM(reported_cache_write) AS reported_cache_write, "
         f"{REPORTED_COST_SUM_SQL} AS reported_total, "
         "MAX(machine) AS machine, MAX(project_dir) AS project_dir, "
-        "MAX(account_email) AS account_email "
+        "MAX(org_type) AS org_type "
         "FROM ("
         "  SELECT session_id, agent_id, model, provider, source_client, request_id, "
-        f"  ({pred}) AS in_scope, "
         "  MIN(ts_epoch) AS first_ts, MAX(ts_epoch) AS last_ts, "
         "  MAX(speed) AS speed, MAX(inference_geo) AS inference_geo, "
         "  MAX(input_tokens) AS inp, MAX(output_tokens) AS outp, "
@@ -61,16 +62,16 @@ def _billable_sql(pred: str, bounds: list) -> str:
         "  MAX(reported_cost_cache_write) AS reported_cache_write, "
         "  MAX(reported_cost_total) AS reported_total, "
         "  MAX(source_machine) AS machine, MAX(project_dir) AS project_dir, "
-        "  MAX(account_email) AS account_email "
+        "  MAX(org_type) AS org_type "
         # Term order matters: the twin test is a primary-key probe and drops
         # most Meridian rows before the canonical EXISTS probes run.
         "  FROM events WHERE type='assistant' AND request_id IS NOT NULL "
         "  AND ts_epoch >= ? AND ts_epoch < ? AND session_id IS NOT NULL "
         "  AND model IS NOT NULL AND model != '<synthetic>' "
-        f"  AND {counts_as_activity()} AND {canonical_assistant_predicate()} "
+        f"  AND {pred} AND {counts_as_activity()} AND {canonical_assistant_predicate()} "
         "  GROUP BY session_id, agent_id, model, provider, source_client, request_id"
         ") GROUP BY session_id, agent_id, model, provider, source_client, speed, "
-        f"inference_geo, in_scope{', era' if era else ''}"
+        f"inference_geo{', era' if era else ''}"
     )
 
 
@@ -78,9 +79,8 @@ def billable_groups(conn: sqlite3.Connection, pred: str, start: float,
                     end: float, session_ids: list[str] | None = None) -> list[sqlite3.Row]:
     """Deduped billable groups per (session, agent, model, pricing inputs).
 
-    Rows of both scopes come back, flagged by in_scope, so a caller can tell
-    a single-scope session from a mixed one. The optional session filter is
-    for the detail route (it then probes the session index per id).
+    The optional session filter is for the detail route (it then probes the
+    session index per id).
     """
     bounds = era_boundaries()
     sql = _billable_sql(pred, bounds)
@@ -105,25 +105,43 @@ def group_cost(row, enterprise: bool) -> float:
         web_search=row["ws"] or 0, ts_epoch=era_ts)
 
 
+def mixed_scope(conn: sqlite3.Connection, session_ids: list[str], start: float,
+                end: float, pred: str) -> set[str]:
+    """Claude Code sessions in the list with any user/assistant row outside
+    the scope in [start, end) (an account switch mid-session).
+
+    Pi ids carry the account class in their namespace, so a Pi session is
+    never mixed; callers pass Claude Code ids only, which keeps this short.
+    """
+    if not session_ids:
+        return set()
+    return {r[0] for r in conn.execute(
+        f"SELECT DISTINCT session_id FROM events WHERE session_id IN {_IDS} "
+        "AND type IN ('user','assistant') AND ts_epoch >= ? AND ts_epoch < ? "
+        f"AND NOT ({pred})", (json.dumps(session_ids), start, end))}
+
+
 def accumulate_activity(rows) -> dict:
     """(session_id, agent_id, ts, is_human_prompt) rows, ordered by session,
     agent, time -> {(session, agent): {active_s, start, end, prompts}}.
 
     Active time is the summarizer's rule: gaps shorter than IDLE_THRESHOLD_S
-    between consecutive user/assistant events of one thread.
+    between consecutive user/assistant events of one thread. This loop sees
+    every event of the window (300k+ for 30 days), so it stays plain.
     """
     out: dict = {}
-    for sid, aid, ts, prompt in rows:
-        acc = out.get((sid, aid))
-        if acc is None:
-            out[(sid, aid)] = {"active_s": 0.0, "start": ts, "end": ts,
-                               "prompts": prompt or 0}
-            continue
-        gap = ts - acc["end"]
-        if 0 < gap < IDLE_THRESHOLD_S:
-            acc["active_s"] += gap
-        acc["end"] = max(acc["end"], ts)
-        acc["prompts"] += prompt or 0
+    idle = IDLE_THRESHOLD_S
+    for key, group in groupby(rows, key=itemgetter(0, 1)):
+        _sid, _aid, start, prompts = next(group)
+        prev, active, prompts = start, 0.0, prompts or 0
+        for _s, _a, ts, prompt in group:
+            gap = ts - prev
+            if 0 < gap < idle:
+                active += gap
+            prev = ts
+            if prompt:
+                prompts += prompt
+        out[key] = {"active_s": active, "start": start, "end": prev, "prompts": prompts}
     return out
 
 
@@ -141,14 +159,14 @@ def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
     else:
         source, scope = "events", f" AND {exact_pred}"
     rows = conn.execute(
-        f"SELECT session_id, agent_id, ts_epoch, is_human_prompt FROM {source} "
+        # A sidechain row is never a human prompt, whatever its flag says.
+        "SELECT session_id, agent_id, ts_epoch, "
+        f"CASE WHEN agent_id IS NULL THEN is_human_prompt ELSE 0 END FROM {source} "
         f"WHERE session_id IN {_IDS} AND type IN ('user','assistant') "
         f"AND ts_epoch >= ? AND ts_epoch < ?{scope} "
         "ORDER BY session_id, agent_id, ts_epoch",
         (json.dumps(session_ids), start, end))
-    # A NULL is_human_prompt on a sidechain row must not count as a prompt.
-    return accumulate_activity(
-        (sid, aid, ts, prompt if aid is None else 0) for sid, aid, ts, prompt in rows)
+    return accumulate_activity(rows)
 
 
 def tool_counts(conn: sqlite3.Connection, session_ids: list[str],

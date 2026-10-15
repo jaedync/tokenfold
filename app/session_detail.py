@@ -47,15 +47,15 @@ def _descendants(conn, sid: str) -> list[str]:
     if split_pi_id(sid) is None:
         return []
     head = conn.execute(
-        "SELECT MIN(ts_epoch), MAX(ts_epoch), MAX(source_machine), MAX(account_email) "
+        "SELECT MIN(ts_epoch), MAX(ts_epoch), MAX(source_machine), MAX(org_type) "
         "FROM events WHERE session_id=?", (sid,)).fetchone()
     if head is None or head[0] is None:
         return []
     rows = conn.execute(
-        "SELECT DISTINCT session_id, agent_id, source_machine, account_email FROM events "
+        "SELECT DISTINCT session_id, agent_id, source_machine, org_type FROM events "
         "INDEXED BY idx_events_billable_ts WHERE type='assistant' AND request_id IS NOT NULL "
         "AND ts_epoch >= ? AND ts_epoch < ? AND source_client='pi-agent' "
-        "AND agent_id IS NOT NULL AND source_machine=? AND account_email=?",
+        "AND agent_id IS NOT NULL AND source_machine=? AND org_type=?",
         (head[0], head[1] + CHILD_GRACE_S, head[2], head[3])).fetchall()
     known = {r[0]: (account_class(r[3]), r[2], r[1]) for r in rows}
     lineage = PiLineage(conn, known)

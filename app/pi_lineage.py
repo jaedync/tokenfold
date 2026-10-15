@@ -14,15 +14,32 @@ Legacy subagent-artifacts transcripts carry no parent and stay unlinked.
 import json
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 
+from . import db
 from .ingest import _pi_namespace
 
 logger = logging.getLogger(__name__)
 
+# Found links never change (a child keeps its parent), so they are kept across
+# requests. A miss (a parent never pushed, e.g. an SDK harness) costs a hash of
+# every child file of the machine, so it is kept for MISS_TTL_S only: the
+# parent's events may still arrive.
+_LINKS: dict = {}
+_LINKS_MAX = 50_000
+_MISSES: dict = {}
+MISS_TTL_S = 600
+
+
+def _remember(key, parent: str) -> None:
+    if len(_LINKS) >= _LINKS_MAX:
+        _LINKS.clear()
+    _LINKS[key] = parent
+
 CHILD_ROOT = "subagents"
 MAX_DEPTH = 8          # a deeper chain is a loop or garbage; stop there
-_PI_ACCOUNT_SUFFIX = "@dotfleet.local"
+_PI_ORG_PREFIX = "dotfleet_"
 
 
 def parse_child_file(session_file: str) -> tuple[str, str] | None:
@@ -46,12 +63,12 @@ def split_pi_id(value: str) -> tuple[str, str] | None:
     return value[:43], value[44:]
 
 
-def account_class(account_email: str | None) -> str | None:
-    """Pi rows carry a synthetic pi-<class>@dotfleet.local identity."""
-    if not account_email or not account_email.endswith(_PI_ACCOUNT_SUFFIX):
+def account_class(org_type: str | None) -> str | None:
+    """Pi rows carry org_type dotfleet_<class> (ingest._pi_account). The
+    synthetic email holds the class too, but org_type is the stable column."""
+    if not org_type or not org_type.startswith(_PI_ORG_PREFIX):
         return None
-    local = account_email[:-len(_PI_ACCOUNT_SUFFIX)]
-    return local[3:] if local.startswith("pi-") else None
+    return org_type[len(_PI_ORG_PREFIX):] or None
 
 
 class PiLineage:
@@ -67,22 +84,33 @@ class PiLineage:
             ids = split_pi_id(sid)
             if ids:
                 self._by_raw[ids[1]].append(sid)
-        self._files: dict[str, list[str]] | None = None
+        self._index: dict | None = None
         self._parent: dict[str, str | None] = {}
+        self._raw_memo: dict[tuple, str | None] = {}
 
-    def _cursor_files(self) -> dict[str, list[str]]:
-        if self._files is None:
-            files = defaultdict(list)
+    def _cursor_index(self) -> dict:
+        """sync_cursors Pi files, indexed once per request:
+        children[(cursor machine, name)] -> [(file, parent raw id)],
+        child_files[cursor machine] -> [file],
+        top[(cursor machine, raw id)] -> [file] (top-level <stamp>_<raw>.jsonl)."""
+        if self._index is None:
+            children, child_files, top = defaultdict(list), defaultdict(list), defaultdict(list)
             for machine, session_file in self._conn.execute(
                     "SELECT machine, session_file FROM sync_cursors WHERE machine LIKE 'pi:%'"):
-                files[machine].append(session_file)
-            self._files = dict(files)
-        return self._files
+                parsed = parse_child_file(session_file)
+                if parsed:
+                    children[(machine, parsed[1])].append((session_file, parsed[0]))
+                    child_files[machine].append(session_file)
+                elif session_file.endswith(".jsonl"):
+                    stem = session_file.rsplit("/", 1)[-1][:-len(".jsonl")]
+                    top[(machine, stem.partition("_")[2] or stem)].append(session_file)
+            self._index = {"children": children, "child_files": child_files, "top": top}
+        return self._index
 
     def _identity(self, sid: str) -> tuple | None:
         if sid not in self._known:
             row = self._conn.execute(
-                "SELECT account_email, source_machine, agent_id FROM events "
+                "SELECT org_type, source_machine, agent_id FROM events "
                 "WHERE session_id=? LIMIT 1", (sid,)).fetchone()
             self._known[sid] = (None if row is None else (
                 account_class(row[0]), row[1], row[2]))
@@ -99,11 +127,10 @@ class PiLineage:
             return None
         cls, machine, name = ident[0], ident[1], agent_name(ident[2])
         ns, raw = ids
-        for session_file in self._cursor_files().get(f"pi:{cls}:{machine}", ()):
-            parsed = parse_child_file(session_file)
-            if parsed and parsed[1] == name and \
-                    _pi_namespace(cls, machine, session_file, raw) == ns:
-                return cls, machine, parsed[0]
+        for session_file, parent_raw in self._cursor_index()["children"].get(
+                (f"pi:{cls}:{machine}", name), ()):
+            if _pi_namespace(cls, machine, session_file, raw) == ns:
+                return cls, machine, parent_raw
         return None
 
     def _session_for(self, cls: str, machine: str, raw: str) -> str | None:
@@ -112,19 +139,33 @@ class PiLineage:
         A session already in hand wins. Otherwise hash the cursor files:
         a top-level file name holds its raw id; a child file (the parent of a
         nested child) does not, so every child file of the machine is tried.
+        Memoized: many siblings share one parent.
         """
+        key = (cls, machine, raw)
+        if key in self._raw_memo:
+            return self._raw_memo[key]
+        missed = _MISSES.get((db.DB_PATH, key))
+        if missed is not None and time.monotonic() - missed < MISS_TTL_S:
+            return None
+        found = None
         for sid in self._by_raw.get(raw, ()):
             ident = self._known[sid]
             if ident and ident[:2] == (cls, machine):
-                return sid
-        files = self._cursor_files().get(f"pi:{cls}:{machine}", ())
-        named = [f for f in files if raw in f]
-        for group in (named, [f for f in files if f.startswith(CHILD_ROOT + "/")]):
-            found = self._first_stored(
-                [f"{_pi_namespace(cls, machine, f, raw)}:{raw}" for f in group])
-            if found:
-                return found
-        return None
+                found = sid
+                break
+        if found is None:
+            cm, index = f"pi:{cls}:{machine}", self._cursor_index()
+            for group in (index["top"].get((cm, raw), ()), index["child_files"].get(cm, ())):
+                found = self._first_stored(
+                    [f"{_pi_namespace(cls, machine, f, raw)}:{raw}" for f in group])
+                if found:
+                    break
+        self._raw_memo[key] = found
+        if found is None:
+            if len(_MISSES) >= _LINKS_MAX:
+                _MISSES.clear()
+            _MISSES[(db.DB_PATH, key)] = time.monotonic()
+        return found
 
     def _first_stored(self, candidates: list[str]) -> str | None:
         if not candidates:
@@ -137,8 +178,14 @@ class PiLineage:
     def parent(self, sid: str) -> str | None:
         """Stored id of the session that started child `sid`, else None."""
         if sid not in self._parent:
-            found = self._child_file(sid)
-            self._parent[sid] = self._session_for(*found) if found else None
+            key = (db.DB_PATH, sid)
+            if key in _LINKS:
+                self._parent[sid] = _LINKS[key]
+            else:
+                found = self._child_file(sid)
+                self._parent[sid] = self._session_for(*found) if found else None
+                if self._parent[sid] is not None:
+                    _remember(key, self._parent[sid])
         return self._parent[sid]
 
     def chain(self, sid: str) -> list[str]:

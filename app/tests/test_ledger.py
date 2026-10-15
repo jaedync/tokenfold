@@ -24,7 +24,9 @@ class LedgerTestBase(TempDBTestCase):
         lock.start()
         self.addCleanup(lock.stop)
         import app.ledger as ledger
+        import app.ledger_days as ledger_days
         ledger._cache._entries.clear()
+        ledger_days._days._entries.clear()
         self.t0 = float(int(time.time()) - 7200)
         self.http = self.client()
         self.http.__enter__()
@@ -308,3 +310,68 @@ class PureHelpersTest(TempDBTestCase):
         self.assertEqual(names['/srv/other/api'], 'other/api')
         self.assertEqual(names['-home-me-dev-x'], 'dev-x')
         self.assertEqual(names['/home/me'], '~')
+
+
+class LedgerDaysTest(TempDBTestCase):
+    def test_split_range_keeps_closed_whole_days(self):
+        from app.aggregator import TZ
+        from app.ledger_days import split_range
+        day = datetime(2026, 10, 10, tzinfo=TZ)
+        start = day.timestamp() + 3600            # 01:00 on Oct 10
+        now = day.timestamp() + 3 * 86400 + 600   # 00:10 on Oct 13
+        days, rest = split_range(start, now, now)
+        self.assertEqual([d for d, _lo, _hi in days], ['2026-10-11', '2026-10-12'])
+        self.assertEqual(rest, [(start, day.timestamp() + 86400),
+                                (day.timestamp() + 3 * 86400, now)])
+
+    def test_split_range_handles_dst_day(self):
+        from app.aggregator import TZ
+        from app.ledger_days import split_range
+        start = datetime(2026, 11, 1, tzinfo=TZ).timestamp()   # 25-hour day
+        end = datetime(2026, 11, 3, tzinfo=TZ).timestamp()
+        days, rest = split_range(start, end, end + 86400)
+        self.assertEqual([(d, hi - lo) for d, lo, hi in days],
+                         [('2026-11-01', 90000), ('2026-11-02', 86400)])
+        self.assertEqual(rest, [])
+
+    def test_merge_does_not_mutate_parts(self):
+        from collections import Counter
+        from app.ledger_days import merge_threads
+        part = {('s', None): {'cost': 1.0, 'models': Counter({'m': 1.0}),
+                              'tokens': Counter({'input': 5}), 'start': 1, 'end': 2,
+                              'machine': 'x', 'project_dir': None, 'client': 'c',
+                              'account': None}}
+        merged = merge_threads([part, part])
+        self.assertEqual(merged[('s', None)]['cost'], 2.0)
+        self.assertEqual(merged[('s', None)]['models']['m'], 2.0)
+        self.assertEqual(part[('s', None)]['cost'], 1.0)
+        self.assertEqual(part[('s', None)]['models']['m'], 1.0)
+
+
+class LedgerDayCacheTest(LedgerTestBase):
+    def test_closed_day_is_reused_until_its_rollup_changes(self):
+        import app.ledger_days as days
+        days._days._entries.clear()
+        t = self.t0 - 3 * 86400
+        self.cc('old.jsonl', [self.cc_reply('o1', 'old', t, 'ro1')])
+        q = {'from': t - 86400 * 2, 'to': self.t0 + 60}
+        first = self.ledger(**q)['totals']['cost_usd']
+        import app.ledger as ledger
+        ledger._cache._entries.clear()
+        with patch('app.ledger_days.billable_groups', wraps=days.billable_groups) as scan:
+            self.assertAlmostEqual(self.ledger(**q)['totals']['cost_usd'], first)
+            closed_scans = scan.call_count
+        self.assertLessEqual(closed_scans, 2)  # only the edge pieces, no closed day
+        ledger._cache._entries.clear()
+        # A late event re-rolls that day: the cache must not hide it.
+        self.cc('old.jsonl', [self.cc_reply('o2', 'old', t + 10, 'ro2')])
+        self.assertAlmostEqual(self.ledger(**q)['totals']['cost_usd'], first + 5.0)
+
+
+class PiClassTest(TempDBTestCase):
+    def test_account_class_from_org_type(self):
+        from app.pi_lineage import account_class
+        self.assertEqual(account_class('dotfleet_personal'), 'personal')
+        self.assertEqual(account_class('dotfleet_work'), 'work')
+        self.assertIsNone(account_class('claude_team'))
+        self.assertIsNone(account_class(None))
