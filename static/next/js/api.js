@@ -93,8 +93,12 @@ function untilAbort(promise, signal) {
   })]);
 }
 
-// getJSON('runway', {}, {scope, mock, signal}) -> parsed JSON or ApiError.
-export async function getJSON(name, params = {}, { scope, mock = false, signal } = {}) {
+// The server served a body built before the newest data (app/read_cache.py).
+const STALE_HEADER = 'X-Tokenfold-Stale';
+
+// getJSON('runway', {}, {scope, mock, signal, meta}) -> parsed JSON or ApiError.
+// meta (optional): an object; getJSON sets meta.stale from the response.
+export async function getJSON(name, params = {}, { scope, mock = false, signal, meta } = {}) {
   booted = true;
   const timeout = AbortSignal.timeout(timeoutFor(name));
   const combined = signal && AbortSignal.any ? AbortSignal.any([signal, timeout]) : (signal || timeout);
@@ -120,6 +124,7 @@ export async function getJSON(name, params = {}, { scope, mock = false, signal }
     throw new ApiError(0, 'The server did not answer.');
   }
   const text = await res.text();
+  if (meta) meta.stale = res.headers.get(STALE_HEADER) === '1';
   if (!res.ok) {
     let detail = '';
     try { detail = (JSON.parse(text) || {}).detail || ''; } catch { /* not JSON: keep the status */ }

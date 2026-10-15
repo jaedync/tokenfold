@@ -174,6 +174,28 @@ class TimelineModelsTest(TimelineTestCase):
         self.assertEqual({b[2] for b in body["bins"]}, {"hidden"})
 
 
+class TimelineStaleTest(TimelineTestCase):
+    """After an ingest (the cache version changes) the timeline answers at
+    once with the older body, marked X-Tokenfold-Stale: 1, while one build
+    refreshes it."""
+
+    def test_a_body_built_before_an_ingest_is_marked_stale(self):
+        from app import aggregator, read_cache
+        self._ins("claude-fable-5", KETTLE, _at(0, 9))
+        first = self._get()
+        self.assertNotIn("x-tokenfold-stale", first.headers)
+        self._ins("claude-opus-4-8", CARAFE, _at(0, 11), count=3)
+        with aggregator._cache_lock:
+            aggregator._cache_version_bump()
+        stale = self._get()
+        self.assertEqual(stale.headers.get("x-tokenfold-stale"), "1")
+        self.assertEqual(stale.json()["models"], ["Fable 5"])
+        read_cache.join_all(10)
+        fresh = self._get()
+        self.assertNotIn("x-tokenfold-stale", fresh.headers)
+        self.assertEqual(fresh.json()["models"], ["Opus 4.8", "Fable 5"])
+
+
 class TimelineBinsTest(TimelineTestCase):
     """`bins`: [model, bin_start, state, blocks], floor-aligned, non-empty."""
 

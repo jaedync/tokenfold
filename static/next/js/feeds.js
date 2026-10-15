@@ -12,6 +12,10 @@
 import { backoffMs } from './api.js';
 
 const BUMP_MIN_GAP_MS = 10000;  // SSE bumps arrive per ingest; one refetch per 10 s is enough
+// The server answers at once with a body built before the newest ingest
+// while it builds the next one (X-Tokenfold-Stale). Read it again this soon,
+// once per bump, instead of at the next poll.
+const STALE_RETRY_MS = 4000;
 // A remounted feed with no poll interval reuses data younger than this.
 const FRESH_MS = 30000;
 // Longest time a scope switch keeps the old content before it shows "Loading".
@@ -19,7 +23,8 @@ const SWITCH_HOLD_MS = 5000;
 
 export const LOADING = Object.freeze({ status: 'loading', data: null, error: null, at: null });
 
-export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWITCH_HOLD_MS }) {
+export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWITCH_HOLD_MS,
+  staleRetryMs = STALE_RETRY_MS, bumpGapMs = BUMP_MIN_GAP_MS }) {
   const feeds = new Map();
   const doc = env.document;
   let gen = 0;          // scope generation: reset() starts a new one
@@ -32,8 +37,9 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     if (!f) {
       // gen: the scope generation of the data in the store. doneGen/doneKey:
       // the generation and params of the last answer (data or error).
+      // staleRead: a stale answer was read again already (cleared by a bump or a fresh answer).
       f = { key, spec, users: 0, timer: null, ctrl: null, failures: 0, last: 0, paramsKey: null, pending: false,
-        once: false, gen: -1, doneGen: -1, doneKey: null };
+        once: false, gen: -1, doneGen: -1, doneKey: null, staleRead: false };
       feeds.set(key, f);
     }
     return f;
@@ -63,14 +69,17 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
     const g = gen;
     // Only a feed that never answered says "Loading": a refetch keeps what is on screen.
     if (!store.get()[f.key]) store.set(f.key, LOADING);
+    const meta = { stale: false };
     try {
-      const data = await api.getJSON(f.spec.endpoint, p, { scope: store.get().scope, mock, signal: ctrl.signal });
+      const data = await api.getJSON(f.spec.endpoint, p, { scope: store.get().scope, mock, signal: ctrl.signal, meta });
       if (ctrl.signal.aborted) return;
       f.failures = 0;
       f.gen = g;
       done(f, g);
       store.set(f.key, { status: 'ok', data, error: null, at: Date.now() / 1000 });
       if (f.spec.intervalMs && f.users) schedule(f, f.spec.intervalMs);
+      if (!meta.stale) f.staleRead = false;
+      else if (!f.staleRead && f.users) { f.staleRead = true; schedule(f, staleRetryMs); }
     } catch (err) {
       if (ctrl.signal.aborted) return;
       f.failures += 1;
@@ -175,7 +184,8 @@ export function createFeeds({ store, api, mock, env = window, switchHoldMs = SWI
   function bump() {
     for (const f of feeds.values()) {
       if (!f.users || !f.spec.bump) continue;
-      schedule(f, Math.max(0, f.last + BUMP_MIN_GAP_MS - Date.now()));
+      f.staleRead = false;
+      schedule(f, Math.max(0, f.last + bumpGapMs - Date.now()));
     }
   }
 

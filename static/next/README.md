@@ -14,7 +14,7 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | `js/main.js` | Boot, hash router (`#runway`, `#ledger`, `#history`, `#lab`), scope switch, tab title, SSE bump, idle prefetch of the other views' feeds. |
 | `js/early.js` | Starts the shell feeds and the first view's feeds before the rest of the modules load. Its URLs must match the view feeds (the boot checks in `app/tests/next_stable.test.cjs`). |
 | `js/api.js` | `getJSON(name, params, {scope, mock, signal})`, the endpoint table `ENDPOINTS`, `backoffMs()`. |
-| `js/feeds.js` | Shared polled feeds with backoff; pauses in a hidden tab. A refetch keeps the old data on screen. A scope switch sets `switching` and keeps the old content until the new data is in. `prefetch()` reads a feed once. |
+| `js/feeds.js` | Shared polled feeds with backoff; pauses in a hidden tab. A refetch keeps the old data on screen. A scope switch sets `switching` and keeps the old content until the new data is in. `prefetch()` reads a feed once. A body the server marks stale (`X-Tokenfold-Stale: 1`, built before the newest ingest) is read again after 4 s, once per bump. |
 | `js/store.js` | Immutable store: `get()`, `set(key, value)`, `subscribe(fn)`. |
 | `js/format.js` | `usd`, `pct`, `dur`, `shortDur`, `age`, `clock`, `dayClock`, `when`, `esc`. Missing values print `—`. |
 | `js/dom.js` | `h()`, `fill()`, `patch()`, `setText()`, `approx()`, `segmented()`, `panelHead()`. |

@@ -19,17 +19,17 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import agent_state, db
-from .aggregator import TZ, _conditional_model_names, _summary_model_identity
+from .aggregator import TZ, _conditional_model_names, _summary_model_identity, get_cache_version
 from .api import _resolve_scope
 from .auth import require_dashboard_auth
 from .config import scope_predicate
 from .db import read_conn
 from .ledger_build import build_sessions
-from .read_cache import ReadCache
+from .read_cache import STALE_HEADER, ReadCache
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,9 +41,10 @@ MAX_SPAN_S = 92 * 86400
 # A value up to 15 min past its ttl may be served while it rebuilds; older
 # (nobody polled for that long) waits for the build.
 STALE_S = 900
-# Polled every 2 min: past the ttl a poll gets the cached body at once and
-# one background build refreshes it (read_cache stale_s).
-_cache = ReadCache(ttl=30, max_entries=16, stale_s=STALE_S)
+# Polled every 2 min: past the ttl, or after an ingest (the cache version),
+# a poll gets the cached body at once, marked stale, and one background build
+# refreshes it (read_cache stale_s and version).
+_cache = ReadCache(ttl=30, max_entries=16, stale_s=STALE_S, version=get_cache_version)
 
 
 def parse_range(from_: Optional[str], to: Optional[str], now: float) -> tuple[float, float]:
@@ -188,24 +189,31 @@ def build_ledger(conn, scope: str, start: float, end: float,
 
 
 @router.get("/api/ledger", dependencies=[Depends(require_dashboard_auth)])
-async def ledger(scope: Optional[str] = Query(default=None),
+async def ledger(response: Response, scope: Optional[str] = Query(default=None),
                  from_: Optional[str] = Query(default=None, alias="from"),
                  to: Optional[str] = Query(default=None)):
     effective = _resolve_scope(scope)
     start, end = parse_range(from_, to, time.time())
     live = live_session_ids()  # on the event loop (see live_session_ids)
-    body = await run_in_threadpool(cached_ledger, effective, start, end, to is not None)
+    body, stale = await run_in_threadpool(cached_ledger_state, effective, start, end, to is not None)
+    if stale:
+        response.headers[STALE_HEADER] = "1"
     return with_live(body, live)
 
 
-def cached_ledger(scope: str, start: float, end: float, closed: bool) -> dict:
+def cached_ledger_state(scope: str, start: float, end: float, closed: bool) -> tuple[dict, bool]:
+    """(body, stale): see ReadCache.lookup."""
     # An open-ended range keys on "now" so repeat polls share one build.
     key = (db.DB_PATH, scope, start, end if closed else None)
 
     def build():
         with read_conn() as conn:
             return build_ledger(conn, scope, start, end)
-    return _cache.get(key, build)
+    return _cache.lookup(key, build)
+
+
+def cached_ledger(scope: str, start: float, end: float, closed: bool) -> dict:
+    return cached_ledger_state(scope, start, end, closed)[0]
 
 
 def warm(scope: str) -> None:

@@ -42,9 +42,9 @@ async function check(name, page, fn) {
       window.setup = (opts = {}) => {
         const calls = [];
         const api = {
-          getJSON(name, params, {scope, signal}) {
+          getJSON(name, params, {scope, signal, meta}) {
             return new Promise((resolve, reject) => {
-              const call = {name, params, scope, resolve, reject, done: false};
+              const call = {name, params, scope, resolve, reject, done: false, meta};
               calls.push(call);
               signal.addEventListener('abort', () => { call.done = true; reject(new DOMException('aborted', 'AbortError')); });
             });
@@ -53,9 +53,11 @@ async function check(name, page, fn) {
         const store = createStore({scope: 'personal'});
         const feeds = createFeeds({store, api, mock: false, ...opts});
         const open = (name) => calls.filter((c) => c.name === name && !c.done);
-        const answer = async (name, data) => {
+        // stale: the server served a body built before the newest data (X-Tokenfold-Stale).
+        const answer = async (name, data, {stale = false} = {}) => {
           const c = open(name)[0];
           must(c, `no open request for ${name}`);
+          if (stale) { must(c.meta, 'getJSON got no meta object'); c.meta.stale = true; }
           c.done = true; c.resolve(data);
           await tick();
         };
@@ -252,6 +254,37 @@ async function check(name, page, fn) {
       t.feeds.prefetch('q', {endpoint: 'q', intervalMs: 20});
       await tick();
       must(t.calls.filter((c) => c.name === 'q').length === 2, 'a second prefetch of old data did not read');
+    });
+
+    await check('a stale answer is read again once, soon, not at the next poll', page, async () => {
+      const t = setup({staleRetryMs: 30});
+      t.feeds.want('a', {endpoint: 'a', intervalMs: 60000, bump: true});
+      await tick();
+      await t.answer('a', 1, {stale: true});
+      must(t.store.get().a.data === 1, 'the stale body is not shown');
+      await tick(50);
+      must(t.open('a').length === 1, 'no second read after a stale answer');
+      await t.answer('a', 2, {stale: true});
+      await tick(50);
+      must(t.open('a').length === 0, 'a second stale answer read again (once per bump)');
+      must(t.store.get().a.data === 2, 'the second body is not shown');
+    });
+
+    await check('a bump allows one more stale read again; a fresh answer needs none', page, async () => {
+      const t = setup({staleRetryMs: 30, bumpGapMs: 0});
+      t.feeds.want('a', {endpoint: 'a', intervalMs: 60000, bump: true});
+      await tick();
+      await t.answer('a', 1, {stale: true});
+      await tick(50);
+      await t.answer('a', 2, {stale: true});
+      t.feeds.bump();
+      await tick(10);
+      await t.answer('a', 3, {stale: true});
+      await tick(50);
+      must(t.open('a').length === 1, 'no read again after the stale answer to a bump');
+      await t.answer('a', 4);
+      await tick(50);
+      must(t.open('a').length === 0, 'a fresh answer was read again');
     });
 
     if (errors.length) failures.push('page errors: ' + errors.join('; '));

@@ -281,6 +281,34 @@ class LedgerStaleWhileRevalidateTest(LedgerTestBase):
         self.assertEqual(len(self.ledger()['sessions']), 2)
 
 
+class LedgerStaleHeaderTest(LedgerTestBase):
+    """After an ingest (the cache version changes) the ledger answers at once
+    with the body built before it and says so (X-Tokenfold-Stale: 1), so the
+    dashboard reads it again a few seconds later."""
+
+    def get(self):
+        r = self.http.get('/api/ledger', params={'scope': 'personal', 'from': self.t0 - 60, 'to': self.t0 + 3600})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r
+
+    def test_a_body_built_before_an_ingest_is_marked_stale(self):
+        from app import aggregator, read_cache
+        t = self.t0
+        self.cc('a.jsonl', [self.cc_user('u1', 'a', t), self.cc_reply('a1', 'a', t + 10, 'r1')])
+        first = self.get()
+        self.assertNotIn('x-tokenfold-stale', first.headers)
+        self.cc('b.jsonl', [self.cc_user('u2', 'b', t + 20), self.cc_reply('b1', 'b', t + 30, 'r2')])
+        with aggregator._cache_lock:
+            aggregator._cache_version_bump()  # what invalidate_cache does after the ingest
+        stale = self.get()
+        self.assertEqual(stale.headers.get('x-tokenfold-stale'), '1')
+        self.assertEqual(len(stale.json()['sessions']), 1)
+        read_cache.join_all(10)
+        fresh = self.get()
+        self.assertNotIn('x-tokenfold-stale', fresh.headers)
+        self.assertEqual(len(fresh.json()['sessions']), 2)
+
+
 class LiveSnapshotThreadTest(LedgerTestBase):
     """agent_state.snapshot() prunes the shared session dict, which only the
     event loop may change: the ledger routes must take it there."""

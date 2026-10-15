@@ -133,5 +133,72 @@ class ReadCacheStaleTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class ReadCacheVersionTest(unittest.TestCase):
+    """version: a value built before the data version changed is stale. It is
+    served at once (no request waits once warm), flagged, and one refresh
+    builds the next value."""
+
+    def setUp(self):
+        from app import db
+        was = db.shutting_down()
+        db._shutdown.clear()
+        self.addCleanup(lambda: db._shutdown.set() if was else None)
+        self.version = 1
+
+    def _cache(self, **kw):
+        return ReadCache(ttl=30, stale_s=600, version=lambda: self.version, **kw)
+
+    def test_a_fresh_value_is_not_stale(self):
+        cache = self._cache()
+        self.assertEqual(cache.lookup("k", lambda: "a"), ("a", False))
+        self.assertEqual(cache.lookup("k", lambda: "never"), ("a", False))
+
+    def test_a_value_of_an_older_version_is_served_stale_while_one_refresh_runs(self):
+        cache = self._cache()
+        cache.get("k", lambda: "old")
+        self.version = 2
+        gate, calls = threading.Event(), []
+
+        def slow():
+            calls.append(1)
+            gate.wait(5)
+            return "new"
+        t0 = time.monotonic()
+        self.assertEqual(cache.lookup("k", slow), ("old", True))
+        self.assertEqual(cache.lookup("k", slow), ("old", True))
+        self.assertLess(time.monotonic() - t0, 1.0, "a read waited for the rebuild")
+        gate.set()
+        read_cache.join_all(5)
+        self.assertEqual(calls, [1])
+        self.assertEqual(cache.lookup("k", lambda: "never"), ("new", False))
+
+    def test_a_change_during_the_build_leaves_the_value_stale(self):
+        cache = self._cache()
+
+        def build():
+            self.version = 2  # an ingest lands while the build reads
+            return "a"
+        self.assertEqual(cache.lookup("k", build), ("a", False))
+        value, stale = cache.lookup("k", lambda: "b")
+        self.assertTrue(stale)
+        read_cache.join_all(5)
+        self.assertEqual(cache.lookup("k", lambda: "never"), ("b", False))
+
+    def test_an_expired_value_served_during_a_refresh_is_stale(self):
+        cache = self._cache()
+        cache.get("k", lambda: "old")
+        with cache._lock:
+            ts, value = cache._entries["k"]
+            cache._entries["k"] = (ts - 31, value)
+        self.assertEqual(cache.lookup("k", lambda: "new"), ("old", True))
+        read_cache.join_all(5)
+
+    def test_without_stale_s_a_new_version_builds_inline(self):
+        cache = ReadCache(ttl=30, version=lambda: self.version)
+        cache.get("k", lambda: "old")
+        self.version = 2
+        self.assertEqual(cache.lookup("k", lambda: "new"), ("new", False))
+
+
 if __name__ == "__main__":
     unittest.main()
