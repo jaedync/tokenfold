@@ -57,11 +57,25 @@ function dayRange(w, pts, x0, x1, now) {
   return [yMin, yMax];
 }
 
+// A reset time can move by seconds between quota readings; a new window
+// moves it by hours or days.
+const SAME_WINDOW_S = 600;
+const near = (a, b) => f.missing(a) || f.missing(b) || Math.abs(a - b) <= SAME_WINDOW_S;
+
+// The trajectory answer if it is for window w, else null. When the binding
+// window changes, the refetch keeps the old answer in the store until the
+// new one comes: its points belong to another window and must not show.
+export function trajectoryFor(traj, w) {
+  if (!traj || !w) return null;
+  return near(traj.start, w.window_start) && near(traj.end, w.resets_at) ? traj : null;
+}
+
 // Chart model from the feeds: everything the hooks draw, in data units.
 function model(s, zoom) {
   const w = bindingWindow(dataOf(s.runway));
   if (!w) return null;
-  const traj = dataOf(s.trajectory) || { points: [], resets: [] };
+  const answer = trajectoryFor(dataOf(s.trajectory), w);
+  const traj = answer || { points: [], resets: [] };
   const now = nowFrom(s);
   const pts = (traj.points || []).filter((p) => Array.isArray(p) && p[0] <= now + 60);
   const month = w.kind === 'month';
@@ -77,7 +91,7 @@ function model(s, zoom) {
     : [0, Math.max(100, month && !f.missing(p.projected_pct) ? p.projected_pct * 1.06 : 100)];
   const budget = month && dataOf(s.runway).budget ? dataOf(s.runway).budget.budget_usd : null;
   return {
-    w, now, pts, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at, knownStart,
+    w, now, pts, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at, knownStart, answered: Boolean(answer),
     cur: w.pct, projected: p.projected_pct, tight: w.tight_epoch,
     reaches: p.reaches_100_epoch, resets: (traj.resets || []).filter((t) => t > x0 && t <= now),
     yFmt: (v) => (month && budget ? f.usdShort(v / 100 * budget) : `${Math.round(v)}%`),
@@ -314,7 +328,7 @@ export default {
       if (hovering && left >= 0) plot.setCursor({ left, top }); else showLatest();
     }
 
-    function chrome(s) {
+    function chrome() {
       const w = m.w;
       setText(head.titleEl, m.month ? w.label : `${String(w.label).replace(' · ', ' ')} window`);
       seg.el.hidden = !zoomable(w);
@@ -328,7 +342,7 @@ export default {
           ...(hasTight ? [['tight', `At the ${w.kind === 'short' ? '1-hour' : '6-hour'} rate`]] : []), ...(m.resets.length ? [['reset', 'Reset']] : [])];
       patch(legend, items.map(([cls, t]) => h('span', { class: 'lg' }, h('i', { class: cls }), t)));
       const noHistory = !m.pts.length;
-      setText(empty, noHistory && dataOf(s.trajectory) ? 'This window has no reading history. The chart shows the forecast only.'
+      setText(empty, noHistory && m.answered ? 'This window has no reading history. The chart shows the forecast only.'
         : m.yMax < 100 ? 'The limit (100%) is above this 24 h view.' : '');
       empty.hidden = !empty.textContent;
       setText(note, m.month
@@ -351,7 +365,7 @@ export default {
         ? h('div', { class: 'p-state' }, 'The reading history is unavailable.', h('small', null, 'The forecast lines still show.')) : null);
       body.hidden = false;
       m = model(s, zoomFor(s));
-      chrome(s);
+      chrome();
       redraw(false);
     }
 

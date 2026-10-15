@@ -283,6 +283,35 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('chart: trajectory points of another window are not drawn', async () => {
+      // The previous 7-day window: the binding window changed, the refetch has not answered.
+      const WEEK = 7 * 86400;
+      const previous = (name, body) => (name === 'runway-trajectory'
+        ? {...body, start: body.start - WEEK, end: body.end - WEEK, points: body.points.map(([t, v]) => [t - WEEK, v])} : null);
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: previous});
+      await page.waitForSelector('.p-chart canvas');
+      await page.waitForTimeout(500);
+      const r = await page.evaluate(async () => {
+        const {trajectoryFor} = await import(`${document.body.dataset.static}/js/panels/trajectory.js`);
+        const w = {window_start: 1000000, resets_at: 1604800};
+        const t = (start, end) => ({points: [[1000100, 5]], resets: [], start, end});
+        return {
+          same: Boolean(trajectoryFor(t(1000000, 1604800), w)),
+          jitter: Boolean(trajectoryFor(t(1000030, 1604810), w)),
+          previous: Boolean(trajectoryFor(t(1000000 - 604800, 1000000), w)),
+          otherStart: Boolean(trajectoryFor(t(1000000 - 18000, 1604800), w)),
+          unknownStart: Boolean(trajectoryFor(t(null, 1604800), {...w, window_start: null})),
+          none: trajectoryFor(null, w),
+          readout: document.querySelector('.p-chart .readout').textContent,
+          empty: document.querySelector('.p-chart .chart-empty').textContent,
+        };
+      });
+      assert.deepEqual([r.same, r.jitter, r.previous, r.otherStart, r.unknownStart, r.none], [true, true, false, false, true, null]);
+      assert.doesNotMatch(r.empty, /no reading history/, 'a mismatched answer counts as an empty history');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('chart range: late or early in a window opens on the last 24 h; the pick holds', async () => {
       const pressed = (page) => page.getAttribute('.p-chart .zoom [aria-pressed="true"]', 'data-value');
       for (const [override, want] of [[null, 'day'], [tooEarly, 'day'], [midWindow, 'window']]) {
