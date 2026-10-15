@@ -1,0 +1,180 @@
+{
+ "scope": "enterprise",
+ "version": 1,
+ "model_breakdown": [
+  {
+   "model": "Opus 5.5",
+   "cost": 10345.5,
+   "recent_cost": 8897.13,
+   "has_reported_cost": false,
+   "unpriced": false,
+   "active_hours": 648,
+   "recent_active_hours": 557.3,
+   "all_cost_per_hour": 15.97,
+   "recent_cost_per_hour": 15.96,
+   "all_output_tok_per_s": 71.8,
+   "recent_output_tok_per_s": 71.8,
+   "input": 210000000,
+   "output": 61000000,
+   "recent_input": 180600000,
+   "recent_output": 52460000,
+   "energy_wh": 288400.0,
+   "water_ml": 277786.9,
+   "recent_energy_wh": 248024.0,
+   "recent_water_ml": 238896.7
+  },
+  {
+   "model": "Sonnet 5.5",
+   "cost": 274.5,
+   "recent_cost": 260.77,
+   "has_reported_cost": false,
+   "unpriced": false,
+   "active_hours": 27.3,
+   "recent_active_hours": 25.9,
+   "all_cost_per_hour": 10.05,
+   "recent_cost_per_hour": 10.07,
+   "all_output_tok_per_s": 97.2,
+   "recent_output_tok_per_s": 97.2,
+   "input": 14000000,
+   "output": 5200000,
+   "recent_input": 13300000,
+   "recent_output": 4940000,
+   "energy_wh": 15600.0,
+   "water_ml": 15025.9,
+   "recent_energy_wh": 14820.0,
+   "recent_water_ml": 14274.6
+  },
+  {
+   "model": "Haiku 5.5",
+   "cost": 7.8,
+   "recent_cost": 7.8,
+   "has_reported_cost": false,
+   "unpriced": false,
+   "active_hours": 5.6,
+   "recent_active_hours": 5.6,
+   "all_cost_per_hour": 1.39,
+   "recent_cost_per_hour": 1.39,
+   "all_output_tok_per_s": 164.7,
+   "recent_output_tok_per_s": 164.7,
+   "input": 4000000,
+   "output": 1100000,
+   "recent_input": 4000000,
+   "recent_output": 1100000,
+   "energy_wh": 1235.0,
+   "water_ml": 1189.6,
+   "recent_energy_wh": 1235.0,
+   "recent_water_ml": 1189.6
+  }
+ ],
+ "model_pricing": {
+  "Opus 5.5": {
+   "input": 4,
+   "output": 20,
+   "cache_write": 5,
+   "cache_write_1h": 8,
+   "cache_read": 0.2
+  },
+  "Sonnet 5.5": {
+   "input": 2,
+   "output": 10,
+   "cache_write": 2.5,
+   "cache_write_1h": 4,
+   "cache_read": 0.1
+  },
+  "Haiku 5.5": {
+   "input": 0.8,
+   "output": 4,
+   "cache_write": 1,
+   "cache_write_1h": 1.6,
+   "cache_read": 0.08
+  }
+ },
+ "benchmarks": {},
+ "meter": {
+  "used_usd": 991.84,
+  "limit_usd": 2000.0,
+  "utilization": null,
+  "fetched_epoch": 1792093030.0,
+  "machine": "work-laptop",
+  "fresh": true,
+  "anchored": null,
+  "remembered_limit_usd": 2000.0,
+  "daily": [
+   {
+    "day": "2026-10-01",
+    "official_usd": 95.3,
+    "measured_usd": 89.0,
+    "unaccounted_usd": 6.3
+   },
+   {
+    "day": "2026-10-02",
+    "official_usd": 105.37,
+    "measured_usd": 98.39,
+    "unaccounted_usd": 6.98
+   },
+   {
+    "day": "2026-10-05",
+    "official_usd": 145.36,
+    "measured_usd": 135.47,
+    "unaccounted_usd": 9.89
+   },
+   {
+    "day": "2026-10-06",
+    "official_usd": 56.23,
+    "measured_usd": 55.37,
+    "unaccounted_usd": 0.86
+   },
+   {
+    "day": "2026-10-07",
+    "official_usd": 86.45,
+    "measured_usd": 81.13,
+    "unaccounted_usd": 5.32
+   },
+   {
+    "day": "2026-10-08",
+    "official_usd": 72.3,
+    "measured_usd": 71.17,
+    "unaccounted_usd": 1.13
+   },
+   {
+    "day": "2026-10-09",
+    "official_usd": 77.19,
+    "measured_usd": 72.7,
+    "unaccounted_usd": 4.49
+   },
+   {
+    "day": "2026-10-12",
+    "official_usd": 137.16,
+    "measured_usd": 135.01,
+    "unaccounted_usd": 2.15
+   },
+   {
+    "day": "2026-10-13",
+    "official_usd": 62.42,
+    "measured_usd": 62.28,
+    "unaccounted_usd": 0.14
+   },
+   {
+    "day": "2026-10-14",
+    "official_usd": 69.79,
+    "measured_usd": 69.56,
+    "unaccounted_usd": 0.23
+   },
+   {
+    "day": "2026-10-15",
+    "official_usd": 84.27,
+    "measured_usd": 79.79,
+    "unaccounted_usd": 4.48
+   }
+  ]
+ },
+ "month_hero": {
+  "value": 991.84,
+  "source": "meter",
+  "measured_usd": 949.87,
+  "unaccounted_usd": 41.97,
+  "limit_usd": 2000.0,
+  "remaining_usd": 1008.16,
+  "utilization": 49.6
+ }
+}

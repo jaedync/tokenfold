@@ -20,6 +20,12 @@ export const ENDPOINTS = Object.freeze({
   ledger: { path: '/api/ledger', fixture: 'ledger' },
   session: { path: (p) => `/api/sessions/${encodeURIComponent(p.id)}`, fixture: 'session' },
   windowHistory: { path: '/api/window-history', fixture: 'window-history' },
+  // History and Lab (existing endpoints of the classic dashboard).
+  windowHistory5h: { path: '/api/window-history', fixture: 'window-history-5h' },
+  spendHistory: { path: '/api/spend-history', fixture: 'spend-history', work: true },
+  stats: { path: '/api/stats', fixture: 'stats', work: true },
+  servedTimeline: { path: '/api/served-models/timeline', fixture: 'served-timeline' },
+  enterpriseBudget: { path: '/api/enterprise-budget', fixture: 'enterprise-budget' },
 });
 
 const FIXTURES = new URL('../fixtures/', import.meta.url);
