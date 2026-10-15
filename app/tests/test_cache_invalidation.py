@@ -390,8 +390,9 @@ class WorkerExceptionSilenceTest(TempDBTestCase):
         agg._cached_data.clear()
 
     def test_worker_build_exception_prints_no_traceback(self):
-        """A raising _build_dashboard_data_inner must produce no traceback on
-        stderr from the worker thread — build errors are swallowed by design."""
+        """A raising _build_dashboard_data_inner must not escape the worker
+        thread (no unhandled-exception traceback on stderr). The generation is
+        dropped by design, but the failure goes to the module logger."""
         entered = threading.Event()
 
         def boom(scope):
@@ -403,13 +404,16 @@ class WorkerExceptionSilenceTest(TempDBTestCase):
         orig_stderr = sys.stderr
         sys.stderr = captured
         try:
-            agg.trigger_eager_rebuild()
-            self.assertTrue(entered.wait(timeout=5.0), "worker never ran")
-            self.assertTrue(_wait_not_rebuilding(), "worker never finished")
+            with self.assertLogs("app.aggregator", "ERROR") as logs:
+                agg.trigger_eager_rebuild()
+                self.assertTrue(entered.wait(timeout=5.0), "worker never ran")
+                self.assertTrue(_wait_not_rebuilding(), "worker never finished")
         finally:
             sys.stderr = orig_stderr
         self.assertEqual(captured.getvalue(), "",
                          "worker thread must not spew a traceback to stderr")
+        self.assertIn("dashboard rebuild failed", logs.output[0])
+        self.assertIn("build blew up", logs.output[0])
 
 
 if __name__ == "__main__":
