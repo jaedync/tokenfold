@@ -7,4 +7,7 @@ COPY templates/ ./templates/
 COPY static/ ./static/
 COPY migrate/ ./migrate/
 COPY client/ ./client/
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]
+# An open dashboard holds an SSE stream that never ends by itself: without a
+# graceful timeout, uvicorn waits on it forever and Docker kills the process
+# before the lifespan shutdown runs (app/tests/test_graceful_shutdown.py).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000", "--timeout-graceful-shutdown", "5"]
