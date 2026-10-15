@@ -3,7 +3,7 @@
 // (tight_epoch) or the 100% time (reaches_100_epoch). The browser draws
 // lines between server values; it never extends a rate on its own.
 import uPlot from '../../vendor/uplot/uPlot.esm.js';
-import { h, fill, setText, segmented, panelHead } from '../dom.js';
+import { h, patch, setText, segmented, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { bindingWindow, dataOf, nowFrom } from '../select.js';
 import { feedLine } from '../panel.js';
@@ -249,13 +249,13 @@ export default {
       const pace = (t) => (t - m.w.window_start) / (m.w.resets_at - m.w.window_start) * 100;
       if (i === null || i === undefined || u.data[0][i] === undefined) return showLatest();
       const t = u.data[0][i], v = u.data[1][i];
-      fill(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed`
+      patch(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed`
         : ` · ${v.toFixed(1)}% used${m.knownStart ? ` · even pace ${pace(t).toFixed(1)}%` : ''}`);
     }
     function showLatest() {
-      if (!m || f.missing(m.cur)) return fill(readout);
+      if (!m || f.missing(m.cur)) return patch(readout);
       const p = m.w.pace || {};
-      fill(readout, h('b', null, 'Latest'), m.month ? ` · ${money(m.cur)} billed` : ` · ${m.cur.toFixed(1)}% used`,
+      patch(readout, h('b', null, 'Latest'), m.month ? ` · ${money(m.cur)} billed` : ` · ${m.cur.toFixed(1)}% used`,
         f.missing(p.expected_pct) ? '' : ` · ${m.month ? `workday pace ${money(p.expected_pct)}` : `even pace ${p.expected_pct.toFixed(1)}%`}`);
     }
 
@@ -289,7 +289,11 @@ export default {
       if (host.clientWidth > 0) plot.setSize({ width: host.clientWidth, height: host.clientHeight });
     });
     resize.observe(host);
-    host.addEventListener('mouseleave', showLatest);
+    // While the pointer is on the plot, a redraw for new data re-reads the
+    // point under it instead of resetting the readout to the latest value.
+    let hovering = false;
+    host.addEventListener('mouseenter', () => { hovering = true; });
+    host.addEventListener('mouseleave', () => { hovering = false; showLatest(); });
 
     let lastState = null;
     let drawnKey = '';
@@ -306,7 +310,8 @@ export default {
       const xs = m.pts.map((p) => p[0]), ys = m.pts.map((p) => p[1]);
       plot.setData([xs, ys], true);
       plot.redraw(true, true);
-      showLatest();
+      const { left, top } = plot.cursor;
+      if (hovering && left >= 0) plot.setCursor({ left, top }); else showLatest();
     }
 
     function chrome(s) {
@@ -321,7 +326,7 @@ export default {
         ? [['area', 'Billed'], ...(hasProj ? [['proj', 'Forecast at month end']] : [])]
         : [['area', 'Used'], ...(m.knownStart ? [['pace', 'Even pace']] : []), ...(hasProj ? [['proj', 'Forecast at reset']] : []),
           ...(hasTight ? [['tight', `At the ${w.kind === 'short' ? '1-hour' : '6-hour'} rate`]] : []), ...(m.resets.length ? [['reset', 'Reset']] : [])];
-      fill(legend, items.map(([cls, t]) => h('span', { class: 'lg' }, h('i', { class: cls }), t)));
+      patch(legend, items.map(([cls, t]) => h('span', { class: 'lg' }, h('i', { class: cls }), t)));
       const noHistory = !m.pts.length;
       setText(empty, noHistory && dataOf(s.trajectory) ? 'This window has no reading history. The chart shows the forecast only.'
         : m.yMax < 100 ? 'The limit (100%) is above this 24 h view.' : '');
@@ -338,11 +343,11 @@ export default {
       lastState = s;
       const line1 = feedLine(s.runway, 'the limit feed');
       if (line1 || !bindingWindow(dataOf(s.runway))) {
-        fill(state, line1);
+        patch(state, line1);
         body.hidden = true; seg.el.hidden = true;
         return;
       }
-      fill(state, s.trajectory && s.trajectory.status === 'error' && !s.trajectory.data
+      patch(state, s.trajectory && s.trajectory.status === 'error' && !s.trajectory.data
         ? h('div', { class: 'p-state' }, 'The reading history is unavailable.', h('small', null, 'The forecast lines still show.')) : null);
       body.hidden = false;
       m = model(s, zoomFor(s));

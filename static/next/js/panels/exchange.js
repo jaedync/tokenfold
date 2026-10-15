@@ -1,7 +1,7 @@
 // Exchange rate (/api/limit-rate): what one point of a limit window costs in
 // API-equivalent dollars, by model family, the peak-hour factor on the 5-hour
 // window and how much cache reads weigh. All values are the server's fit.
-import { h, fill, approx, panelHead } from '../dom.js';
+import { h, patch, approx, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { familyColor, FAMILY_NAME } from '../palette.js';
@@ -49,7 +49,7 @@ function familyBlock(d) {
   const max = Math.max(10, ...fams.map((x) => x.hi ?? x.usd_per_point ?? 0)) * 1.05;
   return h('div', { class: 'ex-block' },
     h('div', { class: 'kicker' }, 'Dollars per 7-day point, by model'),
-    fams.length ? h('ul', { class: 'fam' }, fams.map((x) => h('li', null,
+    fams.length ? h('ul', { class: 'fam' }, fams.map((x) => h('li', { 'data-key': x.family },
       h('span', { class: 'swatch', style: { background: familyColor(x.family) } }),
       h('span', { class: 'fn' }, FAMILY_NAME[x.family] || x.family),
       f.missing(x.usd_per_point) ? h('span', { class: 'fnote' }, x.note || 'not enough data') : bandEl(x.lo, x.hi, x.usd_per_point, max),
@@ -126,13 +126,13 @@ export default {
       const line = feedLine(s.limitRate, 'the exchange rate');
       const q = d && d.fit_quality ? d.fit_quality : {};
       if (line || (q.status && q.status !== 'ok' && q.status !== 'stale')) {
-        fill(state, line || h('div', { class: 'p-state' },
+        patch(state, line || h('div', { class: 'p-state' },
           q.status === 'computing' ? 'The fit is in progress.' : 'No exchange rate for this scope.', q.note ? h('small', null, sentence(q.note)) : null));
-        fill(body);
+        patch(body);
         return;
       }
-      fill(state, staleNote(s.limitRate, now), q.status === 'stale' ? h('span', { class: 'age' }, q.note || 'The fit is old.') : null);
-      fill(body, sizeBlock(d), familyBlock(d), peakBlock(d, now), cacheBlock(d));
+      patch(state, staleNote(s.limitRate, now), q.status === 'stale' ? h('span', { class: 'age' }, q.note || 'The fit is old.') : null);
+      patch(body, sizeBlock(d), familyBlock(d), peakBlock(d, now), cacheBlock(d));
     }
 
     return { update };
