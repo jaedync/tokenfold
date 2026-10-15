@@ -26,7 +26,9 @@ from .usage_pace import MIN_USED_PCT, WEEK_S, usage_pace
 
 # A rate is stable for minutes; the window cost moves a few dollars per
 # minute against thousands, so two minutes of age is invisible.
-_CACHE = BackgroundCache(ttl=120, wait_s=0.05)
+# wait_s=0: the build takes ~0.5 s on production, so waiting a little
+# never helps and only slows the 5 s poll; the next poll has the value.
+_CACHE = BackgroundCache(ttl=120, wait_s=0.0)
 
 
 def binding_rate(scope: str, now: float | None = None,

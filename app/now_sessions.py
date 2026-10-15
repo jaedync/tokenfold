@@ -13,11 +13,15 @@ module joins the two:
 Costs use the canonical row predicate and MAX-per-request dedupe of
 cost_windows, so a Pi request and its Meridian SDK twin bill once.
 """
+import hashlib
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from .config import enterprise_predicate
+from .config import TZ_NAME, enterprise_predicate
 from .event_dedupe import canonical_assistant_predicate
+from .ingest import _pi_namespace
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
                       reported_cost)
@@ -31,8 +35,13 @@ _PI_SCAN_TTL_S = 15.0
 BURN_WINDOW_S = 1800
 _MAX_IDS = 400                     # bound the IN (...) lists
 
+# Pi subagent cursors written this recently are parent-link candidates.
+PI_SUBAGENT_LOOKBACK_S = 3 * 86400
+
 _pi_lock = threading.Lock()
 _pi_scan: dict = {"at": 0.0, "by_native": {}}
+_sub_scan: dict = {"at": 0.0, "files": []}
+_parent_of: dict[str, str] = {}      # child native sid -> parent native sid
 
 
 def _recent_pi_sessions(conn, now: float) -> dict[str, list[str]]:
@@ -59,6 +68,56 @@ def reset_cache() -> None:
     """Test support."""
     with _pi_lock:
         _pi_scan.update(at=0.0, by_native={})
+        _sub_scan.update(at=0.0, files=[])
+        _parent_of.clear()
+
+
+def _subagent_files(conn, now: float) -> list[tuple[str, str, str]]:
+    """(class, machine, session_file) of recent Pi subagent cursors.
+
+    Pi writes a subagent's transcript under subagents/<parent sid>/, and
+    ingest keys its cursor by that file (~3 ms scan, reused for 15 s)."""
+    with _pi_lock:
+        if time.monotonic() - _sub_scan["at"] < _PI_SCAN_TTL_S:
+            return _sub_scan["files"]
+    # updated_at is the server's local ISO time; a 3-day margin absorbs
+    # the offset change at a DST switch in this string comparison.
+    since = datetime.fromtimestamp(now - PI_SUBAGENT_LOOKBACK_S,
+                                   ZoneInfo(TZ_NAME)).isoformat()
+    files = []
+    for r in conn.execute(
+            "SELECT machine, session_file FROM sync_cursors WHERE machine GLOB 'pi:*:*' "
+            "AND session_file GLOB 'subagents/*/*' AND updated_at >= ?", (since,)):
+        _, cls, machine = r["machine"].split(":", 2)
+        files.append((cls, machine, r["session_file"]))
+    with _pi_lock:
+        _sub_scan.update(at=time.monotonic(), files=files)
+    return files
+
+
+def pi_parents(conn, children: dict[str, list[str]], now: float) -> dict[str, str]:
+    """Pi subagent sid -> parent sid.
+
+    A child's events id is pi:<ns>:<sid> with ns = ingest._pi_namespace(class,
+    machine, session_file, sid); the cursor whose file reproduces ns names
+    the parent folder. Found links are kept (they never change)."""
+    out = {c: _parent_of[c] for c in children if c in _parent_of}
+    todo = {c: eids for c, eids in children.items() if c not in out}
+    if not todo:
+        return out
+    files = _subagent_files(conn, now)
+    for child, eids in todo.items():
+        suffix = ":" + child
+        wanted = {e[:-len(suffix)] for e in eids
+                  if e.startswith("pi:") and e.endswith(suffix)}
+        for cls, machine, f in files:
+            if _pi_namespace(cls, machine, f, child) in wanted:
+                out[child] = f.split("/", 2)[1]
+                break
+    if len(_parent_of) > 4096:
+        _parent_of.clear()
+    _parent_of.update(out)
+    return out
 
 
 def resolve_event_sessions(conn, live_ids, now: float) -> dict[str, list[str]]:

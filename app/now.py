@@ -181,6 +181,7 @@ def scoped_sessions(conn, scope: str, snap: dict, now: float,
     titles = _safe("titles", lambda: now_sessions.session_titles(conn, all_ids), {})
     rate = _safe("binding rate", rate_fn, None) if rate_fn else None
     rows = []
+    children: dict[str, list[str]] = {}      # Pi subagent sid -> events ids
     for sid, s in live.items():
         if sid in twins:
             continue
@@ -194,8 +195,57 @@ def scoped_sessions(conn, scope: str, snap: dict, now: float,
         # ("ui-review-b0") says what they do.
         title = title or (agg or {}).get("agent_name")
         rows.append(_session_row(sid, s, agg, title, rate, now))
+        if agg and agg.get("agent_name"):
+            children[sid] = mine
+    links = _safe("pi parents", lambda: now_sessions.pi_parents(conn, children, now), {})
+    rows = fold_children(rows, links)
     rows.sort(key=_sort_key)
     return rows
+
+
+def _root(sid, links, by_id):
+    """Topmost live ancestor of a session (itself when none is live)."""
+    seen = {sid}
+    while links.get(sid) in by_id and links[sid] not in seen:
+        sid = links[sid]
+        seen.add(sid)
+    return sid
+
+
+def _plus(a, b):
+    return b if a is None else (a if b is None else a + b)
+
+
+def fold_children(rows: list[dict], links: dict[str, str]) -> list[dict]:
+    """Fold live Pi subagent sessions into their live parent, the way a
+    Claude Code subagent is part of its parent session: the parent counts
+    it in subagents and carries its cost, burn and share. A waiting child
+    stays its own row (never hide what needs the human) and adds only to
+    the count. A child whose parent is not live stays its own row."""
+    by_id = {r["id"]: r for r in rows}
+    folded: dict[str, list[dict]] = {}
+    kept = []
+    for r in rows:
+        root = _root(r["id"], links, by_id)
+        if root != r["id"]:
+            folded.setdefault(root, []).append(r)
+            if r["state"] != "waiting":
+                continue
+        kept.append(r)
+    out = []
+    for r in kept:
+        kids = folded.get(r["id"], [])
+        if not kids:
+            out.append(r)
+            continue
+        merged = dict(r, subagents=r["subagents"] + len(kids))
+        for k in kids:
+            if k["state"] == "waiting":
+                continue
+            for key in ("cost_usd", "burn_usd_per_h", "share_of_binding_pct_per_h"):
+                merged[key] = _plus(merged[key], k[key])
+        out.append(merged)
+    return out
 
 
 def local_day(now: float) -> str:

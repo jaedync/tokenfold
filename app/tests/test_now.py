@@ -94,6 +94,48 @@ class NowEndpointTests(TempDBTestCase):
         [s] = self._get()["sessions"]
         self.assertEqual(s["title"], "ui-review-b0")
 
+    def _pi_child(self, parent, child, file_name="x.jsonl", state="working"):
+        """A Pi subagent session: its cursor file sits under its parent's
+        subagents/<parent sid>/ folder, which is the only parent link."""
+        from app.ingest import _pi_namespace
+        f = f"subagents/{parent}/{file_name}"
+        ns = _pi_namespace("personal", "workstation", f, child)
+        self.conn.execute(
+            "INSERT INTO sync_cursors(machine, project_dir, session_file, updated_at) "
+            "VALUES('pi:personal:workstation', '/w', ?, ?)",
+            (f, datetime.fromtimestamp(self.now).astimezone().isoformat()))
+        insert_event(self.conn, "ev-" + child, session=f"{ns}:{child}",
+                     ts=self.now - 120, client="pi-agent", provider="anthropic",
+                     reported_total=1.0, agent_id=f"{ns}:run-{child}", machine="workstation")
+        agent_state.update(child, "workstation", "w", state, now=self.now - 5)
+
+    def test_pi_subagent_sessions_fold_into_their_parent(self):
+        insert_event(self.conn, "pp", session="pi:aaa:parent-1", ts=self.now - 300,
+                     client="pi-agent", provider="anthropic", reported_total=2.0,
+                     machine="workstation")
+        agent_state.update("parent-1", "workstation", "w", "working", now=self.now - 5)
+        self._pi_child("parent-1", "child-1")
+        self._pi_child("parent-1", "child-2", "y.jsonl")
+        # A child of a parent that is not live stays its own row.
+        self._pi_child("gone-parent", "orphan", "z.jsonl")
+        body = self._get()
+        rows = {s["id"]: s for s in body["sessions"]}
+        self.assertEqual(set(rows), {"parent-1", "orphan"})
+        self.assertEqual(rows["parent-1"]["subagents"], 2)
+        self.assertAlmostEqual(rows["parent-1"]["cost_usd"], 4.0, places=6)
+        self.assertEqual(body["live"]["subagents"], 2)
+        self.assertEqual(body["live"]["working"], 2)
+
+    def test_waiting_pi_subagent_stays_visible(self):
+        insert_event(self.conn, "pp", session="pi:aaa:parent-1", ts=self.now - 300,
+                     client="pi-agent", provider="anthropic", reported_total=2.0,
+                     machine="workstation")
+        agent_state.update("parent-1", "workstation", "w", "working", now=self.now - 5)
+        self._pi_child("parent-1", "child-1", state="waiting")
+        body = self._get()
+        self.assertEqual([s["id"] for s in body["sessions"]], ["child-1", "parent-1"])
+        self.assertEqual(body["sessions"][1]["subagents"], 1)
+
     def test_scope_follows_the_session_events(self):
         insert_event(self.conn, "w1", session="sid-w", ts=self.now - 60,
                      inp=1000, account=WORK)

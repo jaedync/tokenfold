@@ -20,7 +20,8 @@ from .db import read_conn
 DIRECTORY_DAYS = 30
 RECENT_WINDOW_S = 3600
 
-_DIRECTORY = BackgroundCache(ttl=60, wait_s=0.05)
+# wait_s=0: the build takes ~0.3 s; see binding_rate._CACHE.
+_DIRECTORY = BackgroundCache(ttl=60, wait_s=0.0)
 
 
 def _pred(scope: str) -> str:

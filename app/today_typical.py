@@ -25,7 +25,7 @@ from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
 SLOT_S = 900
 TYPICAL_DAYS = 28
 
-_PROFILE = BackgroundCache(ttl=3600, wait_s=0.05, max_entries=4)
+_PROFILE = BackgroundCache(ttl=3600, wait_s=0.0, max_entries=4)
 
 _SLOT_SQL = (
     "SELECT CAST(first_ts / 900 AS INTEGER) AS bucket, model, provider, source_client, "
