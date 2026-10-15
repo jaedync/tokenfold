@@ -349,10 +349,10 @@ _POST_MIGRATION_INDEXES = (
 # columns are SCHEMA columns, but very old databases lack some of them and
 # are not repaired by _ADDED_COLUMNS, so it is built only when they exist
 # (app/ledger_query.py falls back to the table without it).
-_ACTIVITY_INDEX_COLUMNS = {"session_id", "agent_id", "ts_epoch", "is_human_prompt", "type"}
+_ACTIVITY_INDEX_COLUMNS = {"session_id", "agent_id", "ts_epoch", "is_human_prompt", "type", "pi_copy"}
 _ACTIVITY_INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_events_session_activity "
-    "ON events(session_id, agent_id, ts_epoch, is_human_prompt) "
+    "ON events(session_id, agent_id, ts_epoch, is_human_prompt, pi_copy) "
     "WHERE type IN ('user','assistant')")
 
 

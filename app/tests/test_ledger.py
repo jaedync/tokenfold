@@ -283,6 +283,40 @@ class TwinAndPiLineageTest(LedgerTestBase):
         self.assertEqual(len(d['runs']), 2)
 
 
+class PiCopyLedgerTest(LedgerTestBase):
+    """A Pi session file copied to another machine and then continued there:
+    the copied rows are flagged pi_copy at ingest and must not add prompts,
+    active time or tool calls to the continued session."""
+
+    def setUp(self):
+        super().setUp()
+        t = self.t0
+        original = [
+            self.pi_event('o-u', 'P2', t, kind='user'),
+            self.pi_event('o-a', 'P2', t + 5, cost=2.0, request_id='msg_orig',
+                          tools=('bash',))]
+        self.pi('bucket/2026-10-14T00-00-00-000Z_P2.jsonl', original, machine='old-box')
+        copied = [dict(e, event_id='copy-' + e['event_id']) for e in original]
+        self.pi('bucket/2026-10-14T00-00-00-000Z_P2.jsonl', copied + [
+            self.pi_event('n-u', 'P2', t + 590, kind='user'),
+            self.pi_event('n-a', 'P2', t + 600, cost=1.0, request_id='msg_new',
+                          tools=('edit',))], machine='new-box')
+
+    def test_copied_rows_add_no_activity_or_tools(self):
+        body = self.ledger()
+        by_machine = {s['machine']: s for s in body['sessions']}
+        self.assertEqual(set(by_machine), {'old-box', 'new-box'})
+        old, new = by_machine['old-box'], by_machine['new-box']
+        self.assertAlmostEqual(old['cost_usd'], 2.0)
+        self.assertAlmostEqual(new['cost_usd'], 1.0)
+        self.assertEqual(old['prompts'], 1)
+        self.assertEqual(new['prompts'], 1)
+        self.assertEqual(new['start'], self.t0 + 590)
+        d = self.session(new['id']).json()
+        self.assertEqual({x['name']: x['calls'] for x in d['tools']}, {'edit': 1})
+        self.assertEqual(d['prompt_times'], [self.t0 + 590])
+
+
 class PureHelpersTest(TempDBTestCase):
     def test_active_time_accumulator(self):
         from app.ledger_query import accumulate_activity

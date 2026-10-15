@@ -21,7 +21,7 @@ from operator import itemgetter
 
 from .aggregator import _make_display_names
 from .config import IDLE_THRESHOLD_S
-from .event_dedupe import canonical_assistant_predicate, counts_as_activity
+from .event_dedupe import canonical_assistant_predicate, counts_as_activity, not_pi_copy
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
                       reported_cost)
@@ -169,7 +169,10 @@ def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
         "SELECT session_id, agent_id, ts_epoch, "
         f"CASE WHEN agent_id IS NULL THEN is_human_prompt ELSE 0 END FROM {source} "
         f"WHERE session_id IN {_IDS} AND type IN ('user','assistant') "
-        f"AND ts_epoch >= ? AND ts_epoch < ?{scope} "
+        # pi_copy is in the covering index, so this filter keeps the
+        # index-only scan: a copied-then-continued Pi session counts only
+        # the rows reported first on this machine.
+        f"AND {not_pi_copy()} AND ts_epoch >= ? AND ts_epoch < ?{scope} "
         "ORDER BY session_id, agent_id, ts_epoch",
         (json.dumps(session_ids), start, end))
     return accumulate_activity(rows)
@@ -182,7 +185,7 @@ def tool_counts(conn: sqlite3.Connection, session_ids: list[str],
         return Counter()
     return Counter({r[0]: r[1] for r in conn.execute(
         f"SELECT session_id, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
-        "AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id",
+        f"AND {not_pi_copy('tool_uses')} AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id",
         (json.dumps(session_ids), start, end))})
 
 
@@ -198,7 +201,8 @@ def run_tool_counts(conn: sqlite3.Connection, session_ids: list[str],
     return Counter({(r[0], r[1]): r[2] for r in conn.execute(
         "SELECT t.session_id, e.agent_id, COUNT(*) FROM tool_uses AS t "
         "JOIN events AS e ON e.uuid = t.event_uuid "
-        f"WHERE t.session_id IN {_IDS} AND t.ts_epoch >= ? AND t.ts_epoch < ? "
+        f"WHERE t.session_id IN {_IDS} AND {not_pi_copy('t')} "
+        "AND t.ts_epoch >= ? AND t.ts_epoch < ? "
         "AND e.agent_id IS NOT NULL GROUP BY t.session_id, e.agent_id",
         (json.dumps(session_ids), start, end))})
 

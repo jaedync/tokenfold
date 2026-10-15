@@ -11,6 +11,7 @@ from collections import Counter
 
 from .aggregator import _conditional_model_names, display_tool_name
 from .config import scope_predicate
+from .event_dedupe import not_pi_copy
 from .ledger import live_session_ids, public_session
 from .ledger_build import build_sessions
 from .pi_lineage import PiLineage, account_class, split_pi_id
@@ -65,7 +66,8 @@ def _descendants(conn, sid: str) -> list[str]:
 def _tools(conn, ids: list[str]) -> list[dict]:
     calls: Counter = Counter()
     for name, n in conn.execute(
-            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} GROUP BY name",
+            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
+            f"AND {not_pi_copy('tool_uses')} GROUP BY name",
             (json.dumps(ids),)):
         calls[display_tool_name(name)] += n
     # tool_uses.is_error is never set by ingest (no tool_result linkage), so
@@ -76,7 +78,8 @@ def _tools(conn, ids: list[str]) -> list[dict]:
 def _file_edits(conn, ids: list[str]) -> int:
     n = 0
     for name, count in conn.execute(
-            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} GROUP BY name",
+            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
+            f"AND {not_pi_copy('tool_uses')} GROUP BY name",
             (json.dumps(ids),)):
         if name.rsplit("__", 1)[-1].lower() in EDIT_TOOLS:
             n += count
@@ -86,7 +89,8 @@ def _file_edits(conn, ids: list[str]) -> int:
 def _prompt_times(conn, sid: str, pred: str) -> list[float]:
     return [r[0] for r in conn.execute(
         "SELECT ts_epoch FROM events WHERE session_id=? AND type='user' "
-        f"AND is_human_prompt=1 AND agent_id IS NULL AND {pred} ORDER BY ts_epoch", (sid,))]
+        f"AND is_human_prompt=1 AND agent_id IS NULL AND {not_pi_copy()} AND {pred} "
+        "ORDER BY ts_epoch", (sid,))]
 
 
 def _served(conn, ids: list[str], scope: str, pred: str) -> dict:
