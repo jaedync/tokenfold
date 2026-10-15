@@ -1,7 +1,8 @@
 // Sessions timeline: one swimlane per machine, one bar per session (colour =
 // orchestrator model, height = cost on a log scale), thin lines under a bar
 // for its subagent runs. Quiet sessions stay out unless the control bar
-// shows them. Click or Enter opens the session drawer.
+// shows them. Click or Enter opens the session drawer. The bars are one tab
+// stop (roving tabindex): arrow keys, Home and End move between sessions.
 import { h, fill, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, dayStart, sessionName, projectLabel, DAY_S } from './ledger-model.js';
@@ -44,7 +45,7 @@ function sessionG(p, top, ctx) {
   const hgt = Math.round(5 + 11 * Math.min(1, Math.log10(1 + p.total) / Math.log10(1 + ctx.costMax)));
   const base = top + 15, w = Math.max(3, p.x1 - p.x0);
   const g = svg('g', { class: `tl-sess${p.ok ? '' : ' is-dim'}${ctx.sel === s.id ? ' is-sel' : ''}`, 'data-sid': s.id,
-    tabindex: p.ok ? 0 : -1, role: 'button', 'aria-hidden': p.ok ? null : 'true',
+    tabindex: p.ok && ctx.tabStop === s.id ? 0 : -1, role: 'button', 'aria-hidden': p.ok ? null : 'true',
     'aria-label': `${sessionName(s)}, ${s.machine}, ${money(p.total)}, ${plural(s.runs.length, 'subagent')}` });
   g.append(svg('rect', { class: 's-bar', x: p.x0, y: base - hgt, width: w, height: hgt, fill: col.fill, stroke: w > 5 ? INK : null, 'stroke-width': w > 5 ? 1 : null }));
   if (s.live) g.append(svg('rect', { class: 'live-cap', x: p.x1 - 2, y: base - hgt - 3, width: 4, height: hgt + 6, fill: RED }));
@@ -118,6 +119,9 @@ export default {
     const tip = tooltip();
 
     let seen = null, lastW = 0, lastSel = null, byId = new Map();
+    // Keyboard order of the matching sessions (lane by lane, by start) and
+    // the one bar that takes Tab.
+    let order = [], tabStop = null;
     function render(force) {
       const s = store.get();
       const d = derive(s, ctx.now());
@@ -144,11 +148,15 @@ export default {
         machines.set(x.machine, m);
       }
       byId = new Map(d.listed.map((x) => [x.id, x]));
+      const lanesSorted = [...machines.entries()].sort((a, b) => b[1].cost - a[1].cost);
+      for (const [, m] of lanesSorted) m.list.sort((a, b) => a.s.start - b.s.start);
+      order = lanesSorted.flatMap(([, m]) => m.list.filter((p) => p.ok).map((p) => p.s.id));
+      if (!order.includes(tabStop)) tabStop = order.includes(s.ledgerDrawer) ? s.ledgerDrawer : (order[0] || null);
       const body = [], laneEls = [h('div', { class: 'tl-axis-spacer' })];
       let y = AX, shown = 0, runs = 0;
-      const cctx = { c, costMax, labelOf, threads, g, sel: s.ledgerDrawer };
-      for (const [name, m] of [...machines.entries()].sort((a, b) => b[1].cost - a[1].cost)) {
-        const list = m.list.sort((a, b) => a.s.start - b.s.start);
+      const cctx = { c, costMax, labelOf, threads, g, sel: s.ledgerDrawer, tabStop };
+      for (const [name, m] of lanesSorted) {
+        const list = m.list;
         const { rows, place } = packLane(list, g, labelOf);
         const laneH = Math.max(64, rows.length * ROW + PAD * 2);
         let laneCost = 0, laneN = 0;
@@ -194,9 +202,34 @@ export default {
       const gEl = ev.target.closest('.tl-sess');
       if (gEl && !gEl.classList.contains('is-dim')) { tip.hide(); openSession(store, gEl.dataset.sid, gEl); }
     });
+    const STEP = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+    function moveTo(id) {
+      const next = scroll.querySelector(`.tl-sess[data-sid="${CSS.escape(id)}"]`);
+      if (!next) return;
+      for (const n of scroll.querySelectorAll('.tl-sess[tabindex="0"]')) n.setAttribute('tabindex', '-1');
+      next.setAttribute('tabindex', '0');
+      tabStop = id;
+      tip.hide();
+      next.focus();
+    }
+    // Focus that arrives another way (a click, the drawer handing it back)
+    // moves the tab stop too.
+    scroll.addEventListener('focusin', (ev) => {
+      const gEl = ev.target.closest('.tl-sess');
+      if (gEl && gEl.getAttribute('tabindex') !== '0' && order.includes(gEl.dataset.sid)) moveTo(gEl.dataset.sid);
+    });
     scroll.addEventListener('keydown', (ev) => {
       const gEl = ev.target.closest('.tl-sess');
-      if (gEl && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); openSession(store, gEl.dataset.sid, gEl); }
+      if (!gEl) return;
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openSession(store, gEl.dataset.sid, gEl); return; }
+      const i = order.indexOf(gEl.dataset.sid);
+      let j = null;
+      if (ev.key in STEP) j = Math.min(order.length - 1, Math.max(0, i + STEP[ev.key]));
+      else if (ev.key === 'Home') j = 0;
+      else if (ev.key === 'End') j = order.length - 1;
+      if (j === null || i < 0) return;
+      ev.preventDefault();
+      if (j !== i) moveTo(order[j]);
     });
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => render(false)) : null;
     if (ro) ro.observe(el);

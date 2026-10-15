@@ -160,6 +160,26 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
       await context.close();
     });
 
+    await check('timeline: one session is a tab stop; arrow keys move between sessions', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
+      await ready(page);
+      assert.equal(await page.locator('.tl-sess[tabindex="0"]').count(), 1, 'one tab stop');
+      const first = page.locator('.tl-sess[tabindex="0"]');
+      const id0 = await first.getAttribute('data-sid');
+      await first.focus();
+      await page.keyboard.press('ArrowRight');
+      const id1 = await page.evaluate(() => document.activeElement.dataset.sid);
+      assert.ok(id1 && id1 !== id0, 'ArrowRight moves focus to another session');
+      assert.equal(await page.locator('.tl-sess[tabindex="0"]').count(), 1, 'still one tab stop');
+      assert.equal(await page.locator('.tl-sess[tabindex="0"]').getAttribute('data-sid'), id1);
+      await page.keyboard.press('ArrowLeft');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.sid), id0);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.drawer.is-open');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('drawer: opens with detail, traps focus, walks prev/next, Esc returns focus', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
       await ready(page);
