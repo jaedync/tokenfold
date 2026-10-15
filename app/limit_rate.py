@@ -24,7 +24,8 @@ from fastapi import APIRouter, Depends, Query
 
 from .api import _resolve_scope
 from .auth import require_dashboard_auth
-from .db import get_conn, read_conn, write_txn
+from . import db
+from .db import read_conn
 from .limit_peak import PEAK_TZ, peak_state
 from .limit_rate_analysis import analyze
 from .limit_rate_data import load_granted, load_readings, load_requests
@@ -85,17 +86,21 @@ def _load_meta() -> Optional[dict]:
         return None
 
 
-def _store(entry: dict) -> None:
+def _store(entry: dict, generation: Optional[int] = None) -> None:
+    # background_write skips the store after the shutdown started (or when
+    # the database of `generation` is gone): never reopen the database.
     try:
-        with write_txn(get_conn()) as conn:
-            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-                         (CACHE_KEY, json.dumps(entry)))
+        with db.background_write(generation) as conn:
+            if conn is not None:
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                             (CACHE_KEY, json.dumps(entry)))
     except Exception:
         # The in-memory copy still serves; only the restart warm start is lost.
         logger.exception("limit-rate: meta cache write failed")
 
 
 def _refresh() -> None:
+    generation = db.generation()
     try:
         payload = compute_payload()
     except Exception as exc:
@@ -106,7 +111,7 @@ def _refresh() -> None:
     entry = {"version": CACHE_VERSION, "computed_at": time.time(), "payload": payload}
     with _lock:
         _state.update(entry=entry, error=None)
-    _store(entry)
+    _store(entry, generation)
 
 
 def _ensure_refresh(now: float) -> Optional[threading.Thread]:

@@ -10,8 +10,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .db import (ROLLUP_DAYS_KEY, close_conn, get_conn, queued_rollup_days,
-                 write_txn)
+from .db import (ROLLUP_DAYS_KEY, begin_shutdown, close_conn, get_conn, open_conn,
+                 queued_rollup_days, write_txn)
 from .light import init_light, start_watchdog, stop_watchdog
 from .notify import init_notify_token
 from .pricing import load_pricing
@@ -20,12 +20,14 @@ from . import usage_fetcher
 logger = logging.getLogger("tokenfold.main")
 # Progress note interval for the one-time all-days rollup rebuild (~75 s on prod).
 BACKFILL_PROGRESS_EVERY = 50
+# Total wait at shutdown for the background threads, before the DB closes.
+SHUTDOWN_JOIN_S = 10.0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: init DB and load pricing
-    get_conn()
+    open_conn()
     try:
         load_pricing()
     except Exception:
@@ -45,16 +47,18 @@ async def lifespan(app: FastAPI):
     start_watchdog()
 
     # Backfill daily_summary if empty, then warm the cache
-    from .aggregator import trigger_eager_rebuild, start_sweeps, stop_sweeps
+    from .aggregator import trigger_eager_rebuild, start_sweeps
     _backfill_if_needed()
     trigger_eager_rebuild()
-    # Exchange rate fit (1-3 s) in the background, so the first /next visit
-    # after a deploy does not wait for it.
-    from .limit_rate import prewarm as prewarm_limit_rate
-    prewarm_limit_rate()
-    # Today's typical profile, spend history and the second stats scope.
-    from . import prewarm
-    prewarm.start()
+    if config.PREWARM:
+        # Exchange rate fit (1-3 s) in the background, so the first /next
+        # visit after a deploy does not wait for it.
+        from . import limit_rate
+        limit_rate.prewarm()
+        # Today's typical profile, ledger, spend history, window history and
+        # the second stats scope.
+        from . import prewarm
+        prewarm.start()
 
     # Start periodic sweep timers
     start_sweeps()
@@ -62,15 +66,28 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    stop_sweeps()
     stop_watchdog()
     usage_fetcher.stop()
-    # A running limit-rate fit stores through the shared connection.
-    from .limit_rate import join_refresh as join_limit_rate
-    join_limit_rate(10.0)
-    # Its builds read on their own connections; wait so none outlives the app.
-    prewarm.join(10.0)
+    _stop_background(SHUTDOWN_JOIN_S)
     close_conn()
+
+
+def _stop_background(timeout_s: float) -> None:
+    """Signal every background thread, then wait for them, before the shared
+    connection closes. A sqlite3 connection closed under a running statement
+    crashes the process. After begin_shutdown() a late thread's write is
+    skipped (db.background_write) and get_conn() never reopens the DB."""
+    from . import aggregator, bg_cache, limit_rate, prewarm
+    begin_shutdown()
+    deadline = time.monotonic() + timeout_s
+
+    def left():
+        return max(0.0, deadline - time.monotonic())
+    aggregator.stop_sweeps(left())
+    limit_rate.join_refresh(left())
+    prewarm.join(left())
+    aggregator.join_rebuild(left())
+    bg_cache.join_all(left())
 
 
 def _backfill_if_needed():

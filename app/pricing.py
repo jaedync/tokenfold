@@ -7,7 +7,9 @@ import urllib.request
 from datetime import datetime, timezone
 
 from .config import LITELLM_URL, PRICING_CACHE_TTL
-from .db import get_conn, write_txn
+import sqlite3
+
+from . import db
 
 MODEL_DISPLAY = {
     "claude-fable-5": "Fable 5",
@@ -206,15 +208,25 @@ def reported_cost(row) -> float | None:
             vals.append(row[key])
     return sum(float(v) for v in vals) if vals else None
 
+def _cached_row():
+    """The meta pricing_cache row, or None (no row, or no database yet)."""
+    try:
+        with db.read_conn() as conn:
+            return conn.execute("SELECT value FROM meta WHERE key='pricing_cache'").fetchone()
+    except sqlite3.Error:
+        return None
+
+
 def load_pricing(force=False):
     """Fetch Claude pricing from LiteLLM GitHub, with 24h DB-backed cache.
     force=True bypasses a still-fresh cache (used when an unknown model shows
     up — the cache may simply predate the model's addition to LiteLLM)."""
     global _dynamic_pricing
 
-    conn = get_conn()
-    # Check DB cache
-    row = conn.execute("SELECT value FROM meta WHERE key='pricing_cache'").fetchone()
+    # Callers include background threads (cache rebuild, prewarm): read on a
+    # connection of our own, never the shared one (see db.background_write).
+    generation = db.generation()
+    row = _cached_row()
     if row and not force:
         try:
             cache = json.loads(row["value"])
@@ -254,11 +266,13 @@ def load_pricing(force=False):
         if pricing:
             _dynamic_pricing = pricing
             try:
-                with write_txn(conn) as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-                        ("pricing_cache", json.dumps({"ts": time.time(), "pricing": pricing})),
-                    )
+                # Skipped after the shutdown started: the cache is optional.
+                with db.background_write(generation) as conn:
+                    if conn is not None:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                            ("pricing_cache", json.dumps({"ts": time.time(), "pricing": pricing})),
+                        )
             except Exception as e:
                 # In-memory pricing is already set — losing only the persisted
                 # cache is survivable, but say so (a silent pass here means

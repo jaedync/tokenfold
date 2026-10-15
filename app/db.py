@@ -8,6 +8,17 @@ from .config import DB_PATH
 
 _conn: sqlite3.Connection | None = None
 _init_lock = threading.Lock()
+# Bumped each time the shared connection opens or closes, so a background
+# thread can tell that the connection it started with is gone.
+_generation = 0
+# Set when the app shutdown starts (begin_shutdown), cleared by open_conn.
+# A late background thread must never reopen the database: get_conn() would
+# run _migrate again while the process stops.
+_shutdown = threading.Event()
+
+
+class DatabaseClosed(RuntimeError):
+    """The shared connection is closed because the app shutdown started."""
 
 # Serializes every write transaction on the shared connection. The connection
 # is shared across the event loop, uvicorn threadpool, timer sweeps, and the
@@ -455,10 +466,12 @@ def _migrate(conn) -> None:
 
 
 def get_conn() -> sqlite3.Connection:
-    global _conn
+    global _conn, _generation
     if _conn is None:
         with _init_lock:
             if _conn is None:
+                if _shutdown.is_set():
+                    raise DatabaseClosed("the app is shutting down; the database stays closed")
                 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
                 # cached_statements=0 is LOAD-BEARING: the per-connection
                 # statement cache hands two threads executing the same SQL
@@ -480,7 +493,51 @@ def get_conn() -> sqlite3.Connection:
                 conn.executescript(SCHEMA)
                 _migrate(conn)
                 _conn = conn
+                _generation += 1
     return _conn
+
+
+def open_conn() -> sqlite3.Connection:
+    """App startup: clear a previous shutdown and open the shared connection."""
+    _shutdown.clear()
+    return get_conn()
+
+
+def begin_shutdown() -> None:
+    """App shutdown starts: background writes skip, get_conn() never reopens."""
+    _shutdown.set()
+
+
+def shutting_down() -> bool:
+    return _shutdown.is_set()
+
+
+def generation() -> int:
+    """Identity of the current shared connection (see background_write)."""
+    return _generation
+
+
+@contextmanager
+def background_write(expected_generation: int | None = None):
+    """Write transaction for background threads, or None to skip the write.
+
+    Background work (fits, caches, prewarm) must never open or reopen the
+    shared connection, and must never write after the shutdown started:
+    close_conn() would close the connection under it, which crashes sqlite.
+    This yields None (the caller skips its write) when the shutdown started,
+    when the shared connection is closed, or when it is not the connection of
+    expected_generation (a test swapped the database). The check and the
+    write hold WRITE_LOCK, which close_conn() also takes, so the connection
+    cannot close during the write.
+    """
+    with WRITE_LOCK:
+        conn = _conn
+        if (conn is None or _shutdown.is_set()
+                or (expected_generation is not None and expected_generation != _generation)):
+            yield None
+            return
+        with write_txn(conn) as c:
+            yield c
 
 
 @contextmanager
@@ -551,7 +608,11 @@ def checkpoint_wal() -> None:
 
 
 def close_conn():
-    global _conn
-    if _conn is not None:
-        _conn.close()
-        _conn = None
+    global _conn, _generation
+    # WRITE_LOCK: never close under a running write transaction (a
+    # background_write in flight finishes first).
+    with WRITE_LOCK:
+        if _conn is not None:
+            _conn.close()
+            _conn = None
+            _generation += 1

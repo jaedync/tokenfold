@@ -224,7 +224,8 @@ class LifespanTest(_Base):
                  patch.object(lr, "prewarm"), patch.object(lr, "join_refresh"),
                  patch.object(self.pw, "start", side_effect=lambda: order.append("start")),
                  patch.object(self.pw, "join", side_effect=lambda t: order.append("join")),
-                 patch.object(main, "close_conn", side_effect=lambda: order.append("close"))]
+                 patch.object(main, "close_conn", side_effect=lambda: order.append("close")),
+                 patch("app.config.PREWARM", True)]
         for p in stubs:
             p.start()
             self.addCleanup(p.stop)

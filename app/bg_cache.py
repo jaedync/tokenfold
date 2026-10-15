@@ -16,8 +16,22 @@ build. None (the default) serves a stale value at any age.
 import logging
 import threading
 import time
+import weakref
 
 log = logging.getLogger(__name__)
+
+# Every cache, so the app shutdown can wait for their builder threads.
+_instances: "weakref.WeakSet[BackgroundCache]" = weakref.WeakSet()
+
+
+def join_all(timeout: float) -> None:
+    """Wait up to timeout in total for every running build (app shutdown)."""
+    deadline = time.monotonic() + timeout
+    for cache in list(_instances):
+        with cache._lock:
+            threads = list(cache._inflight.values())
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
 
 class BackgroundCache:
@@ -30,6 +44,7 @@ class BackgroundCache:
         self._lock = threading.Lock()
         self._entries: dict = {}          # key -> (monotonic_ts, value)
         self._inflight: dict = {}         # key -> Thread
+        _instances.add(self)
 
     def get(self, key, build, wait_s: float | None = None):
         """wait_s overrides the instance wait (0 = start the build, never wait)."""

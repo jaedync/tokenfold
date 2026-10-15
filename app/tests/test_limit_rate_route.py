@@ -222,7 +222,8 @@ class LifespanPrewarmTest(_Base):
                  patch("app.aggregator.trigger_eager_rebuild"),
                  patch("app.aggregator.start_sweeps"), patch("app.aggregator.stop_sweeps"),
                  patch.object(self.lr, "prewarm"), patch("app.prewarm.start"),
-                 patch("app.prewarm.join")]
+                 patch("app.prewarm.join"),
+                 patch("app.config.PREWARM", True)]
         for p in stubs:
             p.start()
             self.addCleanup(p.stop)
