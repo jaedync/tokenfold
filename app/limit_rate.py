@@ -63,8 +63,8 @@ def compute_payload(now: Optional[float] = None) -> dict:
     since = now - LOOKBACK_S
     with read_conn() as conn:
         source = active_history_source(conn)
-        readings = {b: load_readings(conn, b, since, source) for b in BUCKETS}
-        granted = load_granted(conn, since, source)
+        readings = {b: load_readings(conn, b, since, source, until=now) for b in BUCKETS}
+        granted = load_granted(conn, since, source, until=now)
         firsts = [r[0][0] for r in readings.values() if r]
         requests = load_requests(conn, min(firsts), now) if firsts else []
     return analyze(readings, requests, granted, now)

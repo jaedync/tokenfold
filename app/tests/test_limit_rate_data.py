@@ -92,18 +92,6 @@ class LoadRequestsTest(TempDBTestCase):
         self.assertAlmostEqual(parts[2], 40 * 10 / 30)
         self.assertAlmostEqual(sum(parts), 40.0)
 
-    def test_pi_copies_on_two_machines_count_once(self):
-        from app.limit_rate_data import load_requests
-        # A Pi session file copied to a new machine is re-reported with a new
-        # request_id but the same Anthropic message ID.
-        for uuid, rid in (("p1", "pi:aaa:msg_9"), ("p2", "pi:bbb:msg_9")):
-            insert_event(self.conn, uuid, T + 30, source="pi-agent", provider="anthropic",
-                         request_id=rid, message_id="msg_9", out=1_000_000,
-                         reported_total=25.0, email=None, plan=None)
-        self.conn.commit()
-        rows = load_requests(self.conn, T, T + 3600)
-        self.assertAlmostEqual(sum(r[2][1] for r in rows), 25.0)
-
     def test_scope_and_provider_filters(self):
         from app.limit_rate_data import load_requests
         insert_event(self.conn, "work", T + 5, out=1_000_000,
@@ -130,6 +118,8 @@ class LoadReadingsTest(TempDBTestCase):
         self.conn.commit()
         rows = load_readings(self.conn, "seven_day", T, "meridian-oauth")
         self.assertEqual(rows, [(T + 100.2, 4.5, T + 9e5), (T + 200, 5.0, T + 9e5)])
+        self.assertEqual(load_readings(self.conn, "seven_day", T, "meridian-oauth", until=T + 150),
+                         [(T + 100.2, 4.5, T + 9e5)])
 
     def test_granted_resets(self):
         from app.limit_rate_data import load_granted

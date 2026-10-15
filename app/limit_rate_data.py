@@ -21,7 +21,7 @@ def family_of(model: Optional[str]) -> str:
 
 
 def load_readings(conn: sqlite3.Connection, bucket: str, since: float,
-                  source: Optional[str]) -> list:
+                  source: Optional[str], until: float = float("inf")) -> list:
     """(t, pct, resets_at_epoch) ascending for one bucket of the active
     quota feed. Legacy and managed feeds are not comparable
     (app/quota_history.py), so only one is read. Rows at the same second
@@ -29,8 +29,9 @@ def load_readings(conn: sqlite3.Connection, bucket: str, since: float,
     predicate, params = history_source_filter(source)
     rows = conn.execute(
         "SELECT fetched_epoch, utilization, resets_at_epoch FROM limit_readings "
-        f"WHERE bucket=? AND fetched_epoch>=? AND utilization IS NOT NULL AND {predicate} "
-        "ORDER BY fetched_epoch, id", (bucket, since) + params).fetchall()
+        "WHERE bucket=? AND fetched_epoch>=? AND fetched_epoch<=? "
+        f"AND utilization IS NOT NULL AND {predicate} "
+        "ORDER BY fetched_epoch, id", (bucket, since, until) + params).fetchall()
     out: list = []
     for t, pct, reset in rows:
         reading = (float(t), float(pct), None if reset is None else float(reset))
@@ -46,7 +47,8 @@ def load_readings(conn: sqlite3.Connection, bucket: str, since: float,
 NATURAL_ROLLOVER_S = 300.0
 
 
-def load_granted(conn: sqlite3.Connection, since: float, source: Optional[str]) -> list:
+def load_granted(conn: sqlite3.Connection, since: float, source: Optional[str],
+                 until: Optional[float] = None) -> list:
     """Granted mid-window resets of the 7-day meter, sibling-corroborated:
     the same evidence the spend windows use (app/limit_windows.py).
 
@@ -56,17 +58,16 @@ def load_granted(conn: sqlite3.Connection, since: float, source: Optional[str]) 
     would become a change point, so only resets well before the window end
     count."""
     return [e["at_epoch"] for e in
-            corroborated_resets(conn, "seven_day", since, source=source)
+            corroborated_resets(conn, "seven_day", since, until_epoch=until, source=source)
             if e["resets_at_epoch_before"] is not None
             and e["resets_at_epoch_before"] > e["at_epoch"] + NATURAL_ROLLOVER_S]
 
 
 # Inner query: one row per request (MAX per streaming repeat), canonical
-# twin filter so a Meridian Pi request and its SDK copy count once. The
-# request key is the Anthropic msg_ ID when there is one: Pi session files
-# copied to a new machine are re-reported under a new request_id (prod:
-# 15k cross-machine pairs on 9-12 Oct 2026), and the canonical predicate
-# only pairs Pi rows with SDK rows, not Pi with Pi.
+# twin filter so a Meridian Pi request and its SDK copy count once. Same
+# request key as app/cost_windows.py, so this endpoint and the dashboard
+# count the same requests (Pi rows copied between machines are a known
+# canonical-predicate gap, fixed there, not here).
 # Outer query: per-minute sums, so a 45-day scan returns tens of thousands of
 # rows, not one per request. Cost is linear in tokens, so pricing the sums
 # is exact; one minute is far below the 30-minute shortest interval. Rows
@@ -94,8 +95,7 @@ _REQUESTS_SQL = (
     "  AND model IS NOT NULL AND model != '<synthetic>' "
     "  AND ts_epoch >= ? AND ts_epoch < ? "
     "  AND {canonical} AND {scope} AND {anthropic} "
-    "  GROUP BY model, CASE WHEN message_id GLOB 'msg_?*' THEN message_id "
-    "  ELSE source_client || ':' || request_id END"
+    "  GROUP BY model, provider, source_client, request_id"
     ") GROUP BY model, speed, inference_geo, rep, CAST(last_ts / 60 AS INTEGER)")
 
 

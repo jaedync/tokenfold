@@ -395,7 +395,7 @@ def analyze(readings: dict, requests: Sequence, granted: Sequence, now: float) -
     used: dict = {}
     cols = _family_cols(s7, idx7, len(fams), used)
     fit = _guard("families", lambda: nnls_fit(s7, idx7, cols) if cols else None, None, notes)
-    families = [dict(f) for f in families_payload(fams, spend, fit, used)]
+    families = families_payload(fams, spend, fit, used)
     families.sort(key=lambda f: -f["spend_usd"])
     main = fidx[by_spend[0]] if by_spend and spend.get(by_spend[0]) else None
     crw = _guard("cache_read_weight",
