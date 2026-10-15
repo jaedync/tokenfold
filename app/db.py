@@ -334,9 +334,6 @@ _POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_pi_provider_ts "
     "ON events(provider, ts_epoch) WHERE source_client='pi-agent' "
     "AND type='assistant'",
-    # Covering index for the ledger's per-session activity scan (active time,
-    # prompts): it answers from the index alone instead of one table read per
-    # event. 172 MB and 2.4 s to build on the 2026-10-15 production copy.
 )
 
 # Covering index for the ledger's per-session activity scan (active time,
