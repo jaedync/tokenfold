@@ -114,7 +114,8 @@ a.lb-wait { text-decoration: none; }
 .lb-wait[data-n]:not([data-n='0']) { background: var(--red-ink); color: #fff; }
 .lb-wait[data-n]:not([data-n='0']) .lb-label { color: #fff; }
 .lb-wait .lb-val { font-weight: 800; }
-.lb-clock { margin-left: auto; border-right: 0 !important; border-left: 1px solid rgba(243, 238, 227, .18); min-width: 13ch; justify-content: flex-end; }
+/* Tabular digits and room for the widest day name: the clock does not move each second. */
+.lb-clock { margin-left: auto; border-right: 0 !important; border-left: 1px solid rgba(243, 238, 227, .18); min-width: 16ch; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .lb-burn .lb-val { min-width: 13.5ch; }
 .lb-age .lb-val { min-width: 4.5ch; }
 /* Tablet and small laptop: the bar must fit without a sideways scroll, so the

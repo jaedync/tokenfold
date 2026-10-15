@@ -1,7 +1,7 @@
 // Value: API-equivalent spend per month as a line. With a plan price saved in
 // this browser (localStorage), it also shows the price line and how many
 // times the price each month is worth. Personal scope only.
-import { h, fill, setText, approx, panelHead } from '../dom.js';
+import { h, patch, setText, approx, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { feedLine, staleNote, stateLine } from '../panel.js';
@@ -67,7 +67,7 @@ function headline(months, price) {
 
 function ratios(months, price) {
   if (!price) return null;
-  return h('ol', { class: 'v-ratio', 'aria-label': 'Value per month as times the plan price' }, months.slice(-6).map((m) => h('li', null,
+  return h('ol', { class: 'v-ratio', 'aria-label': 'Value per month as times the plan price' }, months.slice(-6).map((m) => h('li', { 'data-key': m.month },
     h('span', { class: 'kicker' }, monthLabel(m.month).short),
     h('b', null, m.partial ? 'to date' : `${(m.total / price).toFixed(1)}×`))));
 }
@@ -121,12 +121,12 @@ export default {
       el.hidden = s.scope === 'enterprise';
       if (el.hidden) return;
       const line = feedLine(s.spendHistory, 'the monthly spend');
-      fill(state, line, staleNote(s.spendHistory, nowFrom(s)));
-      if (line) { fill(body); return; }
+      patch(state, line, staleNote(s.spendHistory, nowFrom(s)));
+      if (line) { patch(body); return; }
       const months = (dataOf(s.spendHistory).months || []).filter((m) => m && m.month).slice(-MONTHS);
-      if (!months.length) { fill(body, stateLine('No spend is recorded yet.')); return; }
+      if (!months.length) { patch(body, stateLine('No spend is recorded yet.')); return; }
       width = Math.max(260, Math.floor(body.clientWidth) || 600);
-      fill(body, headline(months, price), lineChart(months, price, width),
+      patch(body, headline(months, price), lineChart(months, price, width),
         h('div', { class: 'v-keys' },
           h('span', null, h('i', { class: 'k-line' }), 'API-equivalent'),
           price ? h('span', null, h('i', { class: 'k-price' }), `plan price ${f.usd(price, { cents: false })}`) : null,

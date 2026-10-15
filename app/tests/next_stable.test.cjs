@@ -208,6 +208,69 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
         await context.close();
       });
     }
+    for (const [scope, width] of [['personal', 1440], ['personal', 390], ['enterprise', 1440]]) {
+      await check(`history ${scope} ${width}: polls keep the picked month, the focus and the scroll`, async () => {
+        const {page, errors, context, counts} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#history', scope});
+        await settle(page);
+        // Pick the oldest month bar (not the default pick) with the keyboard focus on it.
+        const bar = page.locator('.mo-col').first();
+        await bar.scrollIntoViewIfNeeded();
+        await bar.click();
+        await page.clock.runFor(100);
+        await page.evaluate(() => { window.__focus = document.activeElement; });
+        const before = await page.evaluate(() => ({
+          y: scrollY, picked: document.querySelector('.mo-col[aria-pressed="true"]').getAttribute('data-key'),
+          read: document.querySelector('.mo-read .kicker').textContent,
+        }));
+        await watch(page);
+        const n0 = Object.values(counts).reduce((a, b) => a + b, 0);
+        await polls(page);
+        const fetched = Object.values(counts).reduce((a, b) => a + b, 0) - n0;
+        assertCalm(await watched(page), fetched);
+        const after = await page.evaluate(() => ({
+          y: scrollY, picked: document.querySelector('.mo-col[aria-pressed="true"]').getAttribute('data-key'),
+          read: document.querySelector('.mo-read .kicker').textContent, focusKept: document.activeElement === window.__focus,
+        }));
+        assert.equal(after.picked, before.picked, 'the picked month changed');
+        assert.equal(after.read, before.read, 'the readout shows another month');
+        assert.equal(after.y, before.y, 'the window scrolled');
+        assert.ok(after.focusKept, 'the focus moved');
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
+
+    for (const width of [1440, 390]) {
+      await check(`lab ${width}: polls keep open details, the table scroll and the focus`, async () => {
+        const {page, errors, context, counts} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#lab'});
+        await settle(page);
+        await page.evaluate(() => {
+          for (const d of document.querySelectorAll('#view details')) d.open = true;
+          for (const t of document.querySelectorAll('#view .tbl-scroll')) t.scrollLeft = Math.min(30, t.scrollWidth - t.clientWidth);
+          document.querySelector('#view .seg button').focus();
+          window.__focus = document.activeElement;
+        });
+        await scrollTo(page, 400);
+        // Let the opened details lay out before the watch starts.
+        await page.clock.runFor(500);
+        await page.waitForTimeout(100);
+        const state = () => page.evaluate(() => ({
+          y: scrollY, open: [...document.querySelectorAll('#view details')].map((d) => d.open),
+          left: [...document.querySelectorAll('#view .tbl-scroll')].map((t) => t.scrollLeft),
+        }));
+        const before = await state();
+        assert.ok(before.open.length >= 2, 'the fixture shows fewer than two details');
+        await watch(page);
+        const n0 = Object.values(counts).reduce((a, b) => a + b, 0);
+        await polls(page);
+        const fetched = Object.values(counts).reduce((a, b) => a + b, 0) - n0;
+        assertCalm(await watched(page), fetched);
+        assert.deepEqual(await state(), before, 'details closed or a table scrolled');
+        assert.ok(await page.evaluate(() => document.activeElement === window.__focus), 'the focus moved');
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
   } finally {
     await browser.close();
   }

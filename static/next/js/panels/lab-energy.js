@@ -1,7 +1,7 @@
 // Energy and water: an estimate of the inference energy of your tokens and
 // the water that cools it. Values come from /api/stats model_breakdown
 // (energy_wh, water_ml), which app/water.py computes on the server.
-import { h, fill, approx, panelHead, segmented } from '../dom.js';
+import { h, patch, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { changed } from './history-common.js';
@@ -65,7 +65,7 @@ function view(list) {
       h('div', null, h('div', { class: 'kicker' }, 'Energy'), h('div', { class: 'en-v' }, approx(), ev, h('small', null, eu))),
       h('div', null, h('div', { class: 'kicker' }, 'Water'), h('div', { class: 'en-v' }, approx(), wv, h('small', null, wu)))),
     cmp.length ? h('p', { class: 'en-cmp' }, 'About the water of ', cmp.map((c, i) => [i ? ', ' : '', h('b', null, `${c.n >= 10 ? Math.round(c.n) : c.n.toFixed(1)} ${c.name}`)]), '.') : null,
-    h('ul', { class: 'en-list', 'aria-label': 'Energy by model' }, top.map((m) => h('li', null,
+    h('ul', { class: 'en-list', 'aria-label': 'Energy by model' }, top.map((m) => h('li', { 'data-key': m.model },
       h('span', { class: 'swatch', style: { background: familyColor(familyOf(m.model)) } }),
       h('span', { class: 'en-n', title: m.model }, m.model),
       h('span', { class: 'en-b' }, h('i', { style: { width: `${m.wh / max * 100}%` } })),
@@ -94,10 +94,10 @@ export default {
       seen = key;
       period.select(p);
       const line = feedLine(s.stats, 'the usage totals');
-      fill(state, line, staleNote(s.stats, nowFrom(s)));
-      if (line) { fill(body); return; }
+      patch(state, line, staleNote(s.stats, nowFrom(s)));
+      if (line) { patch(body); return; }
       const list = rows(dataOf(s.stats), p);
-      fill(body, list.length ? view(list) : stateLine('No tokens in this period.'));
+      patch(body, list.length ? view(list) : stateLine('No tokens in this period.'));
     }
     return { update };
   },

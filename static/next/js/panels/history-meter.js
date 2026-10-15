@@ -2,7 +2,7 @@
 // the budget, and the daily meter increases next to what Tokenfold measured.
 // Data: /api/stats `meter` and `month_hero` (cached there), budget fallback
 // /api/enterprise-budget. Hidden in the personal scope.
-import { h, fill, approx, panelHead } from '../dom.js';
+import { h, patch, approx, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { feedLine, staleNote, stateLine } from '../panel.js';
@@ -25,7 +25,7 @@ function daily(rows) {
     h('div', { class: 'kicker sub-k' }, 'Daily meter increase vs measured (last 30 days)'),
     h('div', { class: 'md-plot', role: 'img', 'aria-label': `Daily billed increase for ${rows.length} days, with the measured spend as a mark.` },
       h('span', { class: 'md-top' }, f.usdShort(top)),
-      rows.map((r) => h('div', { class: 'md-col', title: `${r.day}: billed ${f.usd(r.official_usd)} · measured ${f.usd(r.measured_usd)}` },
+      rows.map((r) => h('div', { class: 'md-col', 'data-key': r.day, title: `${r.day}: billed ${f.usd(r.official_usd)} · measured ${f.usd(r.measured_usd)}` },
         h('i', { style: { height: `${Math.max(0, r.official_usd || 0) / top * 100}%` } }),
         h('b', { style: { bottom: `${Math.max(0, r.measured_usd || 0) / top * 100}%` } })))),
     h('div', { class: 'md-x' }, h('span', null, dayLabel(rows[0].day)), h('span', null, dayLabel(rows[rows.length - 1].day))),
@@ -81,10 +81,10 @@ export default {
       if (el.hidden || !changed(seen, key)) return;
       seen = key;
       const line = feedLine(s.stats, 'the billing meter');
-      fill(state, line, staleNote(s.stats, nowFrom(s)));
-      if (line) { fill(out); return; }
+      patch(state, line, staleNote(s.stats, nowFrom(s)));
+      if (line) { patch(out); return; }
       const b = dataOf(s.enterpriseBudget);
-      fill(out, body(dataOf(s.stats), b && typeof b.budget_usd === 'number' ? b.budget_usd : null, nowFrom(s)));
+      patch(out, body(dataOf(s.stats), b && typeof b.budget_usd === 'number' ? b.budget_usd : null, nowFrom(s)));
     }
     return { update };
   },

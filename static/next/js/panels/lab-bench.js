@@ -1,7 +1,7 @@
 // Benchmarks and cost per hour: published benchmark scores per model (static
 // reference data) next to what an active hour of each model cost you and how
 // fast it wrote. Data: /api/stats benchmarks and model_breakdown.
-import { h, fill, approx, panelHead, segmented } from '../dom.js';
+import { h, patch, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { feedLine, staleNote, stateLine } from '../panel.js';
@@ -17,7 +17,7 @@ function benchBlock(bench) {
   if (!models.length) return stateLine('No model in this scope has published scores here.');
   return [
     h('div', { class: 'bn-keys' }, BENCH.map(([name, c]) => h('span', null, h('i', { style: { background: c } }), name))),
-    h('ul', { class: 'bn-list' }, models.map((m) => h('li', null,
+    h('ul', { class: 'bn-list' }, models.map((m) => h('li', { 'data-key': m },
       h('div', { class: 'bn-m' }, h('span', { class: 'swatch', style: { background: familyColor(familyOf(m)) } }), m),
       BENCH.map(([name, c]) => {
         const v = bench[m][name];
@@ -40,7 +40,7 @@ function hourBlock(stats, period) {
   return h('div', { class: 'tbl-scroll' }, h('table', { class: 'lab-tbl hr-tbl' },
     h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Model'), h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Bar')),
       h('th', { class: 'r', scope: 'col' }, '$ per active h'), h('th', { class: 'r', scope: 'col' }, 'Output tok/s'), h('th', { class: 'r hr-act', scope: 'col' }, 'Active'))),
-    h('tbody', null, list.map((m) => h('tr', null,
+    h('tbody', null, list.map((m) => h('tr', { 'data-key': m.model },
       h('th', { scope: 'row', title: m.model }, h('span', { class: 'swatch', style: { background: familyColor(familyOf(m.model)) } }), m.model),
       h('td', { class: 'hr-bar' }, h('i', { style: { width: `${m[cph] / max * 100}%` } })),
       h('td', { class: 'r strong' }, approx(), f.usd(m[cph], { cents: true })),
@@ -77,11 +77,11 @@ export default {
       seen = key;
       period.select(p);
       const line = feedLine(s.stats, 'the model reference');
-      fill(state, line, staleNote(s.stats, nowFrom(s)));
+      patch(state, line, staleNote(s.stats, nowFrom(s)));
       const d = dataOf(s.stats);
-      if (!d) { fill(bench); fill(hour); return; }
-      fill(bench, benchBlock(d.benchmarks));
-      fill(hour, hourBlock(d, p));
+      if (!d) { patch(bench); patch(hour); return; }
+      patch(bench, benchBlock(d.benchmarks));
+      patch(hour, hourBlock(d, p));
     }
     return { update };
   },

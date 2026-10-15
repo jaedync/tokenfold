@@ -1,7 +1,7 @@
 // Limit windows (/api/window-history): one report card per ended Claude
 // window, newest first, and a strip of the peaks against the 100% line.
 // Personal scope only; the work scope has a monthly budget, not windows.
-import { h, fill, setText, approx, panelHead, segmented } from '../dom.js';
+import { h, patch, setText, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
 import { feedLine, feedStatus, staleNote, stateLine } from '../panel.js';
@@ -19,7 +19,7 @@ function rangeText(w, bucket) {
 function card(w, bucket) {
   const grants = w.granted_resets || [];
   const hit = Boolean(w.hit_limit);
-  return h('li', { class: 'wc', 'data-hit': hit ? '1' : null },
+  return h('li', { class: 'wc', 'data-key': String(w.start), 'data-hit': hit ? '1' : null },
     h('div', { class: 'wc-range', title: `${f.dayClock(w.start)} to ${f.dayClock(w.end)}` }, rangeText(w, bucket)),
     h('div', { class: 'wc-peak' },
       h('span', { class: 'wc-v' }, f.pct(w.peak_pct)),
@@ -42,7 +42,7 @@ function strip(windows, bucket) {
     const label = bucket === 'seven_day' ? day : (days.has(day) ? null : (days.add(day), day));
     // Every other label hides on a narrow panel (history.css), so dates never overlap.
     const odd = label && labels++ % 2 === 1;
-    return h('div', { class: 'ws-col', title: `${rangeText(w, bucket)} · peak ${f.pct(w.peak_pct)}${w.hit_limit ? ' · hit the limit' : ''}` },
+    return h('div', { class: 'ws-col', 'data-key': String(w.start), title: `${rangeText(w, bucket)} · peak ${f.pct(w.peak_pct)}${w.hit_limit ? ' · hit the limit' : ''}` },
       h('span', { class: 'ws-bar', 'data-hit': w.hit_limit ? '1' : null, style: { height: `${Math.min(100, w.peak_pct || 0)}%` } },
         (w.granted_resets || []).length ? h('b', { class: 'ws-grant' }) : null),
       label ? h('span', { class: 'ws-x', 'data-odd': odd ? '1' : null }, label) : null);
@@ -112,18 +112,18 @@ export default {
       if (el.hidden) return;
       setText(lead, `Each card is one ended Claude ${bucket === 'five_hour' ? '5-hour' : '7-day'} window: its peak, whether it hit the limit, and its spend. Spend counts the Claude requests inside the window; per point divides it by the points used.`);
       const line = windowsLine(feed);
-      fill(state, line, staleNote(feed, nowFrom(s)));
-      if (line) { fill(body); return; }
+      patch(state, line, staleNote(feed, nowFrom(s)));
+      if (line) { patch(body); return; }
       const windows = (dataOf(feed).windows || []).filter((w) => w && typeof w.start === 'number');
       if (!windows.length) {
-        fill(body, stateLine('No window has ended yet.', 'Cards appear after the first window resets.'));
+        patch(body, stateLine('No window has ended yet.', 'Cards appear after the first window resets.'));
         return;
       }
       const newest = windows.slice().sort((a, b) => b.start - a.start);
       const shown = showAll ? newest : newest.slice(0, FIRST_CARDS);
       setText(more, showAll ? 'Show fewer' : `Show all ${newest.length} windows`);
       more.hidden = newest.length <= FIRST_CARDS;
-      fill(body,
+      patch(body,
         h('div', { class: 'wtop' }, summary(windows), strip(windows, bucket)),
         h('ol', { class: 'wcards', 'aria-label': 'Ended windows, newest first' }, shown.map((w) => card(w, bucket))),
         more);
