@@ -163,6 +163,51 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
         await context.close();
       });
     }
+
+    for (const width of [1440, 390]) {
+      await check(`ledger ${width}: polls keep the drawer open and scrolled, the filter, the focus and the inner scroll`, async () => {
+        const {page, errors, context, counts} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#ledger'});
+        await settle(page);
+        // A model filter from the legend, then a session in the drawer.
+        await page.locator('.lo-legend .lg-item').first().click();
+        await page.clock.runFor(200);
+        await page.locator('.lt-btn').first().click();
+        await page.clock.runFor(500);
+        await page.waitForSelector('.drawer.is-open');
+        await page.evaluate(() => {
+          const b = document.querySelector('.dr-body');
+          b.scrollTop = Math.min(80, b.scrollHeight - b.clientHeight);
+          // The timeline scrolls sideways on a phone; keep it off its right end.
+          const t = document.querySelector('.tl-scroll');
+          if (t.scrollWidth > t.clientWidth + 40) t.scrollLeft = 20;
+          document.querySelector('.dr-nav button[aria-label="Next session"]:not([disabled]), .dr-close').focus();
+          window.__focus = document.activeElement;
+        });
+        const before = await page.evaluate(() => ({
+          drawer: document.querySelector('.dr-title').textContent, body: document.querySelector('.dr-body').scrollTop,
+          tl: document.querySelector('.tl-scroll').scrollLeft, chips: document.querySelectorAll('.lc-chip').length,
+        }));
+        assert.equal(before.chips, 1, 'the filter chip is missing');
+        await watch(page);
+        const n0 = Object.values(counts).reduce((a, b) => a + b, 0);
+        await polls(page);
+        const fetched = Object.values(counts).reduce((a, b) => a + b, 0) - n0;
+        assertCalm(await watched(page), fetched);
+        const after = await page.evaluate(() => ({
+          open: Boolean(document.querySelector('.drawer.is-open')), drawer: document.querySelector('.dr-title').textContent,
+          body: document.querySelector('.dr-body').scrollTop, tl: document.querySelector('.tl-scroll').scrollLeft,
+          chips: document.querySelectorAll('.lc-chip').length, focusKept: document.activeElement === window.__focus,
+        }));
+        assert.ok(after.open, 'the drawer closed');
+        assert.equal(after.drawer, before.drawer, 'the drawer shows another session');
+        assert.equal(after.body, before.body, 'the drawer scrolled');
+        assert.equal(after.tl, before.tl, 'the timeline scrolled sideways');
+        assert.equal(after.chips, 1, 'the filter is gone');
+        assert.ok(after.focusKept, 'the focus moved');
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
   } finally {
     await browser.close();
   }

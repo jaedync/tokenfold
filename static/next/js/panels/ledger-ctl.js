@@ -1,6 +1,6 @@
 // Ledger control bar (sticky under the live bar): the period, the filter
 // chips every panel obeys, and the quiet-session toggle.
-import { h, fill, setText, segmented } from '../dom.js';
+import { h, patch, setText, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { derive, dayStart, projectLabel } from './ledger-model.js';
 import { setPeriod, setUi, toggleFilter, clearFilters, colorsFor, swatch, plural } from './ledger-kit.js';
@@ -39,7 +39,7 @@ export default {
 
     function chip(x, d) {
       const name = x.dim === 'tool' && x.val === 'Task' ? 'Subagent (Task)' : x.dim === 'project' ? projectLabel(x.val) : x.val;
-      return h('span', { class: 'lc-chip' },
+      return h('span', { class: 'lc-chip', 'data-key': `${x.dim}:${x.val}` },
         h('span', { class: 'lc-dim' }, DIM[x.dim] || x.dim),
         x.dim === 'model' ? swatch(colorsFor(d).color(x.val).fill) : null,
         h('span', { class: 'lc-val' }, name),
@@ -55,7 +55,7 @@ export default {
         seg.select(d.ui.pkey);
         setText(customBtn, d.ui.pkey === 'custom' ? periodLabel(d) : 'Custom');
         const { filters } = d.ui;
-        fill(chips, filters.length
+        patch(chips, filters.length
           ? [...filters.map((x) => chip(x, d)), filters.length > 1 ? h('button', { type: 'button', class: 'lc-clear', onclick: () => clearFilters(store) }, 'Clear all') : null]
           : h('span', { class: 'lc-hint' }, 'No filters. Click a model, a row or a legend item to narrow every panel.'));
         quiet.hidden = !d.quietCount;

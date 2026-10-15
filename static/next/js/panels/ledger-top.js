@@ -1,6 +1,6 @@
 // Biggest sessions of the period (after filters), by cost. A row opens the
 // session drawer.
-import { h, fill, setText, panelHead } from '../dom.js';
+import { h, patch, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, sessionName, nameShowsProject, clientName, projectLabel } from './ledger-model.js';
 import { colorsFor, swatch, money, plural, openSession, keepFocus } from './ledger-kit.js';
@@ -34,15 +34,15 @@ export default {
       const d = derive(s, ctx.now());
       if (!force && d === seen) return;
       seen = d;
-      if (!d.hasData) { fill(list); setText(sub, ''); more.hidden = true; return; }
+      if (!d.hasData) { patch(list); setText(sub, ''); more.hidden = true; return; }
       const all = topList(d), shown = all.slice(0, many ? MANY : FEW), c = colorsFor(d);
       const today = d.ui.pkey === 'today';
       setText(sub, all.length ? `${shown.length} of ${f.int(all.length)} · by cost` : '');
-      keepFocus(list, () => fill(list, shown.length ? shown.map(({ s: x, cost }) => {
+      keepFocus(list, () => patch(list, shown.length ? shown.map(({ s: x, cost }) => {
         const subs = x.runs.length;
         const meta = [nameShowsProject(x) ? null : projectLabel(x.project), x.machine, clientName(x.client),
           today ? f.clock(x.start) : f.dateShort(x.start), f.shortDur(x.end - x.start)].filter(Boolean).join(' · ');
-        return h('li', { class: 'lt-item' }, h('button', { type: 'button', class: 'lt-btn', 'data-sid': x.id },
+        return h('li', { class: 'lt-item', 'data-key': x.id }, h('button', { type: 'button', class: 'lt-btn', 'data-sid': x.id },
           swatch(c.color(x.model).fill, { class: 'swatch lt-sw' }),
           h('span', { class: 'lt-title' }, sessionName(x), x.live ? h('span', { class: 'live-tag' }, 'Live') : null),
           h('span', { class: 'lt-cost' }, money(cost)),

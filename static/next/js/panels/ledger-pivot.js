@@ -1,7 +1,7 @@
 // Breakdown: one table, five ways to cut the period (project, model,
 // machine, tool, day), computed in the browser from /api/ledger. Columns
 // sort; a row click filters every panel (a day row sets the period).
-import { h, fill, setText, segmented, panelHead } from '../dom.js';
+import { h, patch, setText, segmented, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, dayStart, daysBetween, hasFilter, projectLabel } from './ledger-model.js';
 import { providerGroup } from './ledger-colors.js';
@@ -151,7 +151,7 @@ export default {
         table.querySelector(`[data-sort="${k}"]`).focus();
         return;
       }
-      const n = ev.target.closest('[data-key]');
+      const n = ev.target.closest('button[data-key]');
       if (!n) return;
       if (dim === 'day') {
         const t = Number(n.dataset.key);
@@ -167,7 +167,7 @@ export default {
       const d = derive(store.get(), ctx.now());
       if (!force && d === seen) return;
       seen = d;
-      if (!d.hasData) { fill(table); setText(note, ''); more.hidden = true; return; }
+      if (!d.hasData) { patch(table); setText(note, ''); more.hidden = true; return; }
       const c = colorsFor(d);
       const { rows: every, trendDays } = pivotRows(d, dim);
       const isTool = dim === 'tool', isDay = dim === 'day';
@@ -191,6 +191,7 @@ export default {
         class: cls, scope: 'col', 'aria-sort': sort.key === k ? (sort.dir < 0 ? 'descending' : 'ascending') : null,
       }, SORTABLE.has(k) ? h('button', { type: 'button', 'data-sort': k }, label) : label))));
       const tbody = h('tbody', null, rows.length ? rows.map((r) => h('tr', {
+        'data-key': `${dim}:${r.key}`,
         class: `${dim !== 'day' && hasFilter(d.ui.filters, dim, r.key) ? 'is-on' : ''}${r[metric] === 0 ? ' is-zero' : ''}`,
       }, cols.map(([k]) => cell(k, r, cctx)))) : h('tr', null, h('td', { colspan: cols.length, class: 'pv-empty' },
         isTool && !d.sessions.some((x) => x.hasTools) ? 'This server does not send tool counts.' : 'Nothing matches.')));
@@ -206,7 +207,7 @@ export default {
         h('td', { class: 'pv-r c-opt' }, f.int(t.prompts)), h('td', { class: isDay ? '' : 'c-trend' })))
         : rows.length ? h('tfoot', null, h('tr', null, h('td', null, totLabel), h('td', { class: 'pv-r' }, f.int(t.calls)), h('td'),
           h('td', { class: 'pv-r c-opt' }, f.int(ids.size)), h('td', { class: 'c-opt' }), h('td', { class: 'c-trend' }))) : null;
-      fill(table, thead, tbody, foot);
+      patch(table, thead, tbody, foot);
       more.hidden = isDay || nAll <= FEW_ROWS + 2;
       setText(more, all ? 'Show fewer' : `Show all ${f.int(nAll)} ${LABEL[dim].toLowerCase()}s`);
       setText(note, isDay ? 'Each part of a session counts on the day it started. Click a day to make it the period.'

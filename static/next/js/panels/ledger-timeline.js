@@ -3,7 +3,7 @@
 // for its subagent runs. Quiet sessions stay out unless the control bar
 // shows them. Click or Enter opens the session drawer. The bars are one tab
 // stop (roving tabindex): arrow keys, Home and End move between sessions.
-import { h, fill, setText, panelHead } from '../dom.js';
+import { h, patch, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, dayStart, sessionName, projectLabel, DAY_S } from './ledger-model.js';
 import { colorsFor, svg, tooltip, tipRow, money, plural, openSession, keepFocus, dayLabel } from './ledger-kit.js';
@@ -44,7 +44,7 @@ function sessionG(p, top, ctx) {
   const col = ctx.c.color(s.model);
   const hgt = Math.round(5 + 11 * Math.min(1, Math.log10(1 + p.total) / Math.log10(1 + ctx.costMax)));
   const base = top + 15, w = Math.max(3, p.x1 - p.x0);
-  const g = svg('g', { class: `tl-sess${p.ok ? '' : ' is-dim'}${ctx.sel === s.id ? ' is-sel' : ''}`, 'data-sid': s.id,
+  const g = svg('g', { class: `tl-sess${p.ok ? '' : ' is-dim'}${ctx.sel === s.id ? ' is-sel' : ''}`, 'data-sid': s.id, 'data-key': s.id,
     tabindex: p.ok && ctx.tabStop === s.id ? 0 : -1, role: 'button', 'aria-hidden': p.ok ? null : 'true',
     'aria-label': `${sessionName(s)}, ${s.machine}, ${money(p.total)}, ${plural(s.runs.length, 'subagent')}` });
   g.append(svg('rect', { class: 's-bar', x: p.x0, y: base - hgt, width: w, height: hgt, fill: col.fill, stroke: w > 5 ? INK : null, 'stroke-width': w > 5 ? 1 : null }));
@@ -118,7 +118,7 @@ export default {
     el.append(head.el, empty, frame, foot);
     const tip = tooltip();
 
-    let seen = null, lastW = 0, lastSel = null, byId = new Map();
+    let seen = null, lastW = 0, lastSel = null, byId = new Map(), shownSpan = null;
     // Keyboard order of the matching sessions (lane by lane, by start) and
     // the one bar that takes Tab.
     let order = [], tabStop = null;
@@ -128,10 +128,10 @@ export default {
       const avail = scroll.clientWidth || 800;
       if (!force && d === seen && avail === lastW) return;
       seen = d; lastW = avail;
-      if (!d.hasData) { fill(scroll); fill(lanes); frame.hidden = true; return; }
+      if (!d.hasData) { patch(scroll); patch(lanes); frame.hidden = true; return; }
       const ok = new Map(matched(d.listed, d.ui.filters).map((m) => [m.s.id, m.cost]));
       frame.hidden = !d.listed.length;
-      fill(empty, d.listed.length ? null : h('p', { class: 'p-state' }, 'No sessions in this period.'));
+      patch(empty, d.listed.length ? null : h('p', { class: 'p-state' }, 'No sessions in this period.'));
       if (!d.listed.length) { setText(sub, ''); return; }
       const phone = window.innerWidth <= 700;
       const g = geometry(d, avail, phone);
@@ -165,7 +165,7 @@ export default {
           body.push(sessionG(p, y + PAD + p.r * ROW, cctx));
         }
         body.push(svg('line', { x1: 0, x2: g.W, y1: y + laneH, y2: y + laneH, stroke: HAIR }));
-        laneEls.push(h('div', { class: 'tl-lane', style: { height: `${laneH}px` } }, h('b', { title: name }, name),
+        laneEls.push(h('div', { class: 'tl-lane', 'data-key': name, style: { height: `${laneH}px` } }, h('b', { title: name }, name),
           laneN ? [h('span', null, plural(laneN, 'session')), h('span', null, `≈${money(laneCost)}`)] : h('span', null, 'no match')));
         y += laneH;
       }
@@ -173,12 +173,16 @@ export default {
       const nowEls = d.range.open ? [svg('line', { x1: g.x(d.now), x2: g.x(d.now), y1: AX - 6, y2: H_, stroke: RED, 'stroke-width': 3 }),
         svg('rect', { x: g.x(d.now) - 17, y: AX - 25, width: 34, height: 16, fill: RED }),
         svg('text', { x: g.x(d.now), y: AX - 13, 'text-anchor': 'middle', class: 'tl-now', text: 'NOW' })] : [];
-      keepFocus(scroll, () => fill(scroll, svg('svg', { width: g.W, height: H_, viewBox: `0 0 ${g.W} ${H_}`, role: 'group', 'aria-label': 'Sessions by machine over time' },
+      keepFocus(scroll, () => patch(scroll, svg('svg', { width: g.W, height: H_, viewBox: `0 0 ${g.W} ${H_}`, role: 'group', 'aria-label': 'Sessions by machine over time' },
         ...axis(g, d, H_), svg('line', { x1: 0, x2: g.W, y1: AX, y2: AX, stroke: INK, 'stroke-width': 2 }), ...nowEls, ...body)));
-      fill(lanes, laneEls);
+      patch(lanes, laneEls);
       const filtered = d.ui.filters.length > 0;
       setText(sub, `${plural(shown, 'session')} · ${plural(runs, 'subagent run')}${threads ? '' : ' · zoom in to see subagent lines'}${filtered ? ' · the rest are faded' : ''}`);
-      if (g.W > avail) scroll.scrollLeft = g.W;
+      // Start at the right end (now) for a new period only: a poll keeps
+      // where the user scrolled to.
+      const span = `${d.range.from}|${d.ui.pkey}|${avail}`;
+      if (g.W > avail && span !== shownSpan) scroll.scrollLeft = g.W;
+      shownSpan = span;
       lastSel = s.ledgerDrawer;
     }
 

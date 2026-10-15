@@ -8,15 +8,17 @@ import { svg, swatch, money } from './ledger-kit.js';
 const INK = '#161616', MUTED = '#5d5950', PAPER = '#f3eee3';
 const RH = 9, TOP = 38, MAX_ROWS = 16, TREE_FEW = 8;
 
-export function renderGantt(s, promptTimes, c, live) {
+// Drawn at once, at `width` (the drawer's gantt width now, 0 before it
+// opened: then its max width). The drawer patches the result into its kept
+// gantt, so a poll changes the bars in place; its ResizeObserver redraws
+// when the measured width differs from data-w.
+export function renderGantt(s, promptTimes, c, live, width) {
   const box = h('div', { class: 'gantt' });
-  // The drawer is measured after it opens; until then use its max width.
-  requestAnimationFrame(() => draw(box, s, promptTimes, c, live));
+  draw(box, s, promptTimes, c, live, width || 480);
   return box;
 }
 
-function draw(box, s, promptTimes, c, live) {
-  const W = box.clientWidth || 480;
+function draw(box, s, promptTimes, c, live, W) {
   box.dataset.w = String(W);
   const t0 = s.start, t1 = Math.max(s.end, s.start + 1);
   const x = (t) => ((Math.min(t1, Math.max(t0, t)) - t0) / (t1 - t0)) * (W - 4) + 2;

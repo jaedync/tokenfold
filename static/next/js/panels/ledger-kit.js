@@ -1,7 +1,7 @@
 // Shared Ledger helpers: UI state actions, colours per payload, SVG and
 // tooltip builders. Text always goes in through textContent (h(), svg()).
 
-import { h, fill } from '../dom.js';
+import { h, patch } from '../dom.js';
 import * as f from '../format.js';
 import { DEFAULT_UI, uiOf, hasFilter } from './ledger-model.js';
 import { modelColors } from './ledger-colors.js';
@@ -100,7 +100,7 @@ export function tooltip() {
   document.body.append(el);
   return {
     show(ev, ...children) {
-      fill(el, ...children);
+      patch(el, ...children);
       el.hidden = false;
       const r = el.getBoundingClientRect();
       let x = ev.clientX + 14, y = ev.clientY + 14;
