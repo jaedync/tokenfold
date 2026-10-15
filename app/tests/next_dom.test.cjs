@@ -20,6 +20,8 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
   const context = await browser.newContext({viewport, timezoneId: 'America/Chicago'});
   const page = await context.newPage();
   const errors = [];
+  const requests = [];
+  page.on('request', r => requests.push(new URL(r.url()).pathname));
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => {
     // A real-mode 404 is the browser's own network log line; anything else is a bug.
@@ -41,7 +43,7 @@ async function open(browser, {viewport, url, api404 = false, fixtureOverride = n
     return route.fulfill({status: 404, body: ''});
   });
   await page.goto(ORIGIN + url);
-  return {page, errors, context};
+  return {page, errors, context, requests};
 }
 
 const text = (page, sel) => page.locator(sel).first().innerText();
@@ -129,6 +131,114 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.waitForFunction(() => /devbox · api-server is waiting on you: needs permission/.test(document.getElementById('announce').textContent), null, {timeout: 12000});
       assert.equal(await page.locator('.p-now .row.flash[data-id="s-c388"]').count(), 1);
       assert.match(await page.title(), /3 waiting/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    // ---------------------------------------------------------- Runway polish
+    // A too-early binding window: the server has no forecast yet.
+    const tooEarly = (name, body) => {
+      if (name === 'runway-trajectory') {
+        const t = body.points.at(-1)[0];
+        return {...body, points: [[t - 6 * 3600, 0], [t - 3 * 3600, 5], [t, 11]], start: t - 6 * 3600};
+      }
+      if (name !== 'runway') return null;
+      const windows = body.windows.map(w => (w.id !== body.binding ? w : {
+        ...w, pct: 11, verdict: 'too_early', tight_epoch: null,
+        window_start: body.generated_at - 6 * 3600, resets_at: body.generated_at + 162 * 3600,
+        pace: {...w.pace, pace_state: 'too_early', expected_pct: 3.6, projected_pct: null, reaches_100_epoch: null, elapsed_fraction: 0.036},
+      }));
+      return {...body, windows};
+    };
+    const midWindow = (name, body) => {
+      if (name !== 'runway') return null;
+      const windows = body.windows.map(w => (w.id !== body.binding ? w : {...w, pace: {...w.pace, elapsed_fraction: 0.5}}));
+      return {...body, windows};
+    };
+    const noSessions = (name, body) => (name === 'now'
+      ? {...body, sessions: [], live: {...body.live, working: 0, waiting: 0, subagents: 0}} : null);
+    const both = (...fns) => (name, body) => fns.reduce((b, fn) => fn(name, b) || b, body);
+
+    await check('too early: pace shows elapsed time and even pace, no over/under figure', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: tooEarly});
+      await page.waitForFunction(() => /too early/i.test(document.querySelector('.p-hero .verdict-word').textContent));
+      const pace = await text(page, '.p-hero .facts > div:first-child');
+      assert.match(pace, /6 h .*into the window/);
+      assert.match(pace, /even pace 4%/);
+      assert.doesNotMatch(pace, /over|under|pts/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('burn: the meter rate is labelled as such; sessions split it when they exist', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-hero .burn-list li');
+      assert.match(await text(page, '.p-hero .burn-head'), /Meter rate, last hour\s*\+0\.80%\/h/i);
+      assert.equal(await page.locator('.p-hero .burnbar').count(), 1);
+      assert.equal(await page.locator('.p-hero .burn-list li').count(), 3);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('burn: without live sessions the hero says so plainly and shows no empty bar', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 390, height: 844}, url: '/next?mock=1&scope=personal', fixtureOverride: noSessions});
+      await page.waitForSelector('.p-hero .burn-none');
+      assert.equal(await text(page, '.p-hero .burn-none'), 'No live session data. Agents report live state through the notify hooks.');
+      assert.equal(await page.locator('.p-hero .burnbar').count(), 0);
+      assert.equal(await page.title(), '92% 7d · 0 waiting · Tokenfold');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('chart range: late or early in a window opens on the last 24 h; the pick holds', async () => {
+      const pressed = (page) => page.getAttribute('.p-chart .zoom [aria-pressed="true"]', 'data-value');
+      for (const [override, want] of [[null, 'day'], [tooEarly, 'day'], [midWindow, 'window']]) {
+        const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: override});
+        await page.waitForSelector('.p-chart canvas');
+        await page.waitForFunction(() => document.querySelector('.p-chart .readout').textContent.length > 0);
+        assert.equal(await pressed(page), want, `default for ${override ? override.name : 'late window'}`);
+        if (override === tooEarly) assert.match(await text(page, '.p-chart .chart-empty'), /limit \(100%\) is above/i);
+        const other = want === 'day' ? 'window' : 'day';
+        await page.click(`.p-chart .zoom [data-value="${other}"]`);
+        await page.waitForTimeout(5500);  // one /api/now poll later
+        assert.equal(await pressed(page), other);
+        assert.deepEqual(errors, []);
+        await context.close();
+      }
+    });
+
+    await check('masthead mark: each column names its window and gives its value', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 390, height: 844}, url: '/next?mock=1&scope=personal'});
+      await page.waitForFunction(() => document.getElementById('mk-bind-v').textContent !== '—');
+      assert.equal(await text(page, '#mk-bind-k'), '7D');
+      assert.match(await page.locator('#mk-bind-v').textContent(), /^92%?$/);
+      assert.match(await page.locator('#mk-short-v').textContent(), /^35%?$/);
+      assert.match(await page.getAttribute('#mark', 'title'), /Claude · 7-day, 92% used/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('work scope: the month chart draws the billed line from the meter', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1024, height: 768}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-hero .verdict-word');
+      await page.click('[data-scope="enterprise"]');
+      await page.waitForFunction(() => /Billing meter/i.test(document.querySelector('#hero-k').textContent));
+      await page.waitForSelector('.p-chart canvas');
+      assert.equal(await page.locator('.p-chart .chart-empty').isHidden(), true);
+      assert.equal(await page.locator('.p-chart .zoom').isHidden(), true);
+      assert.match(await text(page, '.p-chart .legend'), /Billed/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('cache busting: every module and asset loads from the versioned path', async () => {
+      const {page, errors, context, requests} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-exchange .ex-v');
+      const version = await page.evaluate(() => document.body.dataset.version);
+      const statics = requests.filter(p => p.startsWith('/static/next'));
+      assert.ok(statics.length > 15, `only ${statics.length} static requests`);
+      for (const p of statics) assert.ok(p.startsWith(`/static/next-${version}/`), p);
+      assert.ok(statics.some(p => p.endsWith('/js/panels/hero.js')), 'nested module');
       assert.deepEqual(errors, []);
       await context.close();
     });
