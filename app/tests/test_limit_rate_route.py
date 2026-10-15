@@ -162,3 +162,74 @@ class LimitRateRouteTest(_Base):
         with patch("app.config.DASHBOARD_USER", "u"), \
                 patch("app.config.DASHBOARD_PASSWORD", "p"):
             self.assertEqual(self.get().status_code, 401)
+
+
+class LimitRatePrewarmTest(_Base):
+    """App startup starts the fit, so the first request after a deploy finds
+    a result instead of "computing"."""
+
+    def test_prewarm_fits_in_the_background(self):
+        self.seed(days=2)
+        gate = threading.Event()
+        real = self.lr.compute_payload
+
+        def slow(*a, **kw):
+            gate.wait(5)
+            return real(*a, **kw)
+
+        with patch.object(self.lr, "compute_payload", side_effect=slow):
+            t0 = time.monotonic()
+            thread = self.lr.prewarm()
+            self.assertLess(time.monotonic() - t0, 0.5, "prewarm must not block startup")
+            self.assertIsNotNone(thread)
+            gate.set()
+            self.lr.join_refresh(5)
+        with patch.object(self.lr, "compute_payload",
+                          side_effect=AssertionError("prewarm already fitted")):
+            body = self.get().json()
+        self.assertEqual(body["fit_quality"]["status"], "ok")
+
+    def test_prewarm_skips_a_fresh_meta_cache(self):
+        self.seed(days=2)
+        self.get()
+        self.lr.reset_state()
+        with patch.object(self.lr, "compute_payload",
+                          side_effect=AssertionError("cache is fresh")):
+            self.assertIsNone(self.lr.prewarm())
+
+    def test_prewarm_skips_an_enterprise_instance(self):
+        with patch("app.config.LOCKED_SCOPE", "enterprise"), \
+                patch.object(self.lr, "compute_payload",
+                             side_effect=AssertionError("no limits here")):
+            self.assertIsNone(self.lr.prewarm())
+
+    def test_prewarm_failure_never_raises(self):
+        with patch.object(self.lr, "_entry", side_effect=RuntimeError("db gone")), \
+                self.assertLogs("app.limit_rate", "ERROR"):
+            self.assertIsNone(self.lr.prewarm())
+
+
+class LifespanPrewarmTest(_Base):
+    def test_lifespan_starts_the_limit_rate_fit(self):
+        import asyncio
+        import app.main as main
+        stubs = [patch.object(main, "load_pricing"),
+                 patch.object(main.usage_fetcher, "should_run", return_value=False),
+                 patch.object(main, "init_light", new=lambda: asyncio.sleep(0)),
+                 patch.object(main, "start_watchdog"), patch.object(main, "stop_watchdog"),
+                 patch.object(main, "close_conn"),
+                 patch.object(main, "_backfill_if_needed"),
+                 patch("app.aggregator.trigger_eager_rebuild"),
+                 patch("app.aggregator.start_sweeps"), patch("app.aggregator.stop_sweeps"),
+                 patch.object(self.lr, "prewarm")]
+        for p in stubs:
+            p.start()
+            self.addCleanup(p.stop)
+
+        async def run():
+            async with main.lifespan(main.app):
+                pass
+
+        with patch("builtins.print"):
+            asyncio.run(run())
+        self.lr.prewarm.assert_called_once_with()

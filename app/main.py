@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
     from .aggregator import trigger_eager_rebuild, start_sweeps, stop_sweeps
     _backfill_if_needed()
     trigger_eager_rebuild()
+    # Exchange rate fit (1-3 s) in the background, so the first /next visit
+    # after a deploy does not wait for it.
+    from .limit_rate import prewarm as prewarm_limit_rate
+    prewarm_limit_rate()
 
     # Start periodic sweep timers
     start_sweeps()

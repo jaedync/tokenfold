@@ -123,6 +123,26 @@ def _ensure_refresh(now: float) -> Optional[threading.Thread]:
         return t
 
 
+def prewarm() -> Optional[threading.Thread]:
+    """Start the fit at app startup unless meta holds a fresh one.
+
+    A deploy restarts the process; without this the first visit waits
+    WAIT_S and may still read "computing". Never blocks and never raises:
+    startup must not depend on the fit.
+    """
+    try:
+        if sys.modules["app.config"].LOCKED_SCOPE == "enterprise":
+            return None
+        now = time.time()
+        entry = _entry(now)
+        if entry is not None and now - entry["computed_at"] < RECOMPUTE_S:
+            return None
+        return _ensure_refresh(now)
+    except Exception:
+        logger.exception("limit-rate: startup prewarm failed; the first request fits")
+        return None
+
+
 def join_refresh(timeout: float) -> None:
     """Wait for a running fit (tests)."""
     t = _state.get("thread")
