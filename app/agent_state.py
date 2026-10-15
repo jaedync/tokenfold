@@ -28,7 +28,10 @@ from .config import (AGENT_STATE_MOTE_MIN_VISIBLE_S, AGENT_STATE_MOTE_SUNSET_S,
 
 router = APIRouter()
 
-# sid -> {machine, project, state, ts, waiting_notified, model, subagents}
+# sid -> {machine, project, state, ts, state_since, waiting_reason,
+#         waiting_notified, model, subagents}
+# ts is the last event (drives TTL); state_since is when the session entered
+# its current state (the Now panel's "waiting 12 min").
 _sessions: dict[str, dict] = {}
 _last_working_ts: float = 0.0
 
@@ -139,7 +142,7 @@ def session_start(session_id: str, machine: str, project: str,
     if s is not None and s.get("ending_ts") is not None:
         return                              # terminal: SessionEnd already fired
     if s is None:
-        s = {"waiting_notified": False, "state": "idle",
+        s = {"waiting_notified": False, "state": "idle", "state_since": now,
              "machine": machine or "", "project": project or "", "ts": now}
         print("[agent-state] {} {}: new -> idle (session_start)".format(
             time.strftime("%H:%M:%S", time.localtime(now)),
@@ -245,8 +248,12 @@ def _compacting(s: dict, now: float) -> bool:
 def update(session_id: str, machine: str, project: str, state: str,
            now: float | None = None, event_ts: float | None = None,
            fleet_rev: str | None = None, model: str | None = None,
-           refresh_subagents: bool = True) -> str | None:
+           refresh_subagents: bool = True,
+           reason: str | None = None) -> str | None:
     """Record a state transition. Returns the session's previous state.
+
+    reason: for a waiting transition, the notify event kind that caused it
+    (permission | question | attention). Cleared on any other state.
 
     refresh_subagents: a working event normally blanket-refreshes every live
     mote (the legacy keep-alive for clients that send nothing else about
@@ -290,6 +297,12 @@ def update(session_id: str, machine: str, project: str, state: str,
     s["project"] = project or s.get("project", "")
     if model:
         s["model"] = model
+    if state != prev or "state_since" not in s:
+        s["state_since"] = now
+    if state == "waiting":
+        s["waiting_reason"] = reason or s.get("waiting_reason")
+    else:
+        s["waiting_reason"] = None
     s["state"] = state
     s["ts"] = now
     if state == "working":
@@ -354,6 +367,7 @@ def add_subagent(session_id: str, agent_id: str, machine: str = "",
     s = _sessions.get(session_id)
     if s is None:
         s = {"waiting_notified": False, "state": "working",
+             "state_since": now,
              "machine": machine or "", "project": project or ""}
         print("[agent-state] {} {}: new -> working (subagent spawn)".format(
             time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
@@ -479,6 +493,7 @@ def reconcile_subagents(session_id: str, entries,
         if not clean:
             return 0
         s = {"waiting_notified": False, "state": "working",
+             "state_since": now,
              "machine": "", "project": "", "working_ts": now}
         print("[agent-state] {} {}: new -> working (fanout snapshot)".format(
             time.strftime("%H:%M:%S", time.localtime(now)), session_id[:12]),
@@ -587,6 +602,13 @@ def snapshot(now: float | None = None) -> dict:
             "project": s["project"],
             "state": s["state"],
             "age_s": round(now - s["ts"], 1),
+            # Additive (/api/now): time in the current state, why it waits,
+            # and the raw model id the hooks reported.
+            "state_since": s.get("state_since", s["ts"]),
+            "waiting_reason": (s.get("waiting_reason")
+                               if s["state"] == "waiting" else None),
+            "model": s.get("model", ""),
+            "ending": ending is not None,
             "fleet_rev": s.get("fleet_rev"),
             "fanout": len(active),
             # agent ids let an ambient display place one stable mote per

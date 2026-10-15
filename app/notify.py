@@ -457,7 +457,9 @@ async def notify(request: Request, authorization: str | None = Header(default=No
             return {"ok": True, "state": "subagent_stop", "fanout": n}
 
         if event in WAITING_EVENTS:
-            agent_state.update(session_id, machine, project, "waiting", event_ts=client_ts, fleet_rev=fleet_rev)
+            agent_state.update(session_id, machine, project, "waiting",
+                               event_ts=client_ts, fleet_rev=fleet_rev,
+                               reason=event)
             reason = _waiting_push_decision(session_id)
             if reason:
                 return {"ok": True, "suppressed": reason}
