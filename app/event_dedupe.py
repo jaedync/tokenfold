@@ -40,6 +40,22 @@ def _positive_reported_cost(alias: str) -> str:
 # an earlier row in another session of the same work/personal class has its
 # key. The flag is stored at ingest, so an arriving copy never changes the
 # original or any earlier rollup. Copies are excluded from cost and activity.
+#
+# Accepted risks (none seen in production 2026-10):
+# - A content key leaves out the session for main-session rows without a
+#   msg_* ID (prompts, tool results, compactions), so forks match. Two
+#   unrelated parallel main sessions (fleet workers started together with
+#   one brief) that write the same millisecond timestamp and the same sizes
+#   collide, and the later row is dropped as a copy.
+# - The lower rowid wins even when only a later copy reports a positive
+#   cost. The request still counts once, priced from its SDK twin or from
+#   compute_cost instead of the reported cost.
+# - The msg_* key holds only the response ID. ingest accepts a tool_usage
+#   kind, and a row of that kind that sums a child's usage under the child's
+#   msg_* ID would merge with the child's own row. Production has no such
+#   rows (Pi usage kinds there: assistant and compaction; other rows are
+#   user type), so it cannot happen today. Check this if a client starts to
+#   send tool_usage.
 
 _PI_NAMESPACE = re.compile(r'pi:[0-9a-f]{40}:')
 _KEY_BACKFILL_ROWS = 50_000
