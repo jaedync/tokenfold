@@ -66,7 +66,7 @@ function paceSub(w, now) {
 
 // What the live sessions add to the meter rate. The rate above is the quota
 // meter's; the per-session split shows only when agents report live state.
-function burnDetail(now) {
+function burnDetail(now, meterRate) {
   if (!now) return null;
   const sessions = Array.isArray(now.sessions) ? now.sessions : [];
   if (!sessions.length) {
@@ -75,10 +75,13 @@ function burnDetail(now) {
   const rows = sessions.filter((x) => x.state === 'working' && x.share_of_binding_pct_per_h > 0)
     .sort((a, b) => b.share_of_binding_pct_per_h - a.share_of_binding_pct_per_h);
   if (!rows.length) return h('p', { class: 'burn-none' }, 'No live session uses this window now.');
+  // Full bar = the meter rate; the paper rest is what no live session explains.
+  const sum = rows.reduce((a, x) => a + x.share_of_binding_pct_per_h, 0);
+  const scale = Math.max(sum, f.missing(meterRate) ? 0 : meterRate) || 1;
   return [
-    h('div', { class: 'burn-sub' }, 'Live sessions, share of this window'),
-    h('div', { class: 'burnbar', role: 'img', 'aria-label': 'Share of this window by live session' },
-      rows.map((x) => h('span', { style: { flex: `${x.share_of_binding_pct_per_h} 1 0`, background: familyColor(x.family) } }))),
+    h('div', { class: 'burn-sub' }, 'Live sessions, share of the meter rate'),
+    h('div', { class: 'burnbar', role: 'img', 'aria-label': `Live sessions explain ≈${Math.round(sum / scale * 100)}% of the meter rate` },
+      rows.map((x) => h('span', { style: { width: `${x.share_of_binding_pct_per_h / scale * 100}%`, background: familyColor(x.family) } }))),
     h('ul', { class: 'burn-list' }, rows.map((x) => h('li', null,
       h('span', { class: 'swatch', style: { background: familyColor(x.family) } }),
       h('span', { class: 'bn' }, h('b', null, x.machine), ` ${x.project || ''}`, x.subagents ? ` · ${x.subagents} sub` : ''),
@@ -159,7 +162,7 @@ export default {
         h('div', { class: 'burn-head' },
           h('span', { class: 'kicker' }, 'Meter rate, last hour'),
           h('b', null, f.missing(h1) ? f.DASH : `+${h1.toFixed(2)}%/h`)),
-        burnDetail(dataOf(s.now)));
+        burnDetail(dataOf(s.now), h1));
     }
 
     function renderShort(s) {

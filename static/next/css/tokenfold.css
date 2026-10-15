@@ -393,6 +393,7 @@ a.lb-wait { text-decoration: none; }
   /* Phone: the attention queue comes before the burn, so it never scrolls off. */
   .lb-wait { order: 1; } .lb-work { order: 2; } .lb-burn { order: 3; }
   .lb-wait .lb-label .long, .lb-burn .lb-label, .lb-burn .b-usd { display: none; }
+  .lb-burn .lb-val { min-width: 0; }
   /* Phone order follows the DOM: hero, Now, other windows, chart, Today, Exchange rate. */
   .p-hero, .p-rail, .p-chart, .p-now { grid-column: 1 / -1; grid-row: auto; }
   .p-hero::after { width: 28px; height: 28px; }

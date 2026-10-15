@@ -244,8 +244,8 @@ export default {
 
     const plot = new uPlot({
       width: 400, height: 300,
-      // Room on the right for the forecast label ("≈99%" or "≈$3.4K").
-      padding: [18, () => (m && m.month ? 72 : 58), 0, 0],
+      // Room on the right for the forecast label ("≈99%" or "≈$3.4K"), if any.
+      padding: [18, () => (!m || f.missing(m.projected) ? 16 : m.month ? 72 : 58), 0, 0],
       legend: { show: false },
       select: { show: false },
       cursor: { y: false, drag: { x: false, y: false }, points: { size: 9, fill: BLUE, stroke: PAPER, width: 2 } },
