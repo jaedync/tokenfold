@@ -103,8 +103,7 @@ def build_today(scope: str, snap: dict, now: float) -> dict:
     with read_conn() as conn:
         rows = conn.execute(f"SELECT * FROM daily_summary WHERE day = ? AND {pred}",
                             (today,)).fetchall()
-        first = conn.execute(f"SELECT MIN(day) FROM daily_summary WHERE {pred}").fetchone()[0]
-        days = today_typical.history_days(today, first)
+        days = today_typical.history_days(today, today_typical.first_day(conn, scope))
         costs = _daily_costs(conn, pred, days)
         working = _safe("live working", lambda: _working_by_machine(
             conn, scope, snap, now, today), {})

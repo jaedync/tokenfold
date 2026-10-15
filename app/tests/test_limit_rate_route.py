@@ -221,7 +221,8 @@ class LifespanPrewarmTest(_Base):
                  patch.object(main, "_backfill_if_needed"),
                  patch("app.aggregator.trigger_eager_rebuild"),
                  patch("app.aggregator.start_sweeps"), patch("app.aggregator.stop_sweeps"),
-                 patch.object(self.lr, "prewarm")]
+                 patch.object(self.lr, "prewarm"), patch("app.prewarm.start"),
+                 patch("app.prewarm.join")]
         for p in stubs:
             p.start()
             self.addCleanup(p.stop)
@@ -247,7 +248,8 @@ class LifespanPrewarmTest(_Base):
                  patch.object(main, "_backfill_if_needed"),
                  patch("app.aggregator.trigger_eager_rebuild"),
                  patch("app.aggregator.start_sweeps"), patch("app.aggregator.stop_sweeps"),
-                 patch.object(self.lr, "prewarm"),
+                 patch.object(self.lr, "prewarm"), patch("app.prewarm.start"),
+                 patch("app.prewarm.join"),
                  patch.object(self.lr, "join_refresh", side_effect=lambda t: order.append("join")),
                  patch.object(main, "close_conn", side_effect=lambda: order.append("close"))]
         for p in stubs:

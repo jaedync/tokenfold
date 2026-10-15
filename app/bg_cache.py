@@ -8,6 +8,10 @@ starts one builder thread and returns None (the endpoint reports null) when
 the build is slower than that, and a stale value is served while a refresh
 runs. Failures are logged and never cached. Builders must open their own
 read connection (db.read_conn): they run off the request thread.
+
+stale_s bounds how old a served value may get: a value older than
+ttl + stale_s counts as missing, so the request waits (up to wait_s) for the
+build. None (the default) serves a stale value at any age.
 """
 import logging
 import threading
@@ -17,10 +21,12 @@ log = logging.getLogger(__name__)
 
 
 class BackgroundCache:
-    def __init__(self, ttl: float, wait_s: float, max_entries: int = 16):
+    def __init__(self, ttl: float, wait_s: float, max_entries: int = 16,
+                 stale_s: float | None = None):
         self.ttl = ttl
         self.wait_s = wait_s
         self.max_entries = max_entries
+        self.stale_s = stale_s
         self._lock = threading.Lock()
         self._entries: dict = {}          # key -> (monotonic_ts, value)
         self._inflight: dict = {}         # key -> Thread
@@ -29,8 +35,11 @@ class BackgroundCache:
         """wait_s overrides the instance wait (0 = start the build, never wait)."""
         with self._lock:
             entry = self._entries.get(key)
-            if entry and time.monotonic() - entry[0] < self.ttl:
+            age = time.monotonic() - entry[0] if entry else None
+            if entry and age < self.ttl:
                 return entry[1]
+            if entry and self.stale_s is not None and age >= self.ttl + self.stale_s:
+                entry = None
             thread = self._inflight.get(key)
             if thread is None:
                 thread = threading.Thread(target=self._run, args=(key, build),

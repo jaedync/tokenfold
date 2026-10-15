@@ -7,7 +7,9 @@ so this module scans events once per local day and keeps a 15-minute slot
 profile per day (past days do not change, apart from late ingest, which a
 one-hour refresh absorbs). The scan prices 28 days of requests (~1.2 s on
 the production copy), so it runs in a background cache: /api/today returns
-null for typical_by_now_usd until the first build lands.
+null for typical_by_now_usd until the first build lands. App startup builds
+it at once (warm(), from app/prewarm.py), so a restart does not show
+"not ready".
 
 15-minute slots are absolute epoch buckets. Every IANA offset in use is a
 multiple of 15 minutes, so each bucket maps to exactly one local slot.
@@ -15,6 +17,7 @@ multiple of 15 minutes, so each bucket maps to exactly one local slot.
 import statistics
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from .bg_cache import BackgroundCache
 from .db import read_conn
@@ -51,6 +54,12 @@ _SLOT_SQL = (
     "  AND {canonical} AND {pred} AND ts_epoch >= ? AND ts_epoch < ? "
     "  GROUP BY model, provider, source_client, request_id"
     ") GROUP BY bucket, model, provider, source_client, speed, inference_geo")
+
+
+def first_day(conn, scope: str) -> str | None:
+    """The scope's first data day (days before it are left out)."""
+    pred = sys.modules["app.config"].scope_predicate(scope)
+    return conn.execute(f"SELECT MIN(day) FROM daily_summary WHERE {pred}").fetchone()[0]
 
 
 def history_days(today: str, first_day: str | None) -> list[str]:
@@ -112,12 +121,28 @@ def typical_by_now(scope: str, days: list[str], seconds_into_day: float, tz) -> 
     the background profile is not built yet)."""
     if not days:
         return None
-    key = (scope, days[0], days[-1])
-    profile = _PROFILE.get(key, lambda: build_profile(scope, days, tz))
+    profile = _PROFILE.get(_key(scope, days), lambda: build_profile(scope, days, tz))
     if profile is None:
         return None
     return statistics.median(cumulative_at(profile.get(d, {}), seconds_into_day)
                              for d in days)
+
+
+def _key(scope: str, days: list[str]) -> tuple:
+    return (scope, days[0], days[-1])
+
+
+def warm(scope: str, now: float, wait_s: float) -> bool:
+    """Build today's profile for this scope, waiting up to wait_s for it.
+    False when the scope has no history (nothing to build)."""
+    tz = ZoneInfo(sys.modules["app.config"].TZ_NAME)
+    today = datetime.fromtimestamp(now, tz).strftime("%Y-%m-%d")
+    with read_conn() as conn:
+        days = history_days(today, first_day(conn, scope))
+    if not days:
+        return False
+    _PROFILE.get(_key(scope, days), lambda: build_profile(scope, days, tz), wait_s=wait_s)
+    return True
 
 
 def clear_cache() -> None:

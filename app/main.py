@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI):
     # after a deploy does not wait for it.
     from .limit_rate import prewarm as prewarm_limit_rate
     prewarm_limit_rate()
+    # Today's typical profile, spend history and the second stats scope.
+    from . import prewarm
+    prewarm.start()
 
     # Start periodic sweep timers
     start_sweeps()
@@ -65,6 +68,8 @@ async def lifespan(app: FastAPI):
     # A running limit-rate fit stores through the shared connection.
     from .limit_rate import join_refresh as join_limit_rate
     join_limit_rate(10.0)
+    # Its builds read on their own connections; wait so none outlives the app.
+    prewarm.join(10.0)
     close_conn()
 
 
