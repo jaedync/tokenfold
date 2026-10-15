@@ -143,3 +143,25 @@ class WindowHistoryTest(_HABase):
         self._get(scope="enterprise", status=404)
         self._get(bucket="BAD!", status=400)
         self.assertEqual(self._get(bucket="five_hour")["windows"], [])
+
+
+class HistoryDegradeTest(_HABase):
+    def test_trajectory_failure_is_empty_not_500(self):
+        self._seed_oauth()
+        with patch.object(app.config, "LOCKED_SCOPE", None), \
+                patch("app.runway.claude_trajectory",
+                      side_effect=RuntimeError("boom")):
+            r = self.client().get("/api/runway/trajectory", params={
+                "scope": "personal", "window": "claude:seven_day"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"points": [], "resets": [],
+                                    "start": None, "end": None})
+
+    def test_window_history_failure_is_empty_not_500(self):
+        with patch.object(app.config, "LOCKED_SCOPE", None), \
+                patch("app.runway.window_history",
+                      side_effect=RuntimeError("boom")):
+            r = self.client().get("/api/window-history",
+                                  params={"scope": "personal"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"windows": []})

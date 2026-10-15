@@ -108,15 +108,28 @@ def _bounds_only(conn, effective, provider, now, window_id):
             "end": w["resets_at"]}
 
 
+EMPTY_TRAJECTORY = {"points": [], "resets": [], "start": None, "end": None}
+
+
 def _trajectory(effective, window_id):
     provider, key = window_id.split(":", 1)
+    if (provider == "claude" and key != "month"
+            and not _personal_limits_allowed(effective)):
+        # Personal Max limit data: an enterprise view gets a neutral 404,
+        # as /api/limit-history does.
+        return None
+    try:
+        return _trajectory_body(effective, provider, key, window_id)
+    except Exception as e:
+        # The chart degrades to empty; the rest of the view keeps working.
+        log("trajectory %s failed: %r", window_id, e)
+        return dict(EMPTY_TRAJECTORY)
+
+
+def _trajectory_body(effective, provider, key, window_id):
     now = time.time()
     with read_conn(snapshot=True) as conn:
         if provider == "claude" and key != "month":
-            # Personal Max limit data: an enterprise view gets a neutral
-            # 404, as /api/limit-history does.
-            if not _personal_limits_allowed(effective):
-                return None
             return claude_trajectory(conn, key, now)
         return _bounds_only(conn, effective, provider, now, window_id)
 
@@ -150,6 +163,10 @@ async def runway_window_history(bucket: str = Query(default="seven_day"),
         raise HTTPException(status_code=400, detail="invalid bucket")
 
     def build():
-        with read_conn() as conn:
-            return window_history(conn, effective, bucket)
+        try:
+            with read_conn() as conn:
+                return window_history(conn, effective, bucket)
+        except Exception as e:
+            log("window-history %s failed: %r", bucket, e)
+            return {"windows": []}
     return await run_in_threadpool(build)
