@@ -36,7 +36,9 @@ function drift(v, key, n) {
 }
 
 // The shell is rendered for the personal scope; the work scope is one click away.
-async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
+// boot: the scope the page opens in (the rendered shell is personal).
+// holdStatic: static paths that wait for page.__release() like held fixtures.
+async function open(browser, {viewport, url, hold = null, scope = 'personal', boot = 'personal', holdStatic = null, waitUntil = 'load'}) {
   const context = await browser.newContext({viewport, timezoneId: 'America/Chicago'});
   const page = await context.newPage();
   const errors = [];
@@ -46,7 +48,8 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
   await page.route('**/*', async route => {
     const u = new URL(route.request().url());
     if (u.origin !== ORIGIN) return route.fulfill({status: 204, body: ''});
-    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML, headers: CSP ? {'Content-Security-Policy': CSP} : {}});
+    const html = boot === 'personal' ? HTML : HTML.replace('data-scope="personal"', `data-scope="${boot}"`);
+    if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: html, headers: CSP ? {'Content-Security-Policy': CSP} : {}});
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
     const fixture = pathname.match(/^\/static\/next\/fixtures\/(.+)\.json$/);
     if (fixture && fs.existsSync(path.join(FIXTURES, fixture[1] + '.json'))) {
@@ -60,6 +63,7 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
       const text = fs.readFileSync(path.join(ROOT, pathname), 'utf8');
       return route.fulfill({contentType: 'text/javascript', body: `${text}\ndocument.addEventListener('tf:bump', () => feeds.bump());\n`});
     }
+    if (holdStatic && holdStatic.test(pathname) && page.__holding) await new Promise((resolve) => page.__held.push(resolve));
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     return route.fulfill({status: 404, body: ''});
   });
@@ -67,7 +71,7 @@ async function open(browser, {viewport, url, hold = null, scope = 'personal'}) {
   page.__holding = true;
   page.__release = () => { page.__holding = false; for (const r of page.__held.splice(0)) r(); };
   await page.clock.install({time: START});
-  await page.goto(ORIGIN + url);
+  await page.goto(ORIGIN + url, {waitUntil});
   if (scope === 'enterprise') {
     await page.clock.runFor(200);
     await page.click('button[data-scope="enterprise"]');
@@ -301,6 +305,47 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       assert.deepEqual(errors, []);
       await context.close();
     });
+
+    const EARLY = {
+      runway: {personal: ['now', 'runway', 'today', 'limit-rate'], enterprise: ['now-work', 'runway-work', 'today-work']},
+      ledger: {personal: ['now', 'runway', 'ledger'], enterprise: ['now-work', 'runway-work', 'ledger']},
+      history: {personal: ['now', 'runway', 'window-history', 'spend-history'],
+        enterprise: ['now-work', 'runway-work', 'spend-history-work', 'stats-work', 'enterprise-budget']},
+      lab: {personal: ['now', 'runway', 'stats', 'served-timeline'], enterprise: ['now-work', 'runway-work', 'stats-work']},
+    };
+    for (const view of Object.keys(EARLY)) {
+      for (const boot of ['personal', 'enterprise']) {
+        await check(`${view} ${boot}: the first reads start before main.js loads, and none runs twice`, async () => {
+          const {page, errors, context, counts} = await open(browser, {
+            viewport: {width: 1440, height: 900}, url: `/next?mock=1#${view}`, boot, holdStatic: /\/js\/main\.js$/, waitUntil: 'commit'});
+          for (let i = 0; i < 100 && EARLY[view][boot].some((k) => !counts[k]); i += 1) await page.waitForTimeout(20);
+          assert.deepEqual(EARLY[view][boot].filter((k) => !counts[k]), [], 'early reads missing while main.js waits');
+          page.__release();
+          await page.waitForLoadState('load');
+          await settle(page);
+          // The ledger view reads the ledger fixture twice by design (30 days and the period).
+          const twice = Object.entries(counts).filter(([k, n]) => n > (view === 'ledger' && k === 'ledger' ? 2 : 1));
+          assert.deepEqual(twice, [], 'a boot read ran twice');
+          assert.deepEqual(errors, []);
+          await context.close();
+        });
+      }
+    }
+
+    // Live mode (no mock): the API answers 404, but each early read must match
+    // its feed's URL, query included, so the feed takes it.
+    for (const view of Object.keys(EARLY)) {
+      for (const boot of ['personal', 'enterprise']) {
+        await check(`${view} ${boot} live: every early read is taken by its feed`, async () => {
+          const {page, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: `/next#${view}`, boot});
+          await page.clock.runFor(1000);
+          await page.waitForTimeout(100);
+          const left = await page.evaluate(async () => (await import(`${document.body.dataset.static}/js/api.js`)).pendingEarly());
+          assert.deepEqual(left, [], 'an early read went unused');
+          await context.close();
+        });
+      }
+    }
 
     await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
       const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});

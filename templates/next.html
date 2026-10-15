@@ -15,8 +15,8 @@
 <link rel="preload" href="{{ static_base }}/fonts/dm-sans-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="{{ static_base }}/vendor/uplot/uPlot.min.css">
 <link rel="stylesheet" href="{{ static_base }}/css/tokenfold.css">
-<link rel="modulepreload" href="{{ static_base }}/js/main.js">
-<link rel="stylesheet" href="{{ static_base }}/css/history.css">
+{% for m in modules %}<link rel="modulepreload" href="{{ static_base }}/{{ m }}">
+{% endfor %}<link rel="stylesheet" href="{{ static_base }}/css/history.css">
 <link rel="stylesheet" href="{{ static_base }}/css/lab.css">
 </head>
 <body data-scope="{{ scope }}" data-scope-locked="{{ '1' if scope_locked else '0' }}" data-owner="{{ owner }}" data-view="{{ default_view }}" data-version="{{ version }}" data-static="{{ static_base }}">
@@ -63,6 +63,7 @@
   <noscript><span>This dashboard needs JavaScript. Use the <a href="/classic">classic dashboard</a>.</span></noscript>
 </footer>
 
+<script type="module" async src="{{ static_base }}/js/early.js"></script>
 <script type="module" src="{{ static_base }}/js/main.js"></script>
 </body>
 </html>

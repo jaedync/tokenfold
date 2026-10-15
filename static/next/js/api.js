@@ -56,15 +56,65 @@ function url(name, params, { mock, scope }) {
   return path + (qs.toString() ? `?${qs}` : '');
 }
 
+// Early reads (js/early.js): the shell starts the first feeds while the rest
+// of the module graph loads. getJSON takes each response once, if it is
+// younger than EARLY_MAX_AGE_MS. After the first getJSON call no early read
+// starts: the feeds run already.
+const EARLY_MAX_AGE_MS = 10000;
+const early = new Map();  // url -> {at, promise}
+let booted = false;
+
+export function startEarly(name, params, { scope, mock = false } = {}) {
+  if (booted) return;
+  const u = url(name, params, { mock, scope });
+  if (early.has(u)) return;
+  const promise = fetch(u, {
+    headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: AbortSignal.timeout(timeoutFor(name)),
+  });
+  promise.catch(() => {});  // a failed early read is read again by its feed
+  early.set(u, { at: Date.now(), promise });
+}
+
+// Early reads that no feed took (the boot checks expect none).
+export const pendingEarly = () => [...early.keys()];
+
+function takeEarly(u) {
+  const e = early.get(u);
+  if (!e) return null;
+  early.delete(u);
+  return Date.now() - e.at <= EARLY_MAX_AGE_MS ? e.promise : null;
+}
+
+function untilAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return Promise.race([promise, new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  })]);
+}
+
 // getJSON('runway', {}, {scope, mock, signal}) -> parsed JSON or ApiError.
 export async function getJSON(name, params = {}, { scope, mock = false, signal } = {}) {
+  booted = true;
   const timeout = AbortSignal.timeout(timeoutFor(name));
   const combined = signal && AbortSignal.any ? AbortSignal.any([signal, timeout]) : (signal || timeout);
-  let res;
+  const u = url(name, params, { mock, scope });
+  let res = null;
+  const pending = takeEarly(u);
+  if (pending) {
+    try {
+      res = await untilAbort(pending, signal);
+    } catch (err) {
+      if (err.name === 'AbortError' && signal && signal.aborted) throw err;
+      res = null;  // the early read failed: read again
+    }
+  }
   try {
-    res = await fetch(url(name, params, { mock, scope }), {
-      headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: combined,
-    });
+    if (!res) {
+      res = await fetch(u, {
+        headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: combined,
+      });
+    }
   } catch (err) {
     if (err.name === 'AbortError' && signal && signal.aborted) throw err;
     throw new ApiError(0, 'The server did not answer.');
