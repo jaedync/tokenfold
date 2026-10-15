@@ -185,6 +185,22 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertAlmostEqual(w['cost_usd'], 5.0)
         self.assertEqual((w['prompts'], w['active_s']), (1, 5))
 
+    def test_mixed_scope_session_counts_only_in_scope_tool_calls(self):
+        t = self.t0 + 1000
+        self.cc('cc-1b.jsonl', [self.cc_user('w-u', 'cc-1', t),
+                                self.cc_reply('w-a', 'cc-1', t + 5, 'rw',
+                                              tools=[('tw1', 'Grep')])], account=WORK)
+        mine = self.ledger()['sessions'][0]
+        self.assertNotIn('Grep', mine['tool_calls'])
+        work = {x['id']: x for x in self.ledger(scope='enterprise')['sessions']}['cc-1']
+        self.assertEqual(work['tool_calls'], {'Grep': 1})
+        detail = self.session('cc-1').json()
+        self.assertNotIn('Grep', [x['name'] for x in detail['tools']])
+        self.assertEqual(detail['file_edits'], 2)   # Edit + Write, not the work half
+        detail = self.session('cc-1', scope='enterprise').json()
+        self.assertEqual([x['name'] for x in detail['tools']], ['Grep'])
+        self.assertEqual(detail['file_edits'], 0)
+
     def test_daily_by_model_from_rollup(self):
         body = self.ledger()
         day = datetime.fromtimestamp(self.t0).astimezone().strftime('%Y-%m-%d')

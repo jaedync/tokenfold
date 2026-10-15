@@ -20,7 +20,7 @@ from itertools import groupby
 from operator import itemgetter
 
 from .aggregator import _make_display_names, display_tool_name
-from .config import IDLE_THRESHOLD_S
+from .config import IDLE_THRESHOLD_S, enterprise_predicate
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity, not_pi_copy
 from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
@@ -251,28 +251,45 @@ def activity(conn: sqlite3.Connection, session_ids: list[str], start: float,
     return accumulate_activity(rows)
 
 
+def scoped(alias: str, scope: str) -> str:
+    """scope_predicate(scope) over a joined events alias. tool_uses rows have
+    no account; their scope is the scope of the event that made the call."""
+    pred = enterprise_predicate(alias)
+    return pred if scope == "enterprise" else f"NOT {pred}"
+
+
 def tool_names(conn: sqlite3.Connection, session_ids: list[str],
-               start: float, end: float) -> dict:
-    """{session: Counter(display tool name -> calls)} in [start, end)."""
+               start: float, end: float, exact_scope: str | None = None) -> dict:
+    """{session: Counter(display tool name -> calls)} in [start, end).
+
+    exact_scope filters each call by the scope of its event (mixed-scope
+    sessions only): the join reads one event per call, so keep that list short.
+    """
     if not session_ids:
         return {}
+    if exact_scope is None:
+        source, scope = "tool_uses AS t", ""
+    else:
+        source = "tool_uses AS t JOIN events AS e ON e.uuid = t.event_uuid"
+        scope = f" AND {scoped('e', exact_scope)}"
     out: dict = {}
     for sid, name, n in conn.execute(
             # counts_as_activity drops Meridian twin and Pi copy tool rows.
-            f"SELECT session_id, name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
-            f"AND {counts_as_activity('tool_uses')} "
-            "AND ts_epoch >= ? AND ts_epoch < ? GROUP BY session_id, name",
+            f"SELECT t.session_id, t.name, COUNT(*) FROM {source} WHERE t.session_id IN {_IDS} "
+            f"AND {counts_as_activity('t')} "
+            f"AND t.ts_epoch >= ? AND t.ts_epoch < ?{scope} GROUP BY t.session_id, t.name",
             (json.dumps(session_ids), start, end)):
         out.setdefault(sid, Counter())[display_tool_name(name)] += n
     return out
 
 
 def run_tool_counts(conn: sqlite3.Connection, session_ids: list[str],
-                    start: float, end: float) -> Counter:
+                    start: float, end: float, scope: str) -> Counter:
     """Tool calls per (session, agent) for sessions with inline subagent rows.
 
-    tool_uses has no agent_id, so this joins each call to its event. Claude
-    Code only: a Pi child is its own session and needs no join.
+    tool_uses has no agent_id, so this joins each call to its event (which
+    also gives the call's scope). Claude Code only: a Pi child is its own
+    session and needs no join.
     """
     if not session_ids:
         return Counter()
@@ -280,7 +297,7 @@ def run_tool_counts(conn: sqlite3.Connection, session_ids: list[str],
         "SELECT t.session_id, e.agent_id, COUNT(*) FROM tool_uses AS t "
         "JOIN events AS e ON e.uuid = t.event_uuid "
         f"WHERE t.session_id IN {_IDS} AND {counts_as_activity('t')} "
-        "AND t.ts_epoch >= ? AND t.ts_epoch < ? "
+        f"AND t.ts_epoch >= ? AND t.ts_epoch < ? AND {scoped('e', scope)} "
         "AND e.agent_id IS NOT NULL GROUP BY t.session_id, e.agent_id",
         (json.dumps(session_ids), start, end))})
 

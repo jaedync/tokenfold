@@ -11,9 +11,10 @@ from collections import Counter
 
 from .aggregator import _conditional_model_names, display_tool_name
 from .config import scope_predicate
-from .event_dedupe import not_pi_copy
+from .event_dedupe import counts_as_activity, not_pi_copy
 from .ledger import public_session
 from .ledger_build import build_sessions
+from .ledger_query import scoped
 from .pi_lineage import PiLineage, account_class, split_pi_id
 
 ALL_TIME = (0.0, 1e12)
@@ -43,8 +44,8 @@ def served_state(rows) -> dict:
     return {"state": state, "blocks": blocks}
 
 
-def _descendants(conn, sid: str) -> list[str]:
-    """Pi child sessions (any depth) of Pi session `sid`."""
+def _descendants(conn, sid: str, pred: str) -> list[str]:
+    """Pi child sessions (any depth) of Pi session `sid` in this scope."""
     if split_pi_id(sid) is None:
         return []
     head = conn.execute(
@@ -56,34 +57,36 @@ def _descendants(conn, sid: str) -> list[str]:
         "SELECT DISTINCT session_id, agent_id, source_machine, org_type FROM events "
         "INDEXED BY idx_events_billable_ts WHERE type='assistant' AND request_id IS NOT NULL "
         "AND ts_epoch >= ? AND ts_epoch < ? AND source_client='pi-agent' "
-        "AND agent_id IS NOT NULL AND source_machine=? AND org_type=?",
+        f"AND agent_id IS NOT NULL AND source_machine=? AND org_type=? AND {pred}",
         (head[0], head[1] + CHILD_GRACE_S, head[2], head[3])).fetchall()
     known = {r[0]: (account_class(r[3]), r[2], r[1]) for r in rows}
     lineage = PiLineage(conn, known)
     return sorted(c for c in known if c != sid and sid in lineage.chain(c))
 
 
-def _tools(conn, ids: list[str]) -> list[dict]:
+def _tool_counts(conn, ids: list[str], scope: str) -> list[tuple[str, int]]:
+    """(raw tool name, calls) of these sessions in this scope. A call's scope
+    is its event's (an account switch mid-session splits the calls);
+    counts_as_activity drops Meridian twin and Pi copy rows, as the ledger."""
+    return conn.execute(
+        "SELECT t.name, COUNT(*) FROM tool_uses AS t "
+        "JOIN events AS e ON e.uuid = t.event_uuid "
+        f"WHERE t.session_id IN {_IDS} AND {counts_as_activity('t')} "
+        f"AND {scoped('e', scope)} GROUP BY t.name",
+        (json.dumps(ids),)).fetchall()
+
+
+def _tools(counts) -> list[dict]:
     calls: Counter = Counter()
-    for name, n in conn.execute(
-            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
-            f"AND {not_pi_copy('tool_uses')} GROUP BY name",
-            (json.dumps(ids),)):
+    for name, n in counts:
         calls[display_tool_name(name)] += n
     # tool_uses.is_error is never set by ingest (no tool_result linkage), so
     # an error count would be a made-up zero.
     return [{"name": n, "calls": c, "errors": None} for n, c in calls.most_common()]
 
 
-def _file_edits(conn, ids: list[str]) -> int:
-    n = 0
-    for name, count in conn.execute(
-            f"SELECT name, COUNT(*) FROM tool_uses WHERE session_id IN {_IDS} "
-            f"AND {not_pi_copy('tool_uses')} GROUP BY name",
-            (json.dumps(ids),)):
-        if name.rsplit("__", 1)[-1].lower() in EDIT_TOOLS:
-            n += count
-    return n
+def _file_edits(counts) -> int:
+    return sum(n for name, n in counts if name.rsplit("__", 1)[-1].lower() in EDIT_TOOLS)
 
 
 def _prompt_times(conn, sid: str, pred: str) -> list[float]:
@@ -107,13 +110,14 @@ def _served(conn, ids: list[str], scope: str, pred: str) -> dict:
 
 def build_detail(conn, scope: str, sid: str, live=frozenset()) -> dict | None:
     pred = scope_predicate(scope)
-    ids = [sid, *_descendants(conn, sid)]
+    ids = [sid, *_descendants(conn, sid, pred)]
     sessions = build_sessions(conn, pred, scope, *ALL_TIME, session_ids=ids,
                               force_root=sid)
     found = next((s for s in sessions if s["id"] == sid), None)
     if found is None:
         return None
     members = sorted(ids)
+    tool_counts = _tool_counts(conn, members, scope)
     names = _conditional_model_names(set(found["_models"]))
     total = found["cost_usd"]
     out = public_session(found, names, live)
@@ -122,10 +126,10 @@ def build_detail(conn, scope: str, sid: str, live=frozenset()) -> dict | None:
         "models": [{"model": names[i], "cost_usd": usd,
                     "share": usd / total if total else None}
                    for i, usd in found["_models"].most_common()],
-        "tools": _tools(conn, members),
+        "tools": _tools(tool_counts),
         "tokens": {k: found["_tokens"].get(k, 0)
                    for k in ("input", "output", "cache_read", "cache_write")},
-        "file_edits": _file_edits(conn, members),
+        "file_edits": _file_edits(tool_counts),
         "served_model": _served(conn, members, scope, pred),
     })
     return out

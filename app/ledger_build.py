@@ -205,13 +205,16 @@ def _session(conn, root, tree, act, runs, title, tool_calls) -> dict:
     }
 
 
-def assemble(conn, tree: Tree, act: dict, span: tuple) -> list[dict]:
+def assemble(conn, tree: Tree, act: dict, span: tuple, scope: str,
+             mixed: set) -> list[dict]:
     """Session dicts, internal _models/_tokens keys still attached."""
-    by_name = tool_names(conn, sorted(tree.agents), *span)
+    ids = set(tree.agents)
+    by_name = tool_names(conn, sorted(ids - mixed), *span)
+    by_name.update(tool_names(conn, sorted(ids & mixed), *span, exact_scope=scope))
     tools = Counter({sid: sum(c.values()) for sid, c in by_name.items()})
     inline = sorted({sid for (sid, aid) in tree.threads
                      if aid is not None and not tree.is_child(sid)})
-    run_tools = run_tool_counts(conn, inline, *span)
+    run_tools = run_tool_counts(conn, inline, *span, scope)
     names = titles(conn, sorted(tree.members))
     out = []
     for root, members in tree.members.items():
@@ -251,7 +254,7 @@ def build_sessions(conn, pred: str, scope: str, start: float, end: float,
                         start, end, pred)
     act = activity(conn, sorted(ids - mixed), start, end)
     act.update(activity(conn, sorted(ids & mixed), start, end, exact_pred=pred))
-    sessions = assemble(conn, tree, act, (start, end))
+    sessions = assemble(conn, tree, act, (start, end), scope, mixed)
     names = project_names(s["project"] for s in sessions)
     sessions.sort(key=lambda s: (-(s["end"] or 0), s["id"]))
     out = []
