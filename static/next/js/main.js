@@ -143,8 +143,8 @@ for (const a of document.querySelectorAll('[data-view-link]')) {
 }
 
 // ---------------------------------------------------------------- scroll
-// The visible view is ready for a scroll restore when each of its feeds
-// answered (data or error). A feed with no read in this state (no params,
+// The visible view has its final heights (reserve.js records them) when each
+// of its feeds answered (data or error). A feed with no read in this state (no params,
 // e.g. the limit rate in the work scope) does not count.
 function viewReady() {
   const s = store.get();
@@ -155,7 +155,14 @@ function viewReady() {
     return feedStatus(s[key]) !== 'loading';
   });
 }
-const scroll = createScroll({ store, root: viewRoot, isReady: viewReady });
+// The scroll restore waits only for what the user sees: no visible panel
+// still shows a loading line. A slow read behind content already on screen
+// (the ledger period behind the 30-day data) must not move the page later.
+function viewShown() {
+  if (!active || store.get().switching) return false;
+  return !active.container.querySelector('.panel:not([hidden]) [data-loading]');
+}
+const scroll = createScroll({ store, root: viewRoot, isReady: viewShown });
 const reserve = createReserve({
   store, root: viewRoot, isReady: viewReady,
   where: () => (active ? { view: active.id, scope: store.get().scope, container: active.container } : null),
