@@ -650,7 +650,9 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
           // The masthead nav is a few px too wide at 360 on every view (not this panel).
           const pageBefore = document.documentElement.scrollWidth;
           document.querySelector('.ls-period').textContent = 'Aug 30–Sep 5 · All machines · All projects';
-          document.querySelector('.ls-busy').textContent = 'Loading this period';
+          // As ledger-stats.js builds it: short text plus a screen-reader reason.
+          const sr = Object.assign(document.createElement('span'), {className: 'sr-only', textContent: '. The figures below are from the 30-day data.'});
+          document.querySelector('.ls-busy').replaceChildren('Loading this period', sr);
           return {before, after: panel.offsetHeight, panelOver: panel.scrollWidth - panel.clientWidth,
             pageOver: document.documentElement.scrollWidth - Math.max(innerWidth, pageBefore)};
         });

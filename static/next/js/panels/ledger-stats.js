@@ -35,8 +35,7 @@ export function sums(d) {
   return out;
 }
 
-
-export const BUSY_TEXT = 'Loading this period';
+const BUSY_TEXT = 'Loading this period';
 const BUSY_WHY = 'The figures below are from the 30-day data until this period loads.';
 function stat(key, value, sub) {
   return h('div', { class: 'ls' }, h('span', { class: 'kicker' }, key), h('span', { class: 'ls-v' }, value), h('span', { class: 'ls-sub' }, sub));
