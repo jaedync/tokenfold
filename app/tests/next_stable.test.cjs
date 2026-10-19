@@ -638,6 +638,34 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       await context.close();
     });
 
+    for (const width of [1440, 390]) {
+      await check(`ledger ${width}: the "loading this period" note adds no height`, async () => {
+        const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#ledger'});
+        await settle(page);
+        // Mock mode always has the exact period, so the note is set by hand.
+        const heights = await page.evaluate(() => {
+          const panel = document.querySelector('.p-ledger-stats');
+          const before = panel.offsetHeight;
+          document.querySelector('.ls-busy').textContent = 'Loading this period';
+          return [before, panel.offsetHeight];
+        });
+        assert.equal(heights[1], heights[0], 'the note changed the summary height');
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
+
+    await check('runway 1440: the footer starts below the fold before the panels mount', async () => {
+      const {page, context} = await open(browser, {
+        viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway', holdStatic: /\/js\/main\.js$/, waitUntil: 'commit'});
+      await page.waitForSelector('footer.foot', {state: 'attached'});
+      await page.waitForTimeout(100);
+      const top = await page.evaluate(() => document.querySelector('footer.foot').getBoundingClientRect().top);
+      assert.ok(top >= 900, `the footer is at ${Math.round(top)} px before the panels mount`);
+      page.__release();
+      await context.close();
+    });
+
     await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
       const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
       await settle(page);

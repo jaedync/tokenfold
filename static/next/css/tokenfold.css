@@ -35,9 +35,10 @@ button, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
-/* While panels load the view is at least one screen tall, so the footer
- * starts below the fold instead of at mid-screen and then moving down. */
-main:has([data-loading]) { min-height: 100vh; }
+/* Before the panels mount (empty) and while they load, the view is at least
+ * one screen tall: the footer starts below the fold instead of at mid-screen
+ * and then moving down. A panel hidden for the scope does not count. */
+main:empty, main:has(.panel:not([hidden]) [data-loading]) { min-height: 100vh; }
 main:focus { outline: none; }
 /* Scope switch: the old content stays while the new data loads (main.js sets
  * aria-busy). A bar over the top edge says so; it takes no layout space. */

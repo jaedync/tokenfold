@@ -107,7 +107,7 @@ function mountView(view) {
 }
 
 function show(id, userAction) {
-  const view = VIEWS[id];
+  const view = Object.hasOwn(VIEWS, id) ? VIEWS[id] : null;
   if (!view || (active && active.id === id)) return;
   if (active) active.destroy();
   active = mountView(view);
@@ -118,7 +118,8 @@ function show(id, userAction) {
   if (userAction) viewRoot.focus({ preventScroll: true });
 }
 
-const hashView = () => (VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : null);
+// Own keys only: a hash like #constructor names no view.
+const hashView = () => (Object.hasOwn(VIEWS, location.hash.slice(1)) ? location.hash.slice(1) : null);
 // Back, forward or a hash typed in the address bar: the entry's own scroll
 // position. The event comes after the entry changed, but the window still
 // shows the old view, so its position is kept first.
