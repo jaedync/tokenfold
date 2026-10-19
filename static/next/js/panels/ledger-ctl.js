@@ -5,6 +5,7 @@ import * as f from '../format.js';
 import { derive, dayStart, projectLabel } from './ledger-model.js';
 import { setPeriod, setUi, toggleFilter, clearFilters, colorsFor, swatch, plural } from './ledger-kit.js';
 import { periodLabel } from './ledger-stats.js';
+import { feedStatus } from '../panel.js';
 
 const DIM = { project: 'Project', model: 'Model', machine: 'Machine', tool: 'Tool' };
 const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
@@ -26,10 +27,10 @@ export default {
     const quiet = h('button', { type: 'button', class: 'lc-quiet', hidden: true,
       onclick: () => setUi(store, { showQuiet: !derive(store.get(), ctx.now()).ui.showQuiet }) });
     const range = h('span', { class: 'lc-range' });
-    // Until the ledger is in, a marker keeps the bar's reserved height
+    // While the ledger loads, a marker keeps the bar's reserved height
     // (reserve.js): on a phone the quiet toggle wraps it to two lines.
     const wait = h('span', { hidden: true, 'data-loading': true });
-    el.append(wait,
+    el.append(
       h('div', { class: 'lc-period' }, h('span', { class: 'lc-label' }, 'Period'), seg.el),
       chips, h('div', { class: 'lc-end' }, quiet, range));
 
@@ -53,9 +54,9 @@ export default {
     return {
       update(s) {
         const d = derive(s, ctx.now());
+        if (!d.hasData && feedStatus(s.ledger) === 'loading') { if (!wait.isConnected) el.prepend(wait); } else wait.remove();
         if (d === seen) return;
         seen = d;
-        if (d.hasData) wait.remove();
         seg.select(d.ui.pkey);
         setText(customBtn, d.ui.pkey === 'custom' ? periodLabel(d) : 'Custom');
         const { filters } = d.ui;

@@ -8,8 +8,8 @@
 // [data-loading] line; a panel with no record uses its --reserve-default.
 
 const STORE_KEY = 'tf_panel_heights';
-// Widths where a view's grid changes its columns (the @media rules in css/).
-const LAYOUT_EDGES = [700, 860, 1100, 1340];
+// Widths where a view's grid changes its columns or padding (the @media rules in css/).
+const LAYOUT_EDGES = [700, 860, 1100, 1180, 1320, 1340];
 const RECORD_DELAY_MS = 1000;  // at most one record a second, after a change
 
 // isReady(): true when the visible view has every feed it waits for.
@@ -38,7 +38,9 @@ export function createReserve({ store, root, isReady, where, env = window }) {
     }
   }
 
-  // Keep the heights of the loaded panels for the next load.
+  // Keep the heights of the loaded panels for the next load. A height taken
+  // while the user has rows expanded or a filter on is only a worse guess: the
+  // reserve applies while a panel loads, never after.
   function record() {
     timer = null;
     const at = where();

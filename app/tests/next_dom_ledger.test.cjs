@@ -62,6 +62,8 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
       assert.ok(await page.locator('.lo-wrap svg rect').count() > 30, 'daily bars drawn');
       assert.ok(await page.locator('.lo-legend .lg-prov').count() >= 3, 'legend groups by provider');
       assert.match(await text(page, '.p-ledger-split .ws-pct'), /^\d+%$/);
+      // Every view stylesheet is linked: the split bar must keep the ledger rule, not another view's.
+      assert.equal(await page.locator('.p-ledger-split .ws-bar').evaluate((e) => getComputedStyle(e).display), 'flex', 'the split bar lost its ledger style');
       assert.ok(await page.locator('.tl-lane').count() >= 3, 'machine swimlanes');
       assert.ok(await page.locator('.tl-sess').count() > 10, 'session bars');
       assert.equal(await page.locator('.lt-item').count(), 8);

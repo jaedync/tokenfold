@@ -122,9 +122,11 @@ const hashView = () => (VIEWS[location.hash.slice(1)] ? location.hash.slice(1) :
 // Back, forward or a hash typed in the address bar: the entry's own scroll
 // position. The event comes after the entry changed, but the window still
 // shows the old view, so its position is kept first.
+// An entry with no view hash (the page as opened, or the skip link's #view)
+// shows the default view, as at boot.
 window.addEventListener('hashchange', () => {
-  const id = hashView();
-  if (!id) return;
+  if (location.hash && !hashView() && document.getElementById(location.hash.slice(1))) return;
+  const id = hashView() || body.dataset.view || 'runway';
   scroll.remember();
   show(id, true);
   scroll.restore();

@@ -62,6 +62,13 @@ export function createScroll({ store, root, isReady, env = window }) {
     pending = null;
   }
 
+  // The data never came (a hidden tab does not read, or the server is slow):
+  // scroll only when the view is ready, never over the saved position.
+  function giveUp() {
+    if (!pending) return;
+    if (isReady()) finish(); else cancel();
+  }
+
   function finish() {
     const { y } = pending;
     cancel();
@@ -103,7 +110,7 @@ export function createScroll({ store, root, isReady, env = window }) {
     current = entryKey();
     const y = positions.get(current) || 0;
     if (y <= 0) { env.scrollTo(0, 0); return; }
-    pending = { y, readyAt: null, grow: null, giveUp: env.setTimeout(() => { if (pending) finish(); }, GIVE_UP_MS) };
+    pending = { y, readyAt: null, grow: null, giveUp: env.setTimeout(giveUp, GIVE_UP_MS) };
     schedule();
   }
 

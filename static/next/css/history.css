@@ -26,8 +26,8 @@
 .ws-limit { position: absolute; left: 0; right: 0; top: 0; border-top: 2px dashed var(--ink); pointer-events: none; }
 .ws-limit em { position: absolute; right: 0; bottom: 3px; font: 700 11px/1 var(--text); font-style: normal; color: var(--muted); background: var(--paper); padding-left: 4px; }
 .ws-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
-.ws-bar { display: block; width: 100%; max-width: 72px; min-height: 2px; background: var(--ink); position: relative; }
-.ws-bar[data-hit] { background: var(--red); }
+.hw-bar { display: block; width: 100%; max-width: 72px; min-height: 2px; background: var(--ink); position: relative; }
+.hw-bar[data-hit] { background: var(--red); }
 .ws-grant { position: absolute; left: 50%; top: -11px; width: 8px; height: 8px; margin-left: -4px; background: var(--blue); }
 .ws-x { position: absolute; top: calc(100% + 6px); left: 0; font: 700 11px/1 var(--text); color: var(--muted); white-space: nowrap; }
 .ws-keys { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 11.5px; color: var(--muted); font-weight: 600; }

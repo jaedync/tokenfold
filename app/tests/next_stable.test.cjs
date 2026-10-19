@@ -620,6 +620,24 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       await context.close();
     });
 
+    await check('runway 1440: Back from a tab to the page as opened shows the default view at its position', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1'});
+      await settle(page);
+      await page.clock.runFor(5000);
+      await scrollTo(page, 350);
+      await page.waitForTimeout(30);
+      await page.evaluate(() => document.querySelector('[data-view-link="ledger"]').click());
+      await page.clock.runFor(100);
+      assert.equal(await page.evaluate(() => document.querySelector('#view > div').dataset.view), 'ledger');
+      await page.goBack();
+      await page.clock.runFor(200);
+      await page.waitForTimeout(30);
+      assert.equal(await page.evaluate(() => document.querySelector('#view > div').dataset.view), 'runway', 'Back did not show the default view');
+      assert.equal(await page.evaluate(() => Math.round(scrollY)), 350, 'Back did not put the position back');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
       const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
       await settle(page);
