@@ -16,7 +16,8 @@
 <link rel="stylesheet" href="{{ static_base }}/vendor/uplot/uPlot.min.css">
 <link rel="stylesheet" href="{{ static_base }}/css/tokenfold.css">
 {% for m in modules %}<link rel="modulepreload" href="{{ static_base }}/{{ m }}">
-{% endfor %}<link rel="stylesheet" href="{{ static_base }}/css/history.css">
+{% endfor %}<link rel="stylesheet" href="{{ static_base }}/css/ledger.css" id="ledger-css">
+<link rel="stylesheet" href="{{ static_base }}/css/history.css">
 <link rel="stylesheet" href="{{ static_base }}/css/lab.css">
 </head>
 <body data-scope="{{ scope }}" data-scope-locked="{{ '1' if scope_locked else '0' }}" data-owner="{{ owner }}" data-view="{{ default_view }}" data-version="{{ version }}" data-static="{{ static_base }}">

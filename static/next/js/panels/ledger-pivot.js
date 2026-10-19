@@ -5,7 +5,7 @@ import { h, patch, setText, segmented, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, dayStart, daysBetween, hasFilter, projectLabel } from './ledger-model.js';
 import { providerGroup } from './ledger-colors.js';
-import { colorsFor, swatch, spark, money, pct0, toggleFilter, setPeriod, dayLabel } from './ledger-kit.js';
+import { colorsFor, swatch, spark, money, pct0, toggleFilter, setPeriod, dayLabel, ledgerWait, ledgerStatus } from './ledger-kit.js';
 
 const DIMS = [['project', 'Project'], ['model', 'Model'], ['machine', 'Machine'], ['tool', 'Tool'], ['day', 'Day']];
 const LABEL = Object.fromEntries(DIMS);
@@ -140,7 +140,8 @@ export default {
     const note = h('span', { class: 'pv-note' });
     const table = h('table', { class: 'pv' });
     const more = h('button', { type: 'button', class: 'btn pv-more', hidden: true, onclick: () => { all = !all; render(true); more.focus(); } });
-    el.append(head.el, h('div', { class: 'pv-head' }, h('span', { class: 'kicker' }, 'Rows by'), seg.el, note), h('div', { class: 'scroll-x' }, table), more);
+    const wait = h('div');
+    el.append(head.el, wait, h('div', { class: 'pv-head' }, h('span', { class: 'kicker' }, 'Rows by'), seg.el, note), h('div', { class: 'scroll-x' }, table), more);
 
     table.addEventListener('click', (ev) => {
       const s = ev.target.closest('[data-sort]');
@@ -162,11 +163,13 @@ export default {
       toggleFilter(store, dim, n.dataset.key);
     });
 
-    let seen = null;
+    let seen = null, seenStatus = null;
     function render(force) {
-      const d = derive(store.get(), ctx.now());
-      if (!force && d === seen) return;
-      seen = d;
+      const s = store.get();
+      const d = derive(s, ctx.now());
+      if (!force && d === seen && ledgerStatus(s) === seenStatus) return;
+      seen = d; seenStatus = ledgerStatus(s);
+      patch(wait, d.hasData ? null : ledgerWait(s));
       if (!d.hasData) { patch(table); setText(note, ''); more.hidden = true; return; }
       const c = colorsFor(d);
       const { rows: every, trendDays } = pivotRows(d, dim);

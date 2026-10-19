@@ -3,6 +3,7 @@
 
 import { h, listen, patch } from '../dom.js';
 import * as f from '../format.js';
+import { feedStatus } from '../panel.js';
 import { DEFAULT_UI, uiOf, hasFilter } from './ledger-model.js';
 import { modelColors } from './ledger-colors.js';
 
@@ -142,11 +143,13 @@ export function keepFocus(root, rebuild) {
   if (again) again.focus({ preventScroll: true });
 }
 
-// The view's stylesheet, linked once (no change to the shared shell). This
-// module loads from /static/next-<version>/, so the relative URL carries the
-// version (README, Cache busting).
-export function ensureCss() {
-  if (typeof document === 'undefined' || document.getElementById('ledger-css')) return;
-  const href = new URL('../../css/ledger.css', import.meta.url).href;
-  document.head.append(h('link', { rel: 'stylesheet', id: 'ledger-css', href }));
+// A panel with no ledger data yet: one loading line while the 30-day read
+// runs (the panel keeps its reserved height), nothing after an error (the
+// summary panel says the ledger is unavailable). No role="status": the
+// summary panel already announces the ledger state.
+export function ledgerWait(state) {
+  return feedStatus(state.ledger) === 'loading' ? h('div', { class: 'p-state', 'data-loading': true }, 'Loading…') : null;
 }
+// The feed status, for a render key: without data derive() stays the same
+// object while the feed moves from loading to error.
+export const ledgerStatus = (state) => (state.ledger ? state.ledger.status : null);

@@ -63,7 +63,9 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await page.waitForSelector('.p-history-value .vchart');
       assert.equal(await page.locator('.wc').count(), 11);
       assert.equal(await page.locator('.wc[data-hit]').count(), 2);
-      assert.equal(await page.locator('.ws-bar').count(), 11);
+      assert.equal(await page.locator('.hw-bar').count(), 11);
+      const bar = await page.locator('.hw-bar').first().evaluate((e) => [getComputedStyle(e).display, getComputedStyle(e).borderTopWidth]);
+      assert.deepEqual(bar, ['block', '0px'], 'a window bar took another view\'s style');
       assert.match(await text(page, '.wc .wc-range'), /Oct 2 to Oct 9/, 'newest window first');
       assert.equal(await page.locator('.p-history-months .mo-col').count(), 12);
       assert.match(await text(page, '.p-history-months'), /API-equivalent at list price, not billed/);
@@ -79,7 +81,7 @@ const sideways = page => page.evaluate(() => document.documentElement.scrollWidt
       await page.waitForSelector('.wc');
       assert.equal(fixtures.includes('window-history-5h'), false, '5h feed asked before the tab');
       await page.getByRole('button', {name: '5-hour', exact: false}).click();
-      await page.waitForFunction(() => document.querySelectorAll('.ws-bar').length === 26);
+      await page.waitForFunction(() => document.querySelectorAll('.hw-bar').length === 26);
       assert.equal(await page.locator('.wc').count(), 12);
       await page.getByRole('button', {name: /Show all/}).click();
       await page.waitForFunction(() => document.querySelectorAll('.wc').length === 26);

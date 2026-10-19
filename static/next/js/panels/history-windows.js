@@ -4,7 +4,7 @@
 import { h, patch, setText, approx, panelHead, segmented } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
-import { feedLine, feedStatus, staleNote, stateLine } from '../panel.js';
+import { feedLine, feedStatus, staleNote, stateLine, loadingLine } from '../panel.js';
 import { median, changed } from './history-common.js';
 
 const BUCKETS = [['seven_day', '7-day'], ['five_hour', '5-hour']];
@@ -43,7 +43,7 @@ function strip(windows, bucket) {
     // Every other label hides on a narrow panel (history.css), so dates never overlap.
     const odd = label && labels++ % 2 === 1;
     return h('div', { class: 'ws-col', 'data-key': String(w.start), title: `${rangeText(w, bucket)} · peak ${f.pct(w.peak_pct)}${w.hit_limit ? ' · hit the limit' : ''}` },
-      h('span', { class: 'ws-bar', 'data-hit': w.hit_limit ? '1' : null, style: { height: `${Math.min(100, w.peak_pct || 0)}%` } },
+      h('span', { class: 'hw-bar', 'data-hit': w.hit_limit ? '1' : null, style: { height: `${Math.min(100, w.peak_pct || 0)}%` } },
         (w.granted_resets || []).length ? h('b', { class: 'ws-grant' }) : null),
       label ? h('span', { class: 'ws-x', 'data-odd': odd ? '1' : null }, label) : null);
   });
@@ -62,7 +62,7 @@ function strip(windows, bucket) {
 // say so while it loads, and after a timeout say that it is still building.
 function windowsLine(feed) {
   const status = feedStatus(feed);
-  if (status === 'loading') return stateLine('Loading the window history…', 'The first read after a restart can take up to a minute.');
+  if (status === 'loading') return loadingLine('Loading the window history…', 'The first read after a restart can take up to a minute.');
   if (status === 'unavailable' && feed.error && feed.error.status === 0) {
     return stateLine('The server is still building the window history.', 'The page tries again on its own.');
   }

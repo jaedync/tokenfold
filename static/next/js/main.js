@@ -5,7 +5,9 @@
 import { createStore } from './store.js';
 import * as api from './api.js';
 import { createFeeds } from './feeds.js';
-import { mountInto, mountPanel } from './panel.js';
+import { mountInto, mountPanel, feedStatus } from './panel.js';
+import { createScroll } from './scroll.js';
+import { createReserve } from './reserve.js';
 import { bindingWindow, dataOf, nowFrom } from './select.js';
 import { windowTag } from './palette.js';
 import livebar from './panels/livebar.js';
@@ -43,7 +45,13 @@ const ctx = {
     requestAnimationFrame(() => { announcer.textContent = text; });
   },
   navigate(id, focusPanel) {
-    if (location.hash !== `#${id}`) location.hash = id; else show(id, true);
+    // pushState, not location.hash: the old entry keeps its scroll position
+    // (saved first) and the new view opens at the top, with no hashchange.
+    if (location.hash !== `#${id}`) {
+      history.pushState(scroll.leave(), '', `#${id}`);
+      show(id, true);
+      scroll.restore();
+    }
     if (focusPanel) {
       requestAnimationFrame(() => {
         const target = viewRoot.querySelector(`[data-panel="${focusPanel}"]`);
@@ -82,12 +90,14 @@ function mountView(view) {
   container.dataset.view = view.id;
   viewRoot.replaceChildren(container);
   const panels = (view.panels || []).map((p) => mountPanel(p, container, ctx));
+  reserve.apply(view.id, store.get().scope, container);
   // During a scope switch the panels keep the old content (feeds.js reset).
   const update = (s) => { if (s.switching) return; for (const p of panels) p.update(s); };
   const unsubscribe = store.subscribe(update);
   update(store.get());
   return {
     id: view.id,
+    container,
     destroy() {
       unsubscribe();
       for (const release of releases) release();
@@ -109,7 +119,46 @@ function show(id, userAction) {
 }
 
 const hashView = () => (VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : null);
-window.addEventListener('hashchange', () => { const id = hashView(); if (id) show(id, true); });
+// Back, forward or a hash typed in the address bar: the entry's own scroll
+// position. The event comes after the entry changed, but the window still
+// shows the old view, so its position is kept first.
+// An entry with no view hash (the page as opened, or the skip link's #view)
+// shows the default view, as at boot.
+window.addEventListener('hashchange', () => {
+  if (location.hash && !hashView() && document.getElementById(location.hash.slice(1))) return;
+  const id = hashView() || body.dataset.view || 'runway';
+  scroll.remember();
+  show(id, true);
+  scroll.restore();
+});
+// A plain click on a view tab goes through navigate(); a click with a
+// modifier (new tab, new window) stays a normal link.
+for (const a of document.querySelectorAll('[data-view-link]')) {
+  a.addEventListener('click', (ev) => {
+    if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
+    ctx.navigate(a.dataset.viewLink);
+  });
+}
+
+// ---------------------------------------------------------------- scroll
+// The visible view is ready for a scroll restore when each of its feeds
+// answered (data or error). A feed with no read in this state (no params,
+// e.g. the limit rate in the work scope) does not count.
+function viewReady() {
+  const s = store.get();
+  if (!active || s.switching) return false;
+  const view = VIEWS[active.id];
+  return Object.entries(view.feeds || {}).every(([key, spec]) => {
+    if (spec.params && spec.params(s) === null) return true;
+    return feedStatus(s[key]) !== 'loading';
+  });
+}
+const scroll = createScroll({ store, root: viewRoot, isReady: viewReady });
+const reserve = createReserve({
+  store, root: viewRoot, isReady: viewReady,
+  where: () => (active ? { view: active.id, scope: store.get().scope, container: active.container } : null),
+});
 
 // ---------------------------------------------------------------- scope
 function setScope(scope) {
@@ -120,8 +169,10 @@ function setScope(scope) {
   try { localStorage.setItem('tf_scope', scope); } catch { /* private mode: the cookie is enough */ }
   const next = new URLSearchParams(location.search);
   next.set('scope', scope);
-  history.replaceState(null, '', `${location.pathname}?${next}${location.hash}`);
+  history.replaceState(history.state, '', `${location.pathname}?${next}${location.hash}`);
   store.set('scope', scope);
+  // A panel with no data for the new scope reserves that scope's height.
+  if (active) reserve.apply(active.id, scope, active.container);
   skewFixed = false;
   feeds.reset();
 }
@@ -193,5 +244,6 @@ const bar = mountInto(livebar, document.getElementById('livebar'), ctx);
 store.subscribe((s) => { if (!s.switching) bar.update(s); });
 bar.update(store.get());
 show(hashView() || body.dataset.view || 'runway', false);
+scroll.restore();
 openStream();
 prefetchOthers();

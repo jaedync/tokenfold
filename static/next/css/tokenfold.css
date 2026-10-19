@@ -35,6 +35,9 @@ button, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+/* While panels load the view is at least one screen tall, so the footer
+ * starts below the fold instead of at mid-screen and then moving down. */
+main:has([data-loading]) { min-height: 100vh; }
 main:focus { outline: none; }
 /* Scope switch: the old content stays while the new data loads (main.js sets
  * aria-busy). A bar over the top edge says so; it takes no layout space. */
@@ -70,6 +73,24 @@ main[aria-busy='true']::before { content: ''; position: fixed; z-index: 11; top:
 /* Quiet states: a panel whose feed is missing says so in one line and keeps its place. */
 .p-state { padding: 10px 0 12px; border-top: 3px solid var(--ink); font-weight: 700; color: var(--muted); font-size: 13px; }
 .p-state small { display: block; font-weight: 600; font-size: 12px; margin-top: 2px; }
+/* While a panel waits for its data it keeps the height it had at the last
+ * load (--reserve, set by reserve.js) or a default near its usual height,
+ * so the page does not grow and jump as the data comes in. */
+.panel:has([data-loading]) { min-height: var(--reserve, var(--reserve-default, 0px)); align-content: start; }
+.p-hero { --reserve-default: 680px; }
+.p-now { --reserve-default: 300px; }
+.p-rail { --reserve-default: 330px; }
+.p-chart { --reserve-default: 380px; }
+.p-today { --reserve-default: 180px; }
+.p-exchange { --reserve-default: 250px; }
+@media (max-width: 700px) {
+  .p-hero { --reserve-default: 580px; }
+  .p-now { --reserve-default: 400px; }
+  .p-rail { --reserve-default: 430px; }
+  .p-chart { --reserve-default: 350px; }
+  .p-today { --reserve-default: 330px; }
+  .p-exchange { --reserve-default: 680px; }
+}
 /* Stale data greys out: muted text (still AA), faded graphics. Never opacity on text. */
 .is-stale { color: var(--muted); }
 .is-stale .rw-bar, .is-stale .meter { opacity: .45; }

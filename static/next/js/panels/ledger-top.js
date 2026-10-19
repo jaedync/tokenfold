@@ -3,7 +3,7 @@
 import { h, patch, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, sessionName, nameShowsProject, clientName, projectLabel } from './ledger-model.js';
-import { colorsFor, swatch, money, plural, openSession, keepFocus } from './ledger-kit.js';
+import { colorsFor, swatch, money, plural, openSession, keepFocus, ledgerWait, ledgerStatus } from './ledger-kit.js';
 
 const FEW = 8, MANY = 24;
 
@@ -22,18 +22,20 @@ export default {
     const list = h('ol', { class: 'lt-list' });
     let many = false;
     const more = h('button', { type: 'button', class: 'btn lt-more', hidden: true, onclick: () => { many = !many; render(true); } });
-    el.append(head.el, list, more);
+    const wait = h('div');
+    el.append(head.el, wait, list, more);
     list.addEventListener('click', (ev) => {
       const b = ev.target.closest('[data-sid]');
       if (b) openSession(ctx.store, b.dataset.sid, b);
     });
 
-    let seen = null;
+    let seen = null, seenStatus = null;
     function render(force) {
       const s = ctx.store.get();
       const d = derive(s, ctx.now());
-      if (!force && d === seen) return;
-      seen = d;
+      if (!force && d === seen && ledgerStatus(s) === seenStatus) return;
+      seen = d; seenStatus = ledgerStatus(s);
+      patch(wait, d.hasData ? null : ledgerWait(s));
       if (!d.hasData) { patch(list); setText(sub, ''); more.hidden = true; return; }
       const all = topList(d), shown = all.slice(0, many ? MANY : FEW), c = colorsFor(d);
       const today = d.ui.pkey === 'today';

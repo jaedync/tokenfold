@@ -336,3 +336,17 @@ table.pv { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .mix-list { grid-template-columns: 1fr; }
   .tree .t-name small { display: block; margin-left: 0; }
 }
+
+/* Reserved height while the ledger loads (tokenfold.css, reserve.js). */
+.p-ledger-stats { --reserve-default: 178px; }
+.p-ledger-overview { --reserve-default: 460px; }
+.p-ledger-split { --reserve-default: 440px; }
+.p-ledger-top { --reserve-default: 500px; }
+.p-ledger-timeline { --reserve-default: 430px; }
+.p-ledger-pivot { --reserve-default: 370px; }
+@media (max-width: 700px) {
+  .p-ledger-stats { --reserve-default: 250px; }
+  .p-ledger-ctl { --reserve-default: 69px; }
+  .p-ledger-overview, .p-ledger-split, .p-ledger-pivot { --reserve-default: 420px; }
+  .p-ledger-timeline { --reserve-default: 490px; }
+}
