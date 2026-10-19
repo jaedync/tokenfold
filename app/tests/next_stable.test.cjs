@@ -537,6 +537,45 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       });
     }
 
+    // While a view loads, each panel keeps a reserved height: a default on the
+    // first visit, the height it had at the last load after that.
+    for (const view of ['runway', 'ledger', 'history', 'lab']) {
+      for (const width of [1440, 390]) {
+        await check(`${view} ${width}: the panels keep their place while the data loads`, async () => {
+          const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: `/next?mock=1#${view}`, hold: /./});
+          await page.evaluate(() => {
+            window.__shift = 0;
+            new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__shift += e.value; }).observe({type: 'layout-shift'});
+          });
+          await page.clock.runFor(300);
+          await page.waitForTimeout(30);
+          const loading = await page.evaluate(() => [...document.querySelectorAll('#view .panel:not([hidden])')]
+            .filter((p) => p.offsetHeight && !p.querySelector('[data-loading]')).map((p) => p.dataset.panel));
+          // The ledger bar keeps a marker too; its period buttons need no data.
+          assert.deepEqual(loading, [], 'panels with no loading state while the data loads');
+          page.__release();
+          await settle(page);
+          const first = await page.evaluate(() => window.__shift);
+          assert.ok(first < 0.15, `first load: layout shift ${first.toFixed(3)} with the default heights`);
+          await page.clock.runFor(2000);
+          page.__hold = /./;
+          await page.reload();
+          await page.evaluate(() => {
+            window.__shift = 0;
+            new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__shift += e.value; }).observe({type: 'layout-shift'});
+          });
+          await page.clock.runFor(300);
+          await page.waitForTimeout(30);
+          page.__release();
+          await settle(page);
+          const again = await page.evaluate(() => window.__shift);
+          assert.ok(again < 0.02, `second load: layout shift ${again.toFixed(3)} with the recorded heights`);
+          assert.deepEqual(errors, []);
+          await context.close();
+        });
+      }
+    }
+
     await check('ledger 1440: a wheel input during the load cancels the scroll restore', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#ledger'});
       await settle(page);

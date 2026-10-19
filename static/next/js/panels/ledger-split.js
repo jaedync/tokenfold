@@ -5,7 +5,7 @@ import { h, patch, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, peakParallel, filterSets } from './ledger-model.js';
 import { providerGroup, groupRank, GROUP_COLOR } from './ledger-colors.js';
-import { colorsFor, swatch, spark, money, pct0, tokens, plural } from './ledger-kit.js';
+import { colorsFor, swatch, spark, money, pct0, tokens, plural, ledgerWait, ledgerStatus } from './ledger-kit.js';
 
 const EDGE_DAYS = 5;
 
@@ -74,13 +74,13 @@ export default {
     el.setAttribute('aria-labelledby', head.id);
     const body = h('div');
     el.append(head.el, body);
-    let seen = null;
+    let seen = null, seenStatus = null;
     return {
       update(s) {
         const d = derive(s, ctx.now());
-        if (d === seen) return;
-        seen = d;
-        if (!d.hasData) { patch(body); return; }
+        if (d === seen && ledgerStatus(s) === seenStatus) return;
+        seen = d; seenStatus = ledgerStatus(s);
+        if (!d.hasData) { patch(body, ledgerWait(s)); return; }
         const t = totals(d), c = colorsFor(d);
         const tot = t.orch + t.sub;
         if (!t.sessions) { patch(body, h('p', { class: 'ws-empty' }, 'Nothing matches this period and these filters.')); return; }

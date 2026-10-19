@@ -26,7 +26,10 @@ export default {
     const quiet = h('button', { type: 'button', class: 'lc-quiet', hidden: true,
       onclick: () => setUi(store, { showQuiet: !derive(store.get(), ctx.now()).ui.showQuiet }) });
     const range = h('span', { class: 'lc-range' });
-    el.append(
+    // Until the ledger is in, a marker keeps the bar's reserved height
+    // (reserve.js): on a phone the quiet toggle wraps it to two lines.
+    const wait = h('span', { hidden: true, 'data-loading': true });
+    el.append(wait,
       h('div', { class: 'lc-period' }, h('span', { class: 'lc-label' }, 'Period'), seg.el),
       chips, h('div', { class: 'lc-end' }, quiet, range));
 
@@ -52,6 +55,7 @@ export default {
         const d = derive(s, ctx.now());
         if (d === seen) return;
         seen = d;
+        if (d.hasData) wait.remove();
         seg.select(d.ui.pkey);
         setText(customBtn, d.ui.pkey === 'custom' ? periodLabel(d) : 'Custom');
         const { filters } = d.ui;

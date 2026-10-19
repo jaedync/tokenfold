@@ -160,3 +160,14 @@
 .md-col > i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--ink); }
 .md-col > b { position: absolute; left: -1px; right: -1px; height: 3px; margin-bottom: -1.5px; background: var(--blue); }
 .md-x { display: flex; justify-content: space-between; font: 600 11px/1 var(--text); color: var(--muted); margin: 6px 0 4px; }
+
+/* Reserved height while the history loads (tokenfold.css, reserve.js). */
+.p-history-meter { --reserve-default: 330px; }
+.p-history-windows { --reserve-default: 650px; }
+.p-history-months { --reserve-default: 430px; }
+.p-history-value { --reserve-default: 420px; }
+@media (max-width: 700px) {
+  .p-history-meter { --reserve-default: 580px; }
+  .p-history-windows { --reserve-default: 1300px; }
+  .p-history-months { --reserve-default: 640px; }
+}

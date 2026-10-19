@@ -6,7 +6,7 @@
 import { h, patch, setText, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { derive, matched, dayStart, sessionName, projectLabel, DAY_S } from './ledger-model.js';
-import { colorsFor, svg, tooltip, tipRow, money, plural, openSession, keepFocus, dayLabel } from './ledger-kit.js';
+import { colorsFor, svg, tooltip, tipRow, money, plural, openSession, keepFocus, dayLabel, ledgerWait, ledgerStatus } from './ledger-kit.js';
 
 const H = 3600, ROW = 30, AX = 30, PAD = 6, MAX_THREADS = 4, MAX_ROWS = 8;
 const INK = '#161616', MUTED = '#5d5950', PAPER_2 = '#e8e1d2', RED = '#d2342a', HAIR = 'rgba(22,22,22,.14)';
@@ -118,7 +118,7 @@ export default {
     el.append(head.el, empty, frame, foot);
     const tip = tooltip();
 
-    let seen = null, lastW = 0, lastSel = null, byId = new Map(), shownSpan = null;
+    let seen = null, seenStatus = null, lastW = 0, lastSel = null, byId = new Map(), shownSpan = null;
     // Keyboard order of the matching sessions (lane by lane, by start) and
     // the one bar that takes Tab.
     let order = [], tabStop = null;
@@ -126,9 +126,9 @@ export default {
       const s = store.get();
       const d = derive(s, ctx.now());
       const avail = scroll.clientWidth || 800;
-      if (!force && d === seen && avail === lastW) return;
-      seen = d; lastW = avail;
-      if (!d.hasData) { patch(scroll); patch(lanes); frame.hidden = true; return; }
+      if (!force && d === seen && avail === lastW && ledgerStatus(s) === seenStatus) return;
+      seen = d; lastW = avail; seenStatus = ledgerStatus(s);
+      if (!d.hasData) { patch(scroll); patch(lanes); patch(empty, ledgerWait(s)); frame.hidden = true; return; }
       const ok = new Map(matched(d.listed, d.ui.filters).map((m) => [m.s.id, m.cost]));
       frame.hidden = !d.listed.length;
       patch(empty, d.listed.length ? null : h('p', { class: 'p-state' }, 'No sessions in this period.'));

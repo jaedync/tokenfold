@@ -101,3 +101,13 @@
   .hr-tbl { font-size: 12.5px; }
   .bn-row { grid-template-columns: 7.5em minmax(0, 1fr) 6ch; }
 }
+
+/* Reserved height while the lab loads (tokenfold.css, reserve.js). */
+.p-lab-served { --reserve-default: 270px; }
+.p-lab-energy, .p-lab-prices { --reserve-default: 310px; }
+.p-lab-bench { --reserve-default: 235px; }
+@media (max-width: 700px) {
+  .p-lab-served, .p-lab-bench { --reserve-default: 380px; }
+  .p-lab-energy { --reserve-default: 340px; }
+  .p-lab-prices { --reserve-default: 200px; }
+}

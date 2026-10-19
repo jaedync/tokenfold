@@ -11,9 +11,6 @@ import timeline from '../panels/ledger-timeline.js';
 import pivot from '../panels/ledger-pivot.js';
 import drawer from '../panels/ledger-drawer.js';
 import { periodParams } from '../panels/ledger-model.js';
-import { ensureCss } from '../panels/ledger-kit.js';
-
-ensureCss();
 
 const POLL_MS = 120000;
 

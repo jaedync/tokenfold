@@ -7,6 +7,7 @@ import * as api from './api.js';
 import { createFeeds } from './feeds.js';
 import { mountInto, mountPanel, feedStatus } from './panel.js';
 import { createScroll } from './scroll.js';
+import { createReserve } from './reserve.js';
 import { bindingWindow, dataOf, nowFrom } from './select.js';
 import { windowTag } from './palette.js';
 import livebar from './panels/livebar.js';
@@ -89,12 +90,14 @@ function mountView(view) {
   container.dataset.view = view.id;
   viewRoot.replaceChildren(container);
   const panels = (view.panels || []).map((p) => mountPanel(p, container, ctx));
+  reserve.apply(view.id, store.get().scope, container);
   // During a scope switch the panels keep the old content (feeds.js reset).
   const update = (s) => { if (s.switching) return; for (const p of panels) p.update(s); };
   const unsubscribe = store.subscribe(update);
   update(store.get());
   return {
     id: view.id,
+    container,
     destroy() {
       unsubscribe();
       for (const release of releases) release();
@@ -150,6 +153,10 @@ function viewReady() {
   });
 }
 const scroll = createScroll({ store, root: viewRoot, isReady: viewReady });
+const reserve = createReserve({
+  store, root: viewRoot, isReady: viewReady,
+  where: () => (active ? { view: active.id, scope: store.get().scope, container: active.container } : null),
+});
 
 // ---------------------------------------------------------------- scope
 function setScope(scope) {
@@ -162,6 +169,8 @@ function setScope(scope) {
   next.set('scope', scope);
   history.replaceState(history.state, '', `${location.pathname}?${next}${location.hash}`);
   store.set('scope', scope);
+  // A panel with no data for the new scope reserves that scope's height.
+  if (active) reserve.apply(active.id, scope, active.container);
   skewFixed = false;
   feeds.reset();
 }

@@ -15,6 +15,8 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | `js/early.js` | Starts the shell feeds and the first view's feeds before the rest of the modules load. Its URLs must match the view feeds (the boot checks in `app/tests/next_stable.test.cjs`). |
 | `js/api.js` | `getJSON(name, params, {scope, mock, signal})`, the endpoint table `ENDPOINTS`, `backoffMs()`. |
 | `js/feeds.js` | Shared polled feeds with backoff; pauses in a hidden tab. A refetch keeps the old data on screen. A scope switch sets `switching` and keeps the old content until the new data is in. `prefetch()` reads a feed once. A body the server marks stale (`X-Tokenfold-Stale: 1`, built before the newest ingest) is read again after 4 s, once per bump. |
+| `js/scroll.js` | Window scroll position per history entry: back, forward and a reload put it back once the view's data is in; a view tab opens at the top. The browser's own restoration is off (it runs while the page is one screen of "Loading" lines). |
+| `js/reserve.js` | Reserved panel heights while a view loads: each panel keeps the height it had at the last load (`localStorage`, per view, scope and layout width) as `--reserve`; the CSS applies it while the panel holds a `[data-loading]` line, else the panel's `--reserve-default`. |
 | `js/store.js` | Immutable store: `get()`, `set(key, value)`, `subscribe(fn)`. |
 | `js/format.js` | `usd`, `pct`, `dur`, `shortDur`, `age`, `clock`, `dayClock`, `when`, `esc`. Missing values print `—`. |
 | `js/dom.js` | `h()`, `fill()`, `patch()`, `setText()`, `approx()`, `segmented()`, `panelHead()`. |
@@ -36,8 +38,9 @@ and the current version is served `immutable`. A URL with an older version
 still loads (the current files, `no-cache`).
 
 - In a module, build asset URLs relative to the module:
-  `new URL('../../css/ledger.css', import.meta.url)`.
-- In the template, use `{{ static_base }}/css/<view>.css`. Do not write
+  `new URL('../../fixtures/now.json', import.meta.url)`.
+- Link every view stylesheet in the template, so no view restyles after the
+  first paint. Use `{{ static_base }}/css/<view>.css`. Do not write
   `/static/next/…` or `?v=`: the plain path still works but skips the version.
 
 ## Mock mode
@@ -78,6 +81,11 @@ export default {
 
 `mountPanel()` wraps `mount` and `update` in try/catch. A panel that throws
 shows one quiet line ("… failed to load"). The other panels keep working.
+
+A panel with no data yet shows `feedLine()` (or `loadingLine()`), which carries
+`data-loading`: the panel then keeps its reserved height (`reserve.js`). A panel
+that shows nothing while it loads makes the page jump when the data comes in.
+Give a new panel a `--reserve-default` near its usual height in its view's CSS.
 
 ### Updates in place
 

@@ -50,9 +50,12 @@ export function mountInto(panel, el, ctx) {
 }
 
 // One quiet line for a panel with no data: loading, unavailable or empty.
-export function stateLine(text, sub) {
-  return h('div', { class: 'p-state', role: 'status' }, text, sub ? h('small', null, sub) : null);
+// data-loading lets the panel keep its reserved height (reserve.js) while it loads.
+export function stateLine(text, sub, { loading = false } = {}) {
+  return h('div', { class: 'p-state', role: 'status', 'data-loading': loading }, text, sub ? h('small', null, sub) : null);
 }
+
+export const loadingLine = (text, sub) => stateLine(text, sub, { loading: true });
 
 // What a panel should show for a feed: 'ok' (fresh data), 'stale' (old data
 // after a failed refresh), 'loading' or 'unavailable'.
@@ -73,7 +76,7 @@ const UNAVAILABLE_SUB = {
 export function feedLine(feed, what) {
   const status = feedStatus(feed);
   if (status === 'ok' || status === 'stale') return null;
-  if (status === 'loading') return stateLine(`Loading ${what}…`);
+  if (status === 'loading') return loadingLine(`Loading ${what}…`);
   const code = feed.error && feed.error.status;
   return stateLine(`${what[0].toUpperCase()}${what.slice(1)} is unavailable.`,
     UNAVAILABLE_SUB[code] || 'The page tries again on its own.');
