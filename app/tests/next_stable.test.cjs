@@ -514,6 +514,73 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       }
     }
 
+    // The browser's own restoration runs while the page is one screen of
+    // "Loading" lines. The position must come back once the data is in.
+    for (const [view, width] of [['ledger', 1440], ['runway', 390], ['history', 1440]]) {
+      await check(`${view} ${width}: a reload puts the scroll position back after the data loads`, async () => {
+        const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: `/next?mock=1#${view}`});
+        await settle(page);
+        const y = await page.evaluate(() => Math.min(700, document.documentElement.scrollHeight - innerHeight));
+        assert.ok(y > 200, `the ${view} page is too short to test (${y})`);
+        await scrollTo(page, y);
+        await page.clock.runFor(300);
+        page.__hold = /./;
+        await page.reload();
+        await page.clock.runFor(300);
+        await page.waitForTimeout(30);
+        assert.equal(await page.evaluate(() => scrollY), 0, 'the page was not loading');
+        page.__release();
+        await settle(page);
+        assert.equal(await page.evaluate(() => Math.round(scrollY)), y, `the scroll position did not come back (${await page.evaluate(() => [scrollY, document.documentElement.scrollHeight, JSON.stringify(history.state)].join(' '))})`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
+
+    await check('ledger 1440: a wheel input during the load cancels the scroll restore', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#ledger'});
+      await settle(page);
+      await scrollTo(page, 700);
+      await page.clock.runFor(300);
+      page.__hold = /./;
+      await page.reload();
+      await page.clock.runFor(300);
+      await page.mouse.move(700, 500);
+      await page.mouse.wheel(0, -100);
+      page.__release();
+      await settle(page);
+      assert.equal(await page.evaluate(() => scrollY), 0, 'the restore moved the page after the user scrolled');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('runway 1440: a view tab opens at the top; back and forward put each position back', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
+      await settle(page);
+      await page.clock.runFor(5000);
+      await scrollTo(page, 400);
+      await page.clock.runFor(300);
+      // element.click(): a Playwright click scrolls the masthead link into view first.
+      await page.evaluate(() => document.querySelector('[data-view-link="ledger"]').click());
+      await page.clock.runFor(100);
+      assert.equal(await page.evaluate(() => location.hash), '#ledger');
+      assert.equal(await page.evaluate(() => scrollY), 0, 'the ledger did not open at the top');
+      await settle(page);
+      await scrollTo(page, 600);
+      await page.clock.runFor(300);
+      await page.goBack();
+      await page.clock.runFor(200);
+      await page.waitForTimeout(30);
+      assert.equal(await page.evaluate(() => location.hash), '#runway');
+      assert.equal(await page.evaluate(() => Math.round(scrollY)), 400, 'back did not put the runway position back');
+      await page.goForward();
+      await page.clock.runFor(200);
+      await page.waitForTimeout(30);
+      assert.equal(await page.evaluate(() => Math.round(scrollY)), 600, 'forward did not put the ledger position back');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
       const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
       await settle(page);
