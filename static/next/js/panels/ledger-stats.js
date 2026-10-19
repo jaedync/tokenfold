@@ -35,6 +35,9 @@ export function sums(d) {
   return out;
 }
 
+
+export const BUSY_TEXT = 'Loading this period';
+const BUSY_WHY = 'The figures below are from the 30-day data until this period loads.';
 function stat(key, value, sub) {
   return h('div', { class: 'ls' }, h('span', { class: 'kicker' }, key), h('span', { class: 'ls-v' }, value), h('span', { class: 'ls-sub' }, sub));
 }
@@ -65,8 +68,9 @@ export default {
         const filtered = d.ui.filters.length > 0;
         setText(period, `${periodLabel(d)} · ${filtered ? 'filtered' : 'all machines'}`);
         const loading = d.hasData && !d.exact;
-        setText(busy, loading ? 'Loading this period' : '');
-        busy.title = loading ? 'The figures below are from the 30-day data until this period loads.' : '';
+        // Short on screen; the reason goes to screen readers and the tooltip.
+        patch(busy, loading ? [BUSY_TEXT, h('span', { class: 'sr-only' }, `. ${BUSY_WHY}`)] : null);
+        busy.title = loading ? BUSY_WHY : '';
         el.classList.toggle('is-loading', loading);
         if (line) return;
         const t = sums(d);
