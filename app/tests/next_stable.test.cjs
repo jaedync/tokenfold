@@ -638,6 +638,43 @@ const scrollTo = (page, y) => page.evaluate((y) => window.scrollTo(0, Math.min(y
       await context.close();
     });
 
+    for (const width of [1440, 390, 360]) {
+      await check(`ledger ${width}: the "loading this period" note adds no height or width`, async () => {
+        const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: '/next?mock=1#ledger'});
+        await settle(page);
+        // Mock mode always has the exact period, so the note and a long
+        // custom-range label are set by hand.
+        const m = await page.evaluate(() => {
+          const panel = document.querySelector('.p-ledger-stats');
+          const before = panel.offsetHeight;
+          // The masthead nav is a few px too wide at 360 on every view (not this panel).
+          const pageBefore = document.documentElement.scrollWidth;
+          document.querySelector('.ls-period').textContent = 'Aug 30–Sep 5 · All machines · All projects';
+          // As ledger-stats.js builds it: short text plus a screen-reader reason.
+          const sr = Object.assign(document.createElement('span'), {className: 'sr-only', textContent: '. The figures below are from the 30-day data.'});
+          document.querySelector('.ls-busy').replaceChildren('Loading this period', sr);
+          return {before, after: panel.offsetHeight, panelOver: panel.scrollWidth - panel.clientWidth,
+            pageOver: document.documentElement.scrollWidth - Math.max(innerWidth, pageBefore)};
+        });
+        assert.equal(m.after, m.before, 'the note changed the summary height');
+        assert.ok(m.panelOver <= 0, `the summary is ${m.panelOver} px too wide`);
+        assert.ok(m.pageOver <= 0, `the page scrolls sideways by ${m.pageOver} px`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      });
+    }
+
+    await check('runway 1440: the footer starts below the fold before the panels mount', async () => {
+      const {page, context} = await open(browser, {
+        viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway', holdStatic: /\/js\/main\.js$/, waitUntil: 'commit'});
+      await page.waitForSelector('footer.foot', {state: 'attached'});
+      await page.waitForFunction(() => [...document.styleSheets].some((x) => /tokenfold\.css$/.test(x.href || '')));
+      const top = await page.evaluate(() => document.querySelector('footer.foot').getBoundingClientRect().top);
+      assert.ok(top >= 900, `the footer is at ${Math.round(top)} px before the panels mount`);
+      page.__release();
+      await context.close();
+    });
+
     await check('ledger 1440: a view switch shows the prefetched data at once', async () => {
       const {page, errors, context, counts} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1#runway'});
       await settle(page);

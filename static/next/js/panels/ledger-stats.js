@@ -35,6 +35,8 @@ export function sums(d) {
   return out;
 }
 
+const BUSY_TEXT = 'Loading this period';
+const BUSY_WHY = 'The figures below are from the 30-day data until this period loads.';
 function stat(key, value, sub) {
   return h('div', { class: 'ls' }, h('span', { class: 'kicker' }, key), h('span', { class: 'ls-v' }, value), h('span', { class: 'ls-sub' }, sub));
 }
@@ -50,7 +52,7 @@ export default {
     const state = h('div');
     const row = h('div', { class: 'ls-row' });
     el.setAttribute('aria-labelledby', 'ledger-title');
-    el.append(h('div', { class: 'ls-head' }, title, h('div', { class: 'ls-meta' }, period, busy)), state, row);
+    el.append(h('div', { class: 'ls-head' }, title, h('div', { class: 'ls-meta' }, h('div', { class: 'ls-line' }, period, busy))), state, row);
 
     let seen = null;
     return {
@@ -65,7 +67,9 @@ export default {
         const filtered = d.ui.filters.length > 0;
         setText(period, `${periodLabel(d)} · ${filtered ? 'filtered' : 'all machines'}`);
         const loading = d.hasData && !d.exact;
-        setText(busy, loading ? 'Loading this period. The figures below are from the 30-day data.' : '');
+        // Short on screen; the reason goes to screen readers and the tooltip.
+        patch(busy, loading ? [BUSY_TEXT, h('span', { class: 'sr-only' }, `. ${BUSY_WHY}`)] : null);
+        busy.title = loading ? BUSY_WHY : '';
         el.classList.toggle('is-loading', loading);
         if (line) return;
         const t = sums(d);
