@@ -1468,6 +1468,10 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
                                         second=0, microsecond=0)
     month_cost = round(compute_window_cost(
         conn, _month_start_utc.timestamp(), _now_utc.timestamp() + 1, scope), 2)
+    # The work hero is compared with the meter, which bills Anthropic only.
+    hero_cost = month_cost if scope != "enterprise" else round(compute_window_cost(
+        conn, _month_start_utc.timestamp(), _now_utc.timestamp() + 1, scope,
+        anthropic_only=True), 2)
     month_label = _now_utc.strftime("%B %Y") + " · UTC"
     # Read once and reuse for both "meter" and "month_hero": a second call
     # could straddle a fresh capture and leave the hero disagreeing with the
@@ -1587,7 +1591,7 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
         "meter": _meter,
         # Authoritative MTD figure: billed when a fresh meter exists, the
         # estimate otherwise. See app/month_hero.py for the invariant.
-        "month_hero": month_hero_block(month_cost, _meter),
+        "month_hero": month_hero_block(hero_cost, _meter),
         "geo_assumed": _geo_assumed(scope),
         "month_label": month_label,
     }

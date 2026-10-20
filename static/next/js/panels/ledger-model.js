@@ -183,7 +183,9 @@ export function derive(state, pageNow) {
     providers: { ...((l30 && l30.model_providers) || {}), ...((source && source.model_providers) || {}) },
     hasData: Boolean(source && Array.isArray(source.sessions)),
     // Work only: days the billing meter rose more than the recorded spend.
-    meterGaps: (source && source.meter_gaps) || [],
+    // Every body carries the full list; the 30-day one is there first, so a
+    // period load cannot add the line late (no layout shift).
+    meterGaps: (l30 && l30.meter_gaps) || (source && source.meter_gaps) || [],
   };
   memo = { key, out };
   return out;

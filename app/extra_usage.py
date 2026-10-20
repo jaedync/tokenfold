@@ -9,7 +9,7 @@ billing-grade series without any manual entry.
 
 Derivations:
 - latest_meter: the authoritative MTD gauge (used/limit/utilization).
-- daily_meter_deltas: per-UTC-day official spend increases, each interval
+- daily_meter_deltas: per-local-day official spend increases, each interval
   compared against measured event cost over the same window — the gap is
   usage Tokenfold can't see (claude.ai web, mobile, Console).
 
@@ -23,9 +23,14 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
+from .config import TZ_NAME
 from .cost_windows import compute_window_cost
 from .db import write_txn
+from .meter_gap import local_days, meter_days, read_meter, window_cost
+
+_TZ = ZoneInfo(TZ_NAME)
 
 # A meter older than this is no longer shown as the billed figure by itself.
 # Inside its own UTC month it stays the base of the month-to-date figure
@@ -163,7 +168,8 @@ def meter_anchor(conn: sqlite3.Connection, meter: Optional[dict],
     fetched = meter["fetched_epoch"]
     if meter_is_fresh(meter, now) or fetched < _utc_month_start(now):
         return None
-    since = compute_window_cost(conn, fetched, now, "enterprise")
+    # The meter bills Anthropic only: other work providers are not on it.
+    since = compute_window_cost(conn, fetched, now, "enterprise", anthropic_only=True)
     return {
         "base_usd": meter["used_usd"],
         "measured_since_usd": round(since, 2),
@@ -193,55 +199,23 @@ def build_meter_payload(conn: sqlite3.Connection, scope: str,
 
 def daily_meter_deltas(conn: sqlite3.Connection, days: int = 30,
                        now: Optional[float] = None) -> list[dict]:
-    """Per-UTC-day official spend increases vs measured event cost.
+    """Per-local-day official spend increases vs measured event cost.
 
-    Each consecutive reading pair contributes its interval to the UTC day of
-    the LATER reading (the day the increase was observed — an interval can
-    span a gap while no enterprise machine pushed, so this is attribution,
-    not ground truth about when the spend happened). measured_usd prices the
-    exact same [prev, cur) window from recorded enterprise events, so
-    unaccounted_usd = official - measured isolates usage that never reaches
-    Tokenfold. Sorted oldest-first.
+    One source with the ledger's meter-gap line (app/meter_gap.meter_days):
+    a day's bill runs from the last reading at or before its midnight to the
+    last reading inside it, so an interval that spans a gap while no work
+    machine pushed goes to the day of the later reading (attribution, not
+    ground truth). measured_usd prices that same window from recorded work
+    Claude events, so unaccounted_usd = official - measured isolates usage
+    that never reaches Tokenfold. Sorted oldest-first.
     """
     now = time.time() if now is None else now
     since = now - days * 86400.0
-    # One reading BEFORE the window seeds the first in-window delta.
-    seed = conn.execute(
-        "SELECT fetched_epoch, used_cents FROM extra_usage_readings "
-        "WHERE fetched_epoch < ? ORDER BY fetched_epoch DESC LIMIT 1",
-        (since,)).fetchone()
-    rows = conn.execute(
-        "SELECT fetched_epoch, used_cents FROM extra_usage_readings "
-        "WHERE fetched_epoch >= ? ORDER BY fetched_epoch", (since,)).fetchall()
-    readings = ([dict(seed)] if seed else []) + [dict(r) for r in rows]
-    if len(readings) < 2:
-        return []
-
-    by_day: dict[str, dict] = {}
-    for prev, cur in zip(readings, readings[1:]):
-        delta_cents = cur["used_cents"] - prev["used_cents"]
-        if delta_cents < 0:
-            # Billing-cycle rollover: meter restarted from zero.
-            delta_cents = cur["used_cents"]
-        if delta_cents == 0:
-            continue  # dedupe should prevent this, but limit-only rows exist
-        measured = compute_window_cost(
-            conn, prev["fetched_epoch"], cur["fetched_epoch"], "enterprise")
-        day = datetime.fromtimestamp(
-            cur["fetched_epoch"], tz=timezone.utc).strftime("%Y-%m-%d")
-        slot = by_day.setdefault(
-            day, {"day": day, "official_usd": 0.0, "measured_usd": 0.0})
-        slot["official_usd"] += delta_cents / 100.0
-        slot["measured_usd"] += measured
-
-    out = []
-    for day in sorted(by_day):
-        slot = by_day[day]
-        out.append({
-            "day": day,
-            "official_usd": round(slot["official_usd"], 2),
-            "measured_usd": round(slot["measured_usd"], 2),
-            "unaccounted_usd": round(
-                slot["official_usd"] - slot["measured_usd"], 2),
-        })
-    return out
+    rows = meter_days(read_meter(conn, since, now), local_days(since, now, _TZ), _TZ, now,
+                      window_cost(conn, now))
+    return [{
+        "day": r["day"],
+        "official_usd": round(r["billed"], 2),
+        "measured_usd": round(r["recorded"], 2),
+        "unaccounted_usd": round(r["billed"] - r["recorded"], 2),
+    } for r in rows if r["billed"]]

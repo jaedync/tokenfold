@@ -207,6 +207,24 @@ class MonthHeroPayloadTest(TempDBTestCase):
         self.assertAlmostEqual(d["month_hero"]["measured_usd"],
                                d["month_cost"], places=2)
 
+    def test_payload_hero_measures_only_what_the_meter_bills(self):
+        # A work Pi call on another provider is in month_cost, not on the
+        # Anthropic meter, so it is not in the hero's measured or "Not seen".
+        self._seed()
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            "INSERT INTO events(uuid,type,timestamp,ts_epoch,day,session_id,request_id,"
+            "source_machine,project_dir,model,is_sidechain,source_client,provider,"
+            "reported_cost_total,account_email,plan,org_name,is_human_prompt) "
+            "VALUES('g1','assistant',?,?,?,'s2','r2','m1','proj','glm-5.3',0,'pi-agent',"
+            "'openrouter',7.0,'jchilton@vertech.com','enterprise','Vertech',0)",
+            (now.strftime("%Y-%m-%dT%H:%M:%SZ"), now.timestamp() - 60, now.strftime("%Y-%m-%d")))
+        self.conn.commit()
+        import app.aggregator as agg
+        agg._cached_data.clear()
+        d = agg.build_dashboard_data("enterprise")
+        self.assertAlmostEqual(d["month_hero"]["measured_usd"], d["month_cost"] - 7.0, places=2)
+
     def test_payload_hero_exposes_headroom(self):
         self._seed()
         import app.aggregator as agg

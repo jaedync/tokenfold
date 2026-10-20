@@ -3,6 +3,7 @@ server-side billing meter, the authoritative monthly gauge, per-day spend
 increases, and unaccounted usage (meter delta minus measured event cost)."""
 
 import json
+import time
 import unittest
 from datetime import datetime, timezone
 
@@ -117,16 +118,20 @@ class DailyMeterDeltasTest(TempDBTestCase):
                              {"used_credits": used,
                               "monthly_limit": 100000}, _epoch(iso))
 
-    def test_deltas_bucketed_by_utc_day(self):
+    def test_deltas_bucketed_by_local_day(self):
+        """Local days, like the ledger: the meter-gap line and the History
+        chart must give the same figure for a day (one source, app/meter_gap)."""
         from app.extra_usage import daily_meter_deltas
         self._record(1000.0, "2026-07-08T10:00:00")
         self._record(3000.0, "2026-07-08T18:00:00")   # +$20 on 07-08
         self._record(3500.0, "2026-07-09T09:00:00")   # +$5 on 07-09
+        self._record(4000.0, "2026-07-10T03:00:00")   # 22:00 CDT: +$5 more on 07-09
         days = daily_meter_deltas(self.conn, days=30,
-                                  now=_epoch("2026-07-09T12:00:00"))
+                                  now=_epoch("2026-07-10T04:00:00"))
         by_day = {d["day"]: d for d in days}
         self.assertEqual(by_day["2026-07-08"]["official_usd"], 20.0)
-        self.assertEqual(by_day["2026-07-09"]["official_usd"], 5.0)
+        self.assertEqual(by_day["2026-07-09"]["official_usd"], 10.0)
+        self.assertNotIn("2026-07-10", by_day)
 
     def test_cycle_reset_counts_from_zero(self):
         """A used_credits DROP is the billing-cycle rollover: the new
@@ -152,6 +157,21 @@ class DailyMeterDeltasTest(TempDBTestCase):
         self.assertEqual(d["official_usd"], 20.0)
         self.assertEqual(d["measured_usd"], 5.0)
         self.assertEqual(d["unaccounted_usd"], 15.0)
+
+    def test_an_open_window_is_priced_again(self):
+        """Claude events arrive up to 5 min late: today's window must not
+        keep its first price for an hour when no new reading comes."""
+        from app.extra_usage import daily_meter_deltas
+        now = time.time()
+        from app.extra_usage import record_meter_reading
+        record_meter_reading(self.conn, "vm-a", {"used_credits": 1000.0, "monthly_limit": 100000}, now - 3600)
+        record_meter_reading(self.conn, "vm-a", {"used_credits": 3000.0, "monthly_limit": 100000}, now - 60)
+        day = datetime.fromtimestamp(now - 1800).strftime("%Y-%m-%d")
+        first = {d["day"]: d for d in daily_meter_deltas(self.conn, days=2, now=now)}
+        _ins_event(self.conn, "late", now - 1800, day=day)
+        second = {d["day"]: d for d in daily_meter_deltas(self.conn, days=2, now=now)}
+        self.assertEqual(sum(d["measured_usd"] for d in second.values())
+                         - sum(d["measured_usd"] for d in first.values()), 5.0)
 
     def test_single_reading_yields_no_delta(self):
         from app.extra_usage import daily_meter_deltas
@@ -226,6 +246,17 @@ class MeterAnchorTest(TempDBTestCase):
         self.assertEqual(anchor["base_usd"], 400.0)
         self.assertEqual(anchor["measured_since_usd"], 5.0)
         self.assertEqual(anchor["used_usd"], 405.0)
+
+    def test_anchor_counts_only_spend_the_meter_bills(self):
+        # The meter bills Anthropic only: a work Pi call on another provider
+        # must not raise the billed estimate.
+        meter_at = _epoch("2026-07-03T12:00:00")
+        self._record(40000.0, epoch=meter_at)
+        _ins_event(self.conn, "after", meter_at + 60, day="2026-07-03")
+        _ins_event(self.conn, "glm", meter_at + 120, day="2026-07-03")
+        self.conn.execute("UPDATE events SET source_client='pi-agent', provider='openrouter', reported_cost_total=5.0 WHERE uuid='glm'")
+        self.conn.commit()
+        self.assertEqual(self._anchor()["measured_since_usd"], 5.0)
 
     def test_previous_month_meter_is_not_anchored(self):
         self._record(40000.0, epoch=_epoch("2026-06-30T23:00:00"))
