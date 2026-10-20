@@ -189,6 +189,10 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertGreater(gap['recorded'], 0)
         self.assertLess(gap['recorded'], 300)
         self.assertNotIn('meter_gaps', self.ledger(scope='personal'))
+        # Every work body carries the same list, whatever its period: the page
+        # reads it from the 30-day body, so a period load adds no line late.
+        later = self.ledger(scope='enterprise', **{'from': self.t0 + 7200, 'to': self.t0 + 9000})
+        self.assertEqual(later['meter_gaps'], body['meter_gaps'])
 
     def test_mixed_scope_session_counts_only_in_scope_rows(self):
         # An account switch mid-session: the work half stays out of personal.

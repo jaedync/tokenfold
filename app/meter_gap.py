@@ -9,13 +9,24 @@ with no sign that anything was missing. No routes (app/ledger.py serves it).
 from bisect import bisect_right
 from datetime import datetime, timedelta
 
+from . import db
 from .cost_windows import compute_window_cost
-from .extra_usage import _utc_month_start
+from .read_cache import ReadCache
 
 # The meter lags the calls a little and list prices round differently, so
 # a day must miss both a fixed amount and a share of the bill to count.
 GAP_MIN_USD = 20.0
 GAP_MIN_SHARE = 0.25
+# A fall of more than half is the billing-cycle rollover (the meter restarts
+# from zero); a small fall is two machines' readings arriving out of order.
+ROLLOVER_SHARE = 0.5
+# Gaps cover every day with readings, so each work ledger body carries the
+# same list whatever its period. Bounded so a cold build stays cheap.
+HISTORY_S = 120 * 86400
+# One cost query per day is ~12 ms. A closed day's window never moves, so its
+# cost stays cached; only late ingest (a backfill) changes it, seen within
+# the hour. Today's window ends at the newest reading, so it gets a new key.
+_window_costs = ReadCache(ttl=3600, max_entries=1024)
 
 
 def read_meter(conn, start: float, end: float) -> list[tuple[float, float]]:
@@ -35,8 +46,12 @@ def read_meter(conn, start: float, end: float) -> list[tuple[float, float]]:
 
 
 def window_cost(conn):
-    """Recorded work Claude spend over [t0, t1), the meter's own window."""
-    return lambda t0, t1: compute_window_cost(conn, t0, t1, "enterprise", anthropic_only=True)
+    """Recorded work Claude spend over [t0, t1). The meter bills Anthropic
+    only, so other providers on the work account do not count."""
+    def cost(t0, t1):
+        return _window_costs.get((db.DB_PATH, t0, t1), lambda: compute_window_cost(
+            conn, t0, t1, "enterprise", anthropic_only=True))
+    return cost
 
 
 def _midnight(day: str, tz, days: int = 0) -> float:
@@ -44,29 +59,64 @@ def _midnight(day: str, tz, days: int = 0) -> float:
     return d.replace(tzinfo=tz).timestamp()
 
 
-def meter_gaps(readings, days, tz, now: float, cost) -> list[dict]:
-    """[{day, billed, recorded}] for local days whose billed rise the
-    recorded spend misses by more than GAP_MIN_USD and GAP_MIN_SHARE.
+def local_days(start: float, end: float, tz) -> list[str]:
+    """Local dates from the day of `start` to the day of `end`, inclusive."""
+    d = datetime.fromtimestamp(start, tz).date()
+    last = datetime.fromtimestamp(end, tz).date()
+    out = []
+    while d <= last:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
 
-    A day's bill runs from the last reading at or before its midnight to
-    the last reading before the next one. `cost(t0, t1)` prices that same
-    window, so spend the meter shows after midnight is no false gap.
+
+def _billed(span) -> float:
+    total = 0.0
+    for a, b in zip(span, span[1:]):
+        total += b if b < a * ROLLOVER_SHARE else b - a
+    return total
+
+
+def meter_days(readings, days, tz, now: float, cost) -> list[dict]:
+    """[{day, billed, recorded}] for the local days with a reading inside them.
+
+    A day's bill runs from the last reading at or before its midnight (else
+    its first reading) to
+    the last reading before the next midnight, so a quiet weekend goes to the
+    day of the next reading. `cost(t0, t1)` prices that same window, so
+    spend the meter shows after midnight is counted on both sides.
     """
     if not readings:
         return []
     times = [t for t, _ in readings]
     out = []
     for day in days:
-        lo = bisect_right(times, _midnight(day, tz)) - 1
+        # Without a reading before midnight, the day's first reading opens it.
+        lo = max(bisect_right(times, _midnight(day, tz)) - 1, 0)
         hi = bisect_right(times, min(_midnight(day, tz, 1), now)) - 1
-        if lo < 0 or hi <= lo:
-            continue  # no reading before the day, or none inside it
-        (t0, start), (t1, end) = readings[lo], readings[hi]
-        billed = end - start
-        if billed <= 0 or _utc_month_start(t0) != _utc_month_start(t1):
-            continue  # the billing cycle rolled over inside the window
-        recorded = cost(t0, t1)
-        gap = billed - recorded
-        if gap > GAP_MIN_USD and gap > GAP_MIN_SHARE * billed:
-            out.append({"day": day, "billed": round(billed, 2), "recorded": round(recorded, 2)})
+        if hi <= lo:
+            continue  # fewer than two readings in reach of the day
+        out.append({"day": day, "billed": _billed([usd for _, usd in readings[lo:hi + 1]]),
+                     "recorded": cost(readings[lo][0], readings[hi][0])})
     return out
+
+
+def is_gap(billed: float, recorded: float) -> bool:
+    gap = billed - recorded
+    return gap > GAP_MIN_USD and gap > GAP_MIN_SHARE * billed
+
+
+def meter_gaps(readings, days, tz, now: float, cost) -> list[dict]:
+    """The meter_days whose recorded spend misses GAP_MIN_USD and GAP_MIN_SHARE of the bill."""
+    return [{"day": d["day"], "billed": round(d["billed"], 2), "recorded": round(d["recorded"], 2)}
+            for d in meter_days(readings, days, tz, now, cost) if is_gap(d["billed"], d["recorded"])]
+
+
+def all_meter_gaps(conn, tz, now: float) -> list[dict]:
+    """Gaps on every local day with meter readings (up to HISTORY_S back)."""
+    first = conn.execute("SELECT MIN(fetched_epoch) FROM extra_usage_readings").fetchone()[0]
+    if first is None:
+        return []
+    start = max(first, now - HISTORY_S)
+    return meter_gaps(read_meter(conn, start, now), local_days(start, now, tz), tz, now,
+                      window_cost(conn))

@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.meter_gap import meter_gaps, read_meter
+from app.meter_gap import local_days, meter_days, meter_gaps, read_meter
 
 TZ = ZoneInfo("America/Chicago")
 
@@ -48,12 +48,20 @@ class MeterGapTest(unittest.TestCase):
         self.assertEqual(meter_gaps(readings, ["2026-10-15", "2026-10-16"], TZ,
                                     at("2026-10-17", 1), cost), [])
 
-    def test_days_without_a_reading_before_them_or_across_a_rollover_are_skipped(self):
+    def test_days_with_fewer_than_two_readings_in_reach_are_skipped(self):
+        readings = [(at("2026-10-31", 22), 2900.0), (at("2026-11-01", 23), 3000.0)]
+        days = meter_days(readings, ["2026-10-30", "2026-10-31", "2026-11-01"], TZ,
+                          at("2026-11-02", 1), spend())
+        self.assertEqual([d["day"] for d in days], ["2026-11-01"])
+
+    def test_a_rollover_counts_the_new_cycle_from_zero(self):
+        # The meter restarts at zero: $5 then $395 more, $400 on Nov 1 (a DST day).
         readings = [(at("2026-10-31", 22), 2900.0), (at("2026-11-01", 3), 5.0),
                     (at("2026-11-01", 23), 400.0)]
-        gaps = meter_gaps(readings, ["2026-10-30", "2026-10-31", "2026-11-01"], TZ,
-                          at("2026-11-02", 1), spend())
-        self.assertEqual(gaps, [])
+        cost = spend((at("2026-11-01", 12), 400.0))
+        days = meter_days(readings, ["2026-11-01"], TZ, at("2026-11-02", 1), cost)
+        self.assertEqual(days, [{"day": "2026-11-01", "billed": 400.0, "recorded": 400.0}])
+        self.assertEqual(meter_gaps(readings, ["2026-11-01"], TZ, at("2026-11-02", 1), cost), [])
 
     def test_out_of_order_readings_inside_a_cycle_still_count(self):
         # Two work machines can push readings a little out of order.
@@ -61,6 +69,10 @@ class MeterGapTest(unittest.TestCase):
                     (at("2026-10-15", 9, 1), 159.5), (at("2026-10-15", 22), 300.0)]
         gaps = meter_gaps(readings, ["2026-10-15"], TZ, at("2026-10-16"), spend())
         self.assertEqual(gaps, [{"day": "2026-10-15", "billed": 200.0, "recorded": 0}])
+
+    def test_local_days_cover_the_range_in_the_local_zone(self):
+        self.assertEqual(local_days(at("2026-10-30", 23), at("2026-11-02", 0, 30), TZ),
+                         ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"])
 
     def test_no_readings_no_gaps(self):
         self.assertEqual(meter_gaps([], ["2026-10-19"], TZ, at("2026-10-20"), spend()), [])

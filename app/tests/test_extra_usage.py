@@ -117,16 +117,20 @@ class DailyMeterDeltasTest(TempDBTestCase):
                              {"used_credits": used,
                               "monthly_limit": 100000}, _epoch(iso))
 
-    def test_deltas_bucketed_by_utc_day(self):
+    def test_deltas_bucketed_by_local_day(self):
+        """Local days, like the ledger: the meter-gap line and the History
+        chart must give the same figure for a day (one source, app/meter_gap)."""
         from app.extra_usage import daily_meter_deltas
         self._record(1000.0, "2026-07-08T10:00:00")
         self._record(3000.0, "2026-07-08T18:00:00")   # +$20 on 07-08
         self._record(3500.0, "2026-07-09T09:00:00")   # +$5 on 07-09
+        self._record(4000.0, "2026-07-10T03:00:00")   # 22:00 CDT: +$5 more on 07-09
         days = daily_meter_deltas(self.conn, days=30,
-                                  now=_epoch("2026-07-09T12:00:00"))
+                                  now=_epoch("2026-07-10T04:00:00"))
         by_day = {d["day"]: d for d in days}
         self.assertEqual(by_day["2026-07-08"]["official_usd"], 20.0)
-        self.assertEqual(by_day["2026-07-09"]["official_usd"], 5.0)
+        self.assertEqual(by_day["2026-07-09"]["official_usd"], 10.0)
+        self.assertNotIn("2026-07-10", by_day)
 
     def test_cycle_reset_counts_from_zero(self):
         """A used_credits DROP is the billing-cycle rollover: the new
