@@ -182,6 +182,8 @@ export function derive(state, pageNow) {
     sessions30: normalize(l30).sessions, daily30: (l30 && l30.daily) || null,
     providers: { ...((l30 && l30.model_providers) || {}), ...((source && source.model_providers) || {}) },
     hasData: Boolean(source && Array.isArray(source.sessions)),
+    // Work only: days the billing meter rose more than the recorded spend.
+    meterGaps: (source && source.meter_gaps) || [],
   };
   memo = { key, out };
   return out;
