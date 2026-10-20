@@ -32,6 +32,7 @@
 .ls-line { position: relative; font: 700 11px/1.3 var(--text); letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ls-busy { color: var(--ochre); }
 .ls-busy:not(:empty)::before { content: ' · '; content: ' · ' / ''; color: var(--muted); }
+.ls-gap { grid-column: 1 / -1; margin: 0; font: 600 13px/1.4 var(--text); color: var(--red-ink); }
 .ls-row { display: flex; justify-self: end; border-left: 3px solid var(--ink); min-width: 0; }
 .ls { display: flex; flex-direction: column; gap: 4px; padding: 2px 20px 2px 14px; border-right: 3px solid var(--ink); min-width: 0; }
 .ls-v { font: 400 30px/1 var(--display); letter-spacing: -.02em; white-space: nowrap; }

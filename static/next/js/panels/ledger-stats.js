@@ -4,7 +4,7 @@
 import { h, patch, setText, approx } from '../dom.js';
 import * as f from '../format.js';
 import { feedLine, staleNote } from '../panel.js';
-import { derive, matched, daysBetween } from './ledger-model.js';
+import { derive, matched, daysBetween, dayStart } from './ledger-model.js';
 import { money, dayLabel } from './ledger-kit.js';
 
 const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
@@ -37,6 +37,18 @@ export function sums(d) {
 
 const BUSY_TEXT = 'Loading this period';
 const BUSY_WHY = 'The figures below are from the 30-day data until this period loads.';
+const epochOfDay = (day) => { const [y, m, dd] = day.split('-').map(Number); return new Date(y, m - 1, dd).getTime() / 1000; };
+// The meter bills every call on the work account; sessions that never reached
+// Tokenfold show up only as this difference.
+function gapText(d) {
+  const from = dayStart(d.range.from);
+  const days = d.meterGaps.filter((g) => { const t = epochOfDay(g.day); return t >= from && t < d.range.to; });
+  if (!days.length) return null;
+  const usd = days.reduce((a, g) => a + g.billed - g.recorded, 0);
+  const when = days.map((g) => f.dateShort(epochOfDay(g.day))).join(', ');
+  return `The billing meter shows ${money(usd)} more than these sessions on ${when}.`;
+}
+
 function stat(key, value, sub) {
   return h('div', { class: 'ls' }, h('span', { class: 'kicker' }, key), h('span', { class: 'ls-v' }, value), h('span', { class: 'ls-sub' }, sub));
 }
@@ -51,8 +63,9 @@ export default {
     const busy = h('span', { class: 'ls-busy', role: 'status' });
     const state = h('div');
     const row = h('div', { class: 'ls-row' });
+    const gap = h('p', { class: 'ls-gap' });
     el.setAttribute('aria-labelledby', 'ledger-title');
-    el.append(h('div', { class: 'ls-head' }, title, h('div', { class: 'ls-meta' }, h('div', { class: 'ls-line' }, period, busy))), state, row);
+    el.append(h('div', { class: 'ls-head' }, title, h('div', { class: 'ls-meta' }, h('div', { class: 'ls-line' }, period, busy))), state, row, gap);
 
     let seen = null;
     return {
@@ -71,6 +84,8 @@ export default {
         patch(busy, loading ? [BUSY_TEXT, h('span', { class: 'sr-only' }, `. ${BUSY_WHY}`)] : null);
         busy.title = loading ? BUSY_WHY : '';
         el.classList.toggle('is-loading', loading);
+        patch(gap, line ? null : gapText(d));
+        gap.hidden = !gap.firstChild;
         if (line) return;
         const t = sums(d);
         const days = Math.max(1, daysBetween(d.range.from, d.range.to).length);

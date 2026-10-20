@@ -19,7 +19,7 @@ async function check(name, action) {
   catch (error) { failures.push(name + ': ' + error.message); console.log('FAIL - ' + name + '\n  ' + error.message); }
 }
 
-async function open(browser, {viewport, url, api404 = false}) {
+async function open(browser, {viewport, url, api404 = false, ledger = null}) {
   const context = await browser.newContext({viewport, timezoneId: 'America/Chicago'});
   const page = await context.newPage();
   const errors = [];
@@ -33,6 +33,9 @@ async function open(browser, {viewport, url, api404 = false}) {
     if (u.pathname === '/next') return route.fulfill({contentType: 'text/html', body: HTML, headers: CSP ? {'Content-Security-Policy': CSP} : {}});
     // The shell serves static/next under /static/next-<version>/ (cache busting).
     const pathname = u.pathname.replace(/^\/static\/next-[0-9a-f]+\//, '/static/next/');
+    if (ledger && pathname.endsWith('/fixtures/ledger.json')) {
+      return route.fulfill({json: ledger(JSON.parse(fs.readFileSync(path.join(ROOT, pathname), 'utf8')))});
+    }
     if (pathname.startsWith('/static/')) return route.fulfill({path: path.join(ROOT, pathname)});
     if (u.pathname.startsWith('/api/') && api404) return route.fulfill({status: 404, json: {detail: 'Not Found'}});
     return route.fulfill({status: 404, body: ''});
@@ -50,6 +53,24 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
 (async () => {
   const browser = await chromium.launch();
   try {
+    await check('work ledger: a day the billing meter billed more than the sessions is named', async () => {
+      const gaps = (l) => ({...l, meter_gaps: [{day: '2026-10-14', billed: 400, recorded: 172}, {day: '2026-09-01', billed: 90, recorded: 0}]});
+      for (const width of [1440, 390]) {
+        const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: MOCK, ledger: gaps});
+        await ready(page);
+        // Sep 1 is outside the 7-day period, so only Oct 14 counts.
+        assert.equal(await text(page, '.ls-gap'), 'The billing meter shows $228 more than these sessions on Oct 14.');
+        assert.ok(await noOverflow(page), `the page scrolls sideways at ${width}`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      }
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
+      await ready(page);
+      assert.equal(await page.locator('.ls-gap').isHidden(), true, 'no meter gaps, no line');
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('desktop mock: every Ledger region renders from fixtures', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: MOCK});
       await ready(page);

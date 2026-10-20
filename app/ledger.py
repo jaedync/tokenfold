@@ -29,6 +29,7 @@ from .auth import require_dashboard_auth
 from .config import scope_predicate
 from .db import read_conn
 from .ledger_build import build_sessions
+from .meter_gap import meter_gaps, read_meter
 from .read_cache import STALE_HEADER, ReadCache
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,11 @@ def build_ledger(conn, scope: str, start: float, end: float,
     sessions = _part("sessions", lambda: build_sessions(conn, pred, scope, start, end))
     names = model_names(daily, sessions)
     public = None if sessions is None else [public_session(s, names, live) for s in sessions]
+    extra = {}
+    if scope == "enterprise":
+        # Only the work account has a billing meter to compare with.
+        extra["meter_gaps"] = _part("meter_gaps", lambda: meter_gaps(
+            read_meter(conn, start, end), daily, TZ, min(end, time.time())))
     return {
         "from": start, "to": end,
         # display name -> provider display name, for a provider-grouped legend
@@ -185,6 +191,7 @@ def build_ledger(conn, scope: str, start: float, end: float,
             for d in daily],
         "sessions": public,
         "totals": None if public is None else totals(public),
+        **extra,
     }
 
 

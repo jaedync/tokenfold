@@ -3,6 +3,7 @@ import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+from app.aggregator import TZ
 from app.tests._support import TempDBTestCase
 
 PERSONAL = {'account_email': 'me@example.test', 'plan': 'pro'}
@@ -171,6 +172,23 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         self.assertEqual([s['id'] for s in body['sessions']], ['ent'])
         self.assertEqual(self.session('ent').status_code, 404)
         self.assertEqual(self.session('cc-1', scope='enterprise').status_code, 404)
+
+    def test_work_ledger_carries_meter_gaps(self):
+        # The billing meter rose $300 across the seeded day; the ledger
+        # recorded cents. Personal usage has no billing meter.
+        day = datetime.fromtimestamp(self.t0, TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        for epoch, cents in ((day.timestamp() - 3600, 10_000), (self.t0 + 30, 40_000)):
+            self.conn.execute("INSERT INTO extra_usage_readings(fetched_epoch, used_cents) VALUES(?, ?)",
+                              (epoch, cents))
+        self.conn.commit()
+        body = self.ledger(scope='enterprise')
+        (gap,) = body['meter_gaps']
+        self.assertEqual(gap['day'], day.strftime('%Y-%m-%d'))
+        self.assertEqual(gap['billed'], 300.0)
+        recorded = sum(sum(d['by_model'].values()) for d in body['daily'] if d['day'] == gap['day'])
+        self.assertAlmostEqual(gap['recorded'], recorded, places=2)
+        self.assertGreater(recorded, 0)
+        self.assertNotIn('meter_gaps', self.ledger(scope='personal'))
 
     def test_mixed_scope_session_counts_only_in_scope_rows(self):
         # An account switch mid-session: the work half stays out of personal.
