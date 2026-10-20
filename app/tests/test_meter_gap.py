@@ -70,6 +70,12 @@ class MeterGapTest(unittest.TestCase):
         gaps = meter_gaps(readings, ["2026-10-15"], TZ, at("2026-10-16"), spend())
         self.assertEqual(gaps, [{"day": "2026-10-15", "billed": 200.0, "recorded": 0}])
 
+    def test_a_small_fall_across_a_month_start_is_a_rollover(self):
+        # A long gap with no readings: the cycle ended at $30, the new one is at $20.
+        readings = [(at("2026-10-31", 12), 30.0), (at("2026-11-01", 12), 20.0)]
+        days = meter_days(readings, ["2026-11-01"], TZ, at("2026-11-02"), spend())
+        self.assertEqual(days[0]["billed"], 20.0)
+
     def test_local_days_cover_the_range_in_the_local_zone(self):
         self.assertEqual(local_days(at("2026-10-30", 23), at("2026-11-02", 0, 30), TZ),
                          ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"])

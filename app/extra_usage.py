@@ -168,7 +168,8 @@ def meter_anchor(conn: sqlite3.Connection, meter: Optional[dict],
     fetched = meter["fetched_epoch"]
     if meter_is_fresh(meter, now) or fetched < _utc_month_start(now):
         return None
-    since = compute_window_cost(conn, fetched, now, "enterprise")
+    # The meter bills Anthropic only: other work providers are not on it.
+    since = compute_window_cost(conn, fetched, now, "enterprise", anthropic_only=True)
     return {
         "base_usd": meter["used_usd"],
         "measured_since_usd": round(since, 2),
@@ -211,7 +212,7 @@ def daily_meter_deltas(conn: sqlite3.Connection, days: int = 30,
     now = time.time() if now is None else now
     since = now - days * 86400.0
     rows = meter_days(read_meter(conn, since, now), local_days(since, now, _TZ), _TZ, now,
-                      window_cost(conn))
+                      window_cost(conn, now))
     return [{
         "day": r["day"],
         "official_usd": round(r["billed"], 2),

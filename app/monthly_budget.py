@@ -149,11 +149,12 @@ def _measured_mtd(conn: sqlite3.Connection, month_start: float,
         def build():
             with db.read_conn() as rc:
                 return compute_window_cost(rc, month_start, time.time(),
-                                           scope="enterprise")
+                                           scope="enterprise", anthropic_only=True)
         value = _MTD.get((db.DB_PATH, db.generation(), month_start), build)
         if value is not None:
             return value
-    return compute_window_cost(conn, month_start, now, scope="enterprise")
+    return compute_window_cost(conn, month_start, now, scope="enterprise",
+                               anthropic_only=True)
 
 
 def monthly_budget_block(conn: sqlite3.Connection,
