@@ -185,9 +185,9 @@ class ClaudeCodeLedgerTest(LedgerTestBase):
         (gap,) = body['meter_gaps']
         self.assertEqual(gap['day'], day.strftime('%Y-%m-%d'))
         self.assertEqual(gap['billed'], 300.0)
-        recorded = sum(sum(d['by_model'].values()) for d in body['daily'] if d['day'] == gap['day'])
-        self.assertAlmostEqual(gap['recorded'], recorded, places=2)
-        self.assertGreater(recorded, 0)
+        # The recorded side prices the meter's window: the seeded work call.
+        self.assertGreater(gap['recorded'], 0)
+        self.assertLess(gap['recorded'], 300)
         self.assertNotIn('meter_gaps', self.ledger(scope='personal'))
 
     def test_mixed_scope_session_counts_only_in_scope_rows(self):

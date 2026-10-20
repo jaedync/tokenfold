@@ -29,7 +29,7 @@ from .auth import require_dashboard_auth
 from .config import scope_predicate
 from .db import read_conn
 from .ledger_build import build_sessions
-from .meter_gap import meter_gaps, read_meter
+from .meter_gap import meter_gaps, read_meter, window_cost
 from .read_cache import STALE_HEADER, ReadCache
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,8 @@ def build_ledger(conn, scope: str, start: float, end: float,
     if scope == "enterprise":
         # Only the work account has a billing meter to compare with.
         extra["meter_gaps"] = _part("meter_gaps", lambda: meter_gaps(
-            read_meter(conn, start, end), daily, TZ, min(end, time.time())))
+            read_meter(conn, start, end), [x["day"] for x in daily or ()], TZ,
+            min(end, time.time()), window_cost(conn)))
     return {
         "from": start, "to": end,
         # display name -> provider display name, for a provider-grouped legend

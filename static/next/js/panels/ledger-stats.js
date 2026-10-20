@@ -38,15 +38,20 @@ export function sums(d) {
 const BUSY_TEXT = 'Loading this period';
 const BUSY_WHY = 'The figures below are from the 30-day data until this period loads.';
 const epochOfDay = (day) => { const [y, m, dd] = day.split('-').map(Number); return new Date(y, m - 1, dd).getTime() / 1000; };
-// The meter bills every call on the work account; sessions that never reached
-// Tokenfold show up only as this difference.
+// The meter bills every call on the work account; calls that never reached
+// Tokenfold show up only as this difference. It covers every work machine,
+// so a filtered view hides it.
+const GAP_DATES = 3;
 function gapText(d) {
+  if (d.ui.filters.length) return null;
   const from = dayStart(d.range.from);
   const days = d.meterGaps.filter((g) => { const t = epochOfDay(g.day); return t >= from && t < d.range.to; });
   if (!days.length) return null;
   const usd = days.reduce((a, g) => a + g.billed - g.recorded, 0);
-  const when = days.map((g) => f.dateShort(epochOfDay(g.day))).join(', ');
-  return `The billing meter shows ${money(usd)} more than these sessions on ${when}.`;
+  const dates = days.slice(0, GAP_DATES).map((g) => f.dateShort(epochOfDay(g.day)));
+  const more = days.length - dates.length;
+  const when = more ? `${dates.join(', ')} and ${more} more ${more === 1 ? 'day' : 'days'}` : dates.join(', ');
+  return `The billing meter shows ${money(usd)} more than Tokenfold recorded on ${when}.`;
 }
 
 function stat(key, value, sub) {

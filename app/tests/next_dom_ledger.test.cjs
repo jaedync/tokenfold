@@ -59,8 +59,13 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
         const {page, errors, context} = await open(browser, {viewport: {width, height: 900}, url: MOCK, ledger: gaps});
         await ready(page);
         // Sep 1 is outside the 7-day period, so only Oct 14 counts.
-        assert.equal(await text(page, '.ls-gap'), 'The billing meter shows $228 more than these sessions on Oct 14.');
+        assert.equal(await text(page, '.ls-gap'), 'The billing meter shows $228 more than Tokenfold recorded on Oct 14.');
         assert.ok(await noOverflow(page), `the page scrolls sideways at ${width}`);
+        if (width === 1440) {
+          // The meter covers every machine, so a filtered view says nothing.
+          await page.locator('.p-ledger-pivot tbody tr .pv-name').first().click();
+          await page.waitForSelector('.ls-gap', {state: 'hidden'});
+        }
         assert.deepEqual(errors, []);
         await context.close();
       }
