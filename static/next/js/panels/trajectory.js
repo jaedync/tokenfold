@@ -326,7 +326,7 @@ export default {
 
     const money = (v) => (m.budget ? f.usd(v / 100 * m.budget, { cents: false }) : `${v.toFixed(1)}%`);
 
-    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, largest first. A layer shows when it rounds to a dollar or more, a
+    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, top of the stack first. A layer shows when it rounds to a dollar or more, a
     // lower bar than the legend's: the readout names exact amounts.
     const shown = (v) => (m.budget ? v / 100 * m.budget >= 0.5 : v >= 0.05);
     function splitText(i) {
