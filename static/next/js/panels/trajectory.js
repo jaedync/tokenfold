@@ -73,8 +73,9 @@ export function trajectoryFor(traj, w) {
   return near(traj.start, w.window_start) && near(traj.end, w.resets_at) ? traj : null;
 }
 
-// The legend names the no-record layer only when it is big enough to see.
-const UNRECORDED_MIN_PCT = 0.5;
+// The legend names a layer only when it is big enough to see (percent of
+// the budget): a $0.04 model is not a block of colour.
+const LEGEND_MIN_PCT = 0.5;
 const UNRECORDED = 'No session record';
 
 // The split layers that belong to the kept points, bottom first:
@@ -316,12 +317,14 @@ export default {
 
     const money = (v) => (m.budget ? f.usd(v / 100 * m.budget, { cents: false }) : `${v.toFixed(1)}%`);
 
-    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, largest first.
-    // The no-record part shows only when it rounds to a dollar or more.
+    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, in layer order
+    // (bottom first). A layer shows when it rounds to a dollar or more, a
+    // lower bar than the legend's: the readout names exact amounts.
+    const shown = (v) => (m.budget ? v / 100 * m.budget >= 0.5 : v >= 0.05);
     function splitText(i) {
       if (!m.layers || i < 0 || i >= m.pts.length) return '';
       return m.layers
-        .filter((l) => (l.unrecorded ? l.v[i] / 100 * (m.budget || 0) >= 1 : l.v[i] > 0))
+        .filter((l) => shown(l.v[i]))
         .map((l) => ` · ${l.unrecorded ? 'no session record' : l.name} ${money(l.v[i])}`).join('');
     }
 
@@ -412,11 +415,12 @@ export default {
       const hasProj = !f.missing(m.projected), hasTight = !f.missing(w.tight_epoch);
       const models = m.layers ? m.layers.filter((l) => !l.unrecorded) : [];
       colors = m.layers ? modelColors(Object.fromEntries(models.map((l) => [l.name, l.v.at(-1)]))) : null;
+      const seen = (l) => Math.max(...l.v) >= LEGEND_MIN_PCT;
       const rest = m.layers ? m.layers.find((l) => l.unrecorded) : null;
-      const showRest = rest && Math.max(...rest.v) >= UNRECORDED_MIN_PCT;
+      const showRest = Boolean(rest && seen(rest));
       const items = m.month
         ? [[m.layers ? 'line' : 'area', 'Billed'],
-          ...models.map((l) => ['swatch', l.name, colors.color(l.name).fill]),
+          ...models.filter(seen).map((l) => ['swatch', l.name, colors.color(l.name).fill]),
           ...(showRest ? [['hatch', UNRECORDED]] : []),
           ...(hasProj ? [['proj', 'Forecast at month end']] : [])]
         : [['area', 'Used'], ...(m.knownStart ? [['pace', 'Even pace']] : []), ...(hasProj ? [['proj', 'Forecast at reset']] : []),
