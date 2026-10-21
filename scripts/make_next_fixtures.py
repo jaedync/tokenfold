@@ -191,7 +191,34 @@ def work_trajectory():
         t += 2 * H
     scale = (SPENT / BUDGET * 100) / (acc or 1)
     points = [[p[0], round(p[1] * scale, 2)] for p in points] + [[floor_min(NOW), SPENT / BUDGET * 100]]
-    return {"points": points, "resets": [], "start": MONTH_START, "end": MONTH_END}
+    return {"points": points, "split": work_split(points), "resets": [], "start": MONTH_START,
+            "end": MONTH_END}
+
+
+def work_split(points):
+    # Layers under the billed line (app/month_trajectory.split_layers): most
+    # of it Opus, Sonnet growing late in the month, a little Haiku, and a
+    # short day of billed spend with no session record.
+    gap_from, gap_to, gap_pct = at(10, 13), at(10, 14), 1.2
+    opus, sonnet, haiku, rest = [], [], [], []
+    acc = {"opus": 0.0, "sonnet": 0.0, "haiku": 0.0}
+    prev = 0.0
+    for i, (t, pct) in enumerate(points):
+        frac = i / max(1, len(points) - 1)
+        lost = gap_pct * min(1.0, max(0.0, (t - gap_from) / (gap_to - gap_from)))
+        known = max(0.0, pct - lost)
+        # Each step's new spend splits by the shares of that time, so every
+        # layer only grows, as cumulative spend does.
+        step, prev = max(0.0, known - prev), max(prev, known)
+        acc["sonnet"] += step * (0.12 + 0.3 * frac)
+        acc["haiku"] += step * 0.02
+        acc["opus"] += step * (0.86 - 0.3 * frac)
+        opus.append(round(acc["opus"], 4))
+        sonnet.append(round(acc["sonnet"], 4))
+        haiku.append(round(acc["haiku"], 4))
+        rest.append(round(pct - opus[-1] - sonnet[-1] - haiku[-1], 4))
+    return {"models": [{"model": "Opus 5.5", "pct": opus}, {"model": "Sonnet 5.5", "pct": sonnet},
+                       {"model": "Haiku 5.5", "pct": haiku}], "unrecorded": rest}
 
 
 # ---------------------------------------------------------------- now
