@@ -80,7 +80,7 @@ const UNRECORDED = 'No session record';
 // The split layers that belong to the kept points, bottom first:
 // [{name, v: [pct per point]}]. null when the answer has no usable split.
 function splitLayers(split, keep, n) {
-  if (!split || !Array.isArray(split.models) || !split.models.length) return null;
+  if (!keep.length || !split || !Array.isArray(split.models) || !split.models.length) return null;
   const pick = (arr) => (Array.isArray(arr) && arr.length === n ? keep.map((i) => +arr[i] || 0) : null);
   const layers = split.models.map((m) => ({ name: String(m.model), v: pick(m.pct) }));
   const rest = pick(split.unrecorded);
@@ -223,8 +223,11 @@ export default {
       c.save(); c.fillStyle = PAPER_2; c.fillRect(a, top, u.bbox.left + u.bbox.width - a, height); c.restore();
     }
 
-    // Diagonal hatch for billed spend that no session record explains.
+    // Diagonal hatch for billed spend that no session record explains. Made
+    // once for each pixel ratio, not at each draw.
+    let hatchFor = null;
     function hatch(c) {
+      if (hatchFor && hatchFor.ratio === uPlot.pxRatio) return hatchFor.pattern;
       const size = Math.max(4, Math.round(px(6)));
       const tile = document.createElement('canvas');
       tile.width = tile.height = size;
@@ -232,7 +235,8 @@ export default {
       g.fillStyle = PAPER; g.fillRect(0, 0, size, size);
       g.strokeStyle = MUTED; g.lineWidth = px(1);
       g.beginPath(); g.moveTo(0, size); g.lineTo(size, 0); g.stroke();
-      return c.createPattern(tile, 'repeat');
+      hatchFor = { ratio: uPlot.pxRatio, pattern: c.createPattern(tile, 'repeat') };
+      return hatchFor.pattern;
     }
     const layerFill = (c, l) => (l.unrecorded ? hatch(c) : colors.color(l.name).fill);
 

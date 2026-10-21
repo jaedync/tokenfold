@@ -135,11 +135,36 @@ class MonthSplitEndpointTest(_HABase):
         self.assertEqual([p[1] for p in body["points"]], [25.0])
         self.assertIsNone(body["split"])
 
+    def test_a_split_failure_keeps_the_billed_line(self):
+        self._meter(self.now - 60, 500.0)
+        with patch("app.month_trajectory.split_layers", side_effect=ZeroDivisionError):
+            body = self._get()
+        self.assertEqual([p[1] for p in body["points"]], [25.0])
+        self.assertIsNone(body["split"])
+
+    def test_spend_after_the_last_whole_bucket_ranks_no_model(self):
+        # Haiku spend only in the bucket that holds the last point: no point
+        # counts it, so it gets no layer.
+        last = self.now - 60
+        self._spend("a", self.m_start + 60, 300.0)
+        self._spend("h", last - 1, 50.0, model="claude-haiku-5-5")
+        if (last - 1 - self.m_start) // 600 != (last - self.m_start) // 600:
+            self.skipTest("the call fell into the bucket before the point")
+        self._meter(last, 500.0)
+        names = [m["model"] for m in self._get()["split"]["models"]]
+        self.assertEqual(names, ["Opus 4.8"])
+
+    def test_buckets_sum_to_the_window_total_across_a_pricing_era(self):
+        boundary = self.m_start + 5 * 431 + 200
+        with patch("app.cost_windows.era_boundaries", return_value=[boundary]):
+            self.test_buckets_sum_to_the_window_total()
+
     def test_buckets_sum_to_the_window_total(self):
         # Claude Code rows are priced by the server: the same price rules.
         for i in range(12):
-            insert_event(self.conn, f"cc{i}", session="cc", ts=self.m_start + i * 431,
-                         inp=200_000 + i, account=WORK)
+            if not self.conn.execute("SELECT 1 FROM events WHERE uuid = ?", (f"cc{i}",)).fetchone():
+                insert_event(self.conn, f"cc{i}", session="cc", ts=self.m_start + i * 431,
+                             inp=200_000 + i, account=WORK)
         end = self.m_start + 12 * 431
         whole = compute_window_cost_by_model(self.conn, self.m_start, end,
                                              "enterprise", anthropic_only=True)

@@ -105,7 +105,7 @@ def _bounds_only(conn, effective, provider, now, window_id):
             points = month_points(conn, w["window_start"], block["month"],
                                   block["budget_usd"], now)
             return {"points": points,
-                    "split": month_split(conn, w["window_start"], points,
+                    "split": month_split(w["window_start"], points,
                                          block["budget_usd"]),
                     "resets": [], "start": w["window_start"],
                     "end": w["resets_at"]}

@@ -38,9 +38,9 @@ OTHER_MODELS = "Other models"
 # ("Opus 5.5"). The meter bills Anthropic only, so both are one layer.
 _PI_PREFIX = "Anthropic / "
 # The month's spend query takes ~0.4 s on the live database, and every tab
-# polls the trajectory. Built again after an ingest (the version) or a new
-# meter reading (the key).
-_split_cache = ReadCache(ttl=120, max_entries=4, version=get_cache_version)
+# polls the trajectory. A new meter reading (the key) builds inline; after
+# an ingest (the version) the old split serves while one thread rebuilds.
+_split_cache = ReadCache(ttl=120, max_entries=4, stale_s=600, version=get_cache_version)
 
 
 def _floor(epoch):
@@ -88,24 +88,32 @@ def month_points(conn, month_start, month_label, budget_usd, now):
     return downsample(points, MAX_POINTS)
 
 
-def month_split(conn, month_start, points, budget_usd):
+def month_split(month_start, points, budget_usd):
     """The model split of points (see the module doc), or None.
 
-    None when there is nothing to split or the spend query fails: the
-    billed line must still draw.
+    None when there is nothing to split or the split fails: the billed line
+    must still draw.
     """
     if not points or not budget_usd or budget_usd <= 0:
         return None
-    end = points[-1][0]
+    # Only whole buckets: a bucket that ends after the last point counts for
+    # no point, so it must not rank a model either.
+    end = month_start + (points[-1][0] - month_start) // SPLIT_BUCKET_S * SPLIT_BUCKET_S
     try:
-        buckets = _split_cache.get((db.DB_PATH, month_start, end), lambda: _merge_names(
-            compute_window_cost_by_model_buckets(
-                conn, month_start, end, SPLIT_BUCKET_S,
-                scope="enterprise", anthropic_only=True)))
+        buckets = _split_cache.get((db.DB_PATH, month_start, end),
+                                   lambda: _build_buckets(month_start, end))
+        return split_layers(points, buckets, month_start, SPLIT_BUCKET_S, budget_usd)
     except Exception as e:
         log.warning("month split failed: %r", e)
         return None
-    return split_layers(points, buckets, month_start, SPLIT_BUCKET_S, budget_usd)
+
+
+def _build_buckets(month_start, end):
+    # Its own connection: a cache refresh runs off the request thread.
+    with db.read_conn(snapshot=True) as conn:
+        return _merge_names(compute_window_cost_by_model_buckets(
+            conn, month_start, end, SPLIT_BUCKET_S,
+            scope="enterprise", anthropic_only=True))
 
 
 def _merge_names(buckets):
