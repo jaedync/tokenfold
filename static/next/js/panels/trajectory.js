@@ -80,14 +80,23 @@ const UNRECORDED = 'No session record';
 
 // The split layers that belong to the kept points, bottom first:
 // [{name, v: [pct per point]}]. null when the answer has no usable split.
-function splitLayers(split, keep, n) {
+// The smallest model goes at the bottom: only the bottom layer has a flat
+// base, and a thin layer on top of a big, steep one is hard to read. The
+// no-record layer goes on top, against the billed line it explains.
+export function splitLayers(split, keep, n) {
   if (!keep.length || !split || !Array.isArray(split.models) || !split.models.length) return null;
   const pick = (arr) => (Array.isArray(arr) && arr.length === n ? keep.map((i) => +arr[i] || 0) : null);
   const layers = split.models.map((m) => ({ name: String(m.model), v: pick(m.pct) }));
   const rest = pick(split.unrecorded);
   if (!rest || layers.some((l) => !l.v)) return null;
-  return [...layers, { name: UNRECORDED, v: rest, unrecorded: true }];
+  const smallestFirst = layers.map((l, i) => [l, i])
+    .sort(([a, i], [b, j]) => a.v.at(-1) - b.v.at(-1) || j - i).map(([l]) => l);
+  return [...smallestFirst, { name: UNRECORDED, v: rest, unrecorded: true }];
 }
+
+// Legend and readout order: top of the stack down, so the largest model
+// first and the no-record layer last.
+const listOrder = (layers) => [...layers.filter((l) => !l.unrecorded).reverse(), ...layers.filter((l) => l.unrecorded)];
 
 // Chart model from the feeds: everything the hooks draw, in data units.
 function model(s, zoom) {
@@ -317,13 +326,12 @@ export default {
 
     const money = (v) => (m.budget ? f.usd(v / 100 * m.budget, { cents: false }) : `${v.toFixed(1)}%`);
 
-    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, in layer order
-    // (bottom first). A layer shows when it rounds to a dollar or more, a
+    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, largest first. A layer shows when it rounds to a dollar or more, a
     // lower bar than the legend's: the readout names exact amounts.
     const shown = (v) => (m.budget ? v / 100 * m.budget >= 0.5 : v >= 0.05);
     function splitText(i) {
       if (!m.layers || i < 0 || i >= m.pts.length) return '';
-      return m.layers
+      return listOrder(m.layers)
         .filter((l) => shown(l.v[i]))
         .map((l) => ` · ${l.unrecorded ? 'no session record' : l.name} ${money(l.v[i])}`).join('');
     }
@@ -413,7 +421,7 @@ export default {
       setText(sub, m.month ? `${f.dateShort(w.window_start + D / 2)} to ${f.dateShort(w.resets_at - D / 2)}`
         : m.knownStart ? `${stamp(w.window_start)} to ${stamp(w.resets_at)}` : `Resets ${stamp(w.resets_at)}`);
       const hasProj = !f.missing(m.projected), hasTight = !f.missing(w.tight_epoch);
-      const models = m.layers ? m.layers.filter((l) => !l.unrecorded) : [];
+      const models = m.layers ? listOrder(m.layers).filter((l) => !l.unrecorded) : [];
       colors = m.layers ? modelColors(Object.fromEntries(models.map((l) => [l.name, l.v.at(-1)]))) : null;
       const seen = (l) => Math.max(...l.v) >= LEGEND_MIN_PCT;
       const rest = m.layers ? m.layers.find((l) => l.unrecorded) : null;

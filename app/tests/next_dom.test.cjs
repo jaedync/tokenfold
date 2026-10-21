@@ -353,6 +353,20 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('work scope: the smallest model is the bottom layer; the no-record layer is on top', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1280, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-chart canvas');
+      const order = await page.evaluate(async () => {
+        const {splitLayers} = await import(`${document.body.dataset.static}/js/panels/trajectory.js`);
+        const split = {models: [{model: 'Opus', pct: [1, 50]}, {model: 'Sonnet', pct: [1, 10]}, {model: 'Haiku', pct: [0, 1]}],
+          unrecorded: [0, 2]};
+        return splitLayers(split, [0, 1], 2).map((l) => l.name);
+      });
+      assert.deepEqual(order, ['Haiku', 'Sonnet', 'Opus', 'No session record']);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('work scope: the month area splits by model; a bad or missing split keeps one fill', async () => {
       const noSplit = (name, body) => (name === 'runway-trajectory-work' ? {...body, split: null} : null);
       const short = (name, body) => (name === 'runway-trajectory-work'
