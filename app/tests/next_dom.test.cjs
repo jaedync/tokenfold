@@ -357,7 +357,10 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       const noSplit = (name, body) => (name === 'runway-trajectory-work' ? {...body, split: null} : null);
       const short = (name, body) => (name === 'runway-trajectory-work'
         ? {...body, split: {...body.split, unrecorded: body.split.unrecorded.slice(1)}} : null);
-      for (const [override, split] of [[null, true], [noSplit, false], [short, false]]) {
+      // A model of a few cents: drawn, but no legend block and no "$0" in the readout.
+      const tiny = (name, body) => (name === 'runway-trajectory-work'
+        ? {...body, split: {...body.split, models: [...body.split.models, {model: 'Haiku 4.5', pct: body.points.map(() => 0.001)}]}} : null);
+      for (const [override, split] of [[null, true], [tiny, true], [noSplit, false], [short, false]]) {
         const {page, errors, context} = await open(browser, {viewport: {width: 1280, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: override});
         await page.waitForSelector('.p-hero .verdict-word');
         await page.click('[data-scope="enterprise"]');
@@ -371,6 +374,7 @@ const text = (page, sel) => page.locator(sel).first().innerText();
           for (const m of ['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'No session record']) assert.match(legend, new RegExp(m), `${name}: legend ${m}`);
           assert.match(readout, /Opus 5\.5 \$[\d,]+ · Sonnet 5\.5 \$/, `${name}: readout`);
           assert.equal(await page.locator('.p-chart .legend i.swatch').count(), 3);
+          assert.doesNotMatch(legend + readout, /Haiku 4\.5/, `${name}: tiny model`);
         } else {
           assert.doesNotMatch(legend, /Opus|No session record/, `${name}: legend`);
           assert.doesNotMatch(readout, /Opus/, `${name}: readout`);
