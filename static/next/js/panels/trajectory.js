@@ -317,12 +317,14 @@ export default {
 
     const money = (v) => (m.budget ? f.usd(v / 100 * m.budget, { cents: false }) : `${v.toFixed(1)}%`);
 
-    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, largest first.
-    // A layer shows only when it rounds to a dollar or more.
+    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, in layer order
+    // (bottom first). A layer shows when it rounds to a dollar or more, a
+    // lower bar than the legend's: the readout names exact amounts.
+    const shown = (v) => (m.budget ? v / 100 * m.budget >= 0.5 : v >= 0.05);
     function splitText(i) {
       if (!m.layers || i < 0 || i >= m.pts.length) return '';
       return m.layers
-        .filter((l) => l.v[i] / 100 * (m.budget || 0) >= 0.5)
+        .filter((l) => shown(l.v[i]))
         .map((l) => ` · ${l.unrecorded ? 'no session record' : l.name} ${money(l.v[i])}`).join('');
     }
 
