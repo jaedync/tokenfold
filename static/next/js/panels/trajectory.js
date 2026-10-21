@@ -2,11 +2,14 @@
 // server forecast to reset (pace.projected_pct), the TIGHT point
 // (tight_epoch) or the 100% time (reaches_100_epoch). The browser draws
 // lines between server values; it never extends a rate on its own.
+// The month window fills the area under the billed line by model: the
+// server sends the layers (split), the browser only stacks them.
 import uPlot from '../../vendor/uplot/uPlot.esm.js';
 import { h, patch, setText, segmented, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { bindingWindow, dataOf, nowFrom } from '../select.js';
 import { feedLine } from '../panel.js';
+import { modelColors } from './ledger-colors.js';
 
 const INK = '#161616', BLUE = '#1d4f91', BLUE_TINT = '#cdd8e8', RED = '#d2342a', RED_INK = '#b3261e';
 const PAPER = '#f3eee3', PAPER_2 = '#e8e1d2', MUTED = '#5d5950', GRID = 'rgba(22,22,22,.12)';
@@ -70,6 +73,21 @@ export function trajectoryFor(traj, w) {
   return near(traj.start, w.window_start) && near(traj.end, w.resets_at) ? traj : null;
 }
 
+// The legend names the no-record layer only when it is big enough to see.
+const UNRECORDED_MIN_PCT = 0.5;
+const UNRECORDED = 'No session record';
+
+// The split layers that belong to the kept points, bottom first:
+// [{name, v: [pct per point]}]. null when the answer has no usable split.
+function splitLayers(split, keep, n) {
+  if (!keep.length || !split || !Array.isArray(split.models) || !split.models.length) return null;
+  const pick = (arr) => (Array.isArray(arr) && arr.length === n ? keep.map((i) => +arr[i] || 0) : null);
+  const layers = split.models.map((m) => ({ name: String(m.model), v: pick(m.pct) }));
+  const rest = pick(split.unrecorded);
+  if (!rest || layers.some((l) => !l.v)) return null;
+  return [...layers, { name: UNRECORDED, v: rest, unrecorded: true }];
+}
+
 // Chart model from the feeds: everything the hooks draw, in data units.
 function model(s, zoom) {
   const w = bindingWindow(dataOf(s.runway));
@@ -77,8 +95,11 @@ function model(s, zoom) {
   const answer = trajectoryFor(dataOf(s.trajectory), w);
   const traj = answer || { points: [], resets: [] };
   const now = nowFrom(s);
-  const pts = (traj.points || []).filter((p) => Array.isArray(p) && p[0] <= now + 60);
+  const raw = traj.points || [];
+  const keep = raw.map((p, i) => i).filter((i) => Array.isArray(raw[i]) && raw[i][0] <= now + 60);
+  const pts = keep.map((i) => raw[i]);
   const month = w.kind === 'month';
+  const layers = month ? splitLayers(traj.split, keep, raw.length) : null;
   const p = w.pace || {};
   const day = zoom === 'day' && zoomable(w);
   // The server sends no start when its quota reading is too old to prove the
@@ -91,7 +112,7 @@ function model(s, zoom) {
     : [0, Math.max(100, month && !f.missing(p.projected_pct) ? p.projected_pct * 1.06 : 100)];
   const budget = month && dataOf(s.runway).budget ? dataOf(s.runway).budget.budget_usd : null;
   return {
-    w, now, pts, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at, knownStart, answered: Boolean(answer),
+    w, now, pts, layers, month, x0, x1, yMin, yMax, budget, day, cut: x1 < w.resets_at, knownStart, answered: Boolean(answer),
     cur: w.pct, projected: p.projected_pct, tight: w.tight_epoch,
     reaches: p.reaches_100_epoch, resets: (traj.resets || []).filter((t) => t > x0 && t <= now),
     yFmt: (v) => (month && budget ? f.usdShort(v / 100 * budget) : `${Math.round(v)}%`),
@@ -159,6 +180,8 @@ export default {
     // null until the user picks a range; until then autoZoom() decides.
     let picked = null;
     let m = null;
+    // Layer colours for the current split (chrome() sets them).
+    let colors = null;
     const zoomFor = (s) => picked || autoZoom(bindingWindow(dataOf(s.runway)), nowFrom(s));
     const head = panelHead('Trajectory');
     const seg = segmented('Chart range', [['window', 'Window'], ['day', 'Last 24 h']], 'window', (z) => { picked = z; redraw(); });
@@ -198,6 +221,42 @@ export default {
       const c = u.ctx, { top, height } = u.bbox;
       const a = Math.max(X(u, m.now), u.bbox.left);
       c.save(); c.fillStyle = PAPER_2; c.fillRect(a, top, u.bbox.left + u.bbox.width - a, height); c.restore();
+    }
+
+    // Diagonal hatch for billed spend that no session record explains. Made
+    // once for each pixel ratio, not at each draw.
+    let hatchFor = null;
+    function hatch(c) {
+      if (hatchFor && hatchFor.ratio === uPlot.pxRatio) return hatchFor.pattern;
+      const size = Math.max(4, Math.round(px(6)));
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = size;
+      const g = tile.getContext('2d');
+      g.fillStyle = PAPER; g.fillRect(0, 0, size, size);
+      g.strokeStyle = MUTED; g.lineWidth = px(1);
+      g.beginPath(); g.moveTo(0, size); g.lineTo(size, 0); g.stroke();
+      hatchFor = { ratio: uPlot.pxRatio, pattern: c.createPattern(tile, 'repeat') };
+      return hatchFor.pattern;
+    }
+    const layerFill = (c, l) => (l.unrecorded ? hatch(c) : colors.color(l.name).fill);
+
+    // The split, stacked bottom first under the billed line (drawn after
+    // the grid, before the line).
+    function drawLayers(u) {
+      if (!m || !m.layers || !colors || !m.pts.length) return;
+      const c = u.ctx, xs = m.pts.map((p) => X(u, p[0]));
+      let base = m.pts.map(() => 0);
+      clipped(c, u, () => {
+        for (const l of m.layers) {
+          const top = base.map((b, i) => b + l.v[i]);
+          c.beginPath();
+          xs.forEach((x, i) => (i ? c.lineTo(x, Yraw(u, top[i])) : c.moveTo(x, Yraw(u, top[i]))));
+          for (let i = xs.length - 1; i >= 0; i--) c.lineTo(xs[i], Yraw(u, base[i]));
+          c.closePath();
+          c.fillStyle = layerFill(c, l); c.fill();
+          base = top;
+        }
+      });
     }
 
     // Lines run between server values in data units and are clipped to the
@@ -257,19 +316,32 @@ export default {
 
     const money = (v) => (m.budget ? f.usd(v / 100 * m.budget, { cents: false }) : `${v.toFixed(1)}%`);
 
+    // " · Opus 5.5 $1,620 · Sonnet 5.5 $322" at point i, largest first.
+    // The no-record part shows only when it rounds to a dollar or more.
+    function splitText(i) {
+      if (!m.layers || i < 0 || i >= m.pts.length) return '';
+      return m.layers
+        .filter((l) => (l.unrecorded ? l.v[i] / 100 * (m.budget || 0) >= 1 : l.v[i] > 0))
+        .map((l) => ` · ${l.unrecorded ? 'no session record' : l.name} ${money(l.v[i])}`).join('');
+    }
+
     function onCursor(u) {
       if (!m) return;
       const i = u.cursor.idx;
       const pace = (t) => (t - m.w.window_start) / (m.w.resets_at - m.w.window_start) * 100;
       if (i === null || i === undefined || u.data[0][i] === undefined) return showLatest();
       const t = u.data[0][i], v = u.data[1][i];
-      patch(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed`
+      patch(readout, h('b', null, f.dayClock(t)), m.month ? ` · ${money(v)} billed${splitText(i)}`
         : ` · ${v.toFixed(1)}% used${m.knownStart ? ` · even pace ${pace(t).toFixed(1)}%` : ''}`);
     }
     function showLatest() {
       if (!m || f.missing(m.cur)) return patch(readout);
       const p = m.w.pace || {};
-      patch(readout, h('b', null, 'Latest'), m.month ? ` · ${money(m.cur)} billed` : ` · ${m.cur.toFixed(1)}% used`,
+      // The split belongs to the last meter point; the window pct can be a
+      // newer estimate, so the split shows only when the two agree.
+      const last = m.pts.length - 1;
+      const split = last >= 0 && Math.abs(m.pts[last][1] - m.cur) < 0.01 ? splitText(last) : '';
+      patch(readout, h('b', null, 'Latest'), m.month ? ` · ${money(m.cur)} billed${split}` : ` · ${m.cur.toFixed(1)}% used`,
         f.missing(p.expected_pct) ? '' : ` · ${m.month ? `workday pace ${money(p.expected_pct)}` : `even pace ${p.expected_pct.toFixed(1)}%`}`);
     }
 
@@ -296,8 +368,9 @@ export default {
         { stroke: MUTED, font: FONT, size: 46, gap: 6, ticks: { show: false }, grid: { stroke: GRID, width: 1 },
           splits: () => (m ? ySplits(m) : [0, 100]), values: (u, splits) => splits.map((v) => (m ? m.yFmt(v) : '')) },
       ],
-      series: [{}, { stroke: INK, width: 2.6, fill: BLUE_TINT, points: { show: false }, spanGaps: true }],
-      hooks: { drawClear: [drawFuture], draw: [drawOverlays], setCursor: [onCursor] },
+      // With a model split the layers fill the area (drawLayers), not the series.
+      series: [{}, { stroke: INK, width: 2.6, fill: () => (m && m.layers ? null : BLUE_TINT), points: { show: false }, spanGaps: true }],
+      hooks: { drawClear: [drawFuture], drawAxes: [drawLayers], draw: [drawOverlays], setCursor: [onCursor] },
     }, [[], []], host);
     const resize = new ResizeObserver(() => {
       if (host.clientWidth > 0) plot.setSize({ width: host.clientWidth, height: host.clientHeight });
@@ -318,7 +391,8 @@ export default {
       m = model(lastState, zoom);
       if (!m) return;
       // A 5 s poll that changed nothing on the chart must not reset a hover readout.
-      const key = JSON.stringify([zoom, m.yMin, m.yMax, m.cur, m.projected, m.tight, m.reaches, m.pts.length, m.pts.at(-1), m.x0, m.x1, Math.floor(m.now / 30)]);
+      const key = JSON.stringify([zoom, m.yMin, m.yMax, m.cur, m.projected, m.tight, m.reaches, m.pts.length, m.pts.at(-1), m.x0, m.x1, Math.floor(m.now / 30),
+        m.layers && m.layers.map((l) => [l.name, l.v.at(-1)])]);
       if (!force && key === drawnKey) return;
       drawnKey = key;
       const xs = m.pts.map((p) => p[0]), ys = m.pts.map((p) => p[1]);
@@ -336,18 +410,29 @@ export default {
       setText(sub, m.month ? `${f.dateShort(w.window_start + D / 2)} to ${f.dateShort(w.resets_at - D / 2)}`
         : m.knownStart ? `${stamp(w.window_start)} to ${stamp(w.resets_at)}` : `Resets ${stamp(w.resets_at)}`);
       const hasProj = !f.missing(m.projected), hasTight = !f.missing(w.tight_epoch);
+      const models = m.layers ? m.layers.filter((l) => !l.unrecorded) : [];
+      colors = m.layers ? modelColors(Object.fromEntries(models.map((l) => [l.name, l.v.at(-1)]))) : null;
+      const rest = m.layers ? m.layers.find((l) => l.unrecorded) : null;
+      const showRest = rest && Math.max(...rest.v) >= UNRECORDED_MIN_PCT;
       const items = m.month
-        ? [['area', 'Billed'], ...(hasProj ? [['proj', 'Forecast at month end']] : [])]
+        ? [[m.layers ? 'line' : 'area', 'Billed'],
+          ...models.map((l) => ['swatch', l.name, colors.color(l.name).fill]),
+          ...(showRest ? [['hatch', UNRECORDED]] : []),
+          ...(hasProj ? [['proj', 'Forecast at month end']] : [])]
         : [['area', 'Used'], ...(m.knownStart ? [['pace', 'Even pace']] : []), ...(hasProj ? [['proj', 'Forecast at reset']] : []),
           ...(hasTight ? [['tight', `At the ${w.kind === 'short' ? '1-hour' : '6-hour'} rate`]] : []), ...(m.resets.length ? [['reset', 'Reset']] : [])];
-      patch(legend, items.map(([cls, t]) => h('span', { class: 'lg' }, h('i', { class: cls }), t)));
+      patch(legend, items.map(([cls, t, fill]) => h('span', { class: 'lg', 'data-key': `${cls}:${t}` },
+        h('i', { class: cls, style: fill ? { background: fill } : null }), t)));
       const noHistory = !m.pts.length;
       setText(empty, noHistory && m.answered ? 'This window has no reading history. The chart shows the forecast only.'
         : m.yMax < 100 ? 'The limit (100%) is above this 24 h view.' : '');
       empty.hidden = !empty.textContent;
       setText(note, m.month
-        ? ['Billed spend from the Anthropic billing meter. The grey part of the month is still ahead.',
-          hasProj ? 'The red dashed line is the server forecast for month end.' : ''].join(' ').trim()
+        ? ['Billed spend from the Anthropic billing meter.',
+          m.layers ? 'The colours divide it by model, from the recorded work sessions.' : '',
+          showRest ? 'The hatched part is billed spend that has no session record.' : '',
+          'The grey part of the month is still ahead.',
+          hasProj ? 'The red dashed line is the server forecast for month end.' : ''].filter(Boolean).join(' ')
         : ['The grey part of the window is still ahead.',
           hasProj ? 'The red dashed line is the server forecast at the window average.' : 'The forecast starts when the window has more data.',
           hasTight ? 'The dotted line shows when the recent rate reaches the limit.' : ''].join(' ').trim());

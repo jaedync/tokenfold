@@ -353,6 +353,34 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('work scope: the month area splits by model; a bad or missing split keeps one fill', async () => {
+      const noSplit = (name, body) => (name === 'runway-trajectory-work' ? {...body, split: null} : null);
+      const short = (name, body) => (name === 'runway-trajectory-work'
+        ? {...body, split: {...body.split, unrecorded: body.split.unrecorded.slice(1)}} : null);
+      for (const [override, split] of [[null, true], [noSplit, false], [short, false]]) {
+        const {page, errors, context} = await open(browser, {viewport: {width: 1280, height: 900}, url: '/next?mock=1&scope=personal', fixtureOverride: override});
+        await page.waitForSelector('.p-hero .verdict-word');
+        await page.click('[data-scope="enterprise"]');
+        await page.waitForFunction(() => /Billing meter/i.test(document.querySelector('#hero-k').textContent));
+        await page.waitForSelector('.p-chart canvas');
+        await page.waitForFunction(() => /billed/.test(document.querySelector('.p-chart .readout').textContent));
+        const legend = await text(page, '.p-chart .legend');
+        const readout = await text(page, '.p-chart .readout');
+        const name = override ? override.name : 'split';
+        if (split) {
+          for (const m of ['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'No session record']) assert.match(legend, new RegExp(m), `${name}: legend ${m}`);
+          assert.match(readout, /Opus 5\.5 \$[\d,]+ · Sonnet 5\.5 \$/, `${name}: readout`);
+          assert.equal(await page.locator('.p-chart .legend i.swatch').count(), 3);
+        } else {
+          assert.doesNotMatch(legend, /Opus|No session record/, `${name}: legend`);
+          assert.doesNotMatch(readout, /Opus/, `${name}: readout`);
+          assert.equal(await page.locator('.p-chart .legend i.area').count(), 1);
+        }
+        assert.deepEqual(errors, []);
+        await context.close();
+      }
+    });
+
     await check('cache busting: every module and asset loads from the versioned path', async () => {
       const {page, errors, context, requests} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
       await page.waitForSelector('.p-exchange .ex-v');

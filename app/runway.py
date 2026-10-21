@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from .api import _rate_limits_payload, _resolve_scope
 from .auth import require_dashboard_auth
 from .db import read_conn
-from .month_trajectory import month_points
+from .month_trajectory import month_points, month_split
 from .monthly_budget import monthly_budget_block
 from .provider_usage import provider_usage_block
 from .runway_history import claude_trajectory, window_history
@@ -102,9 +102,11 @@ def _bounds_only(conn, effective, provider, now, window_id):
         windows = [month_window(block, now)] if block else []
         if block and window_id == "claude:month":
             w = windows[0]
-            return {"points": month_points(conn, w["window_start"],
-                                           block["month"],
-                                           block["budget_usd"], now),
+            points = month_points(conn, w["window_start"], block["month"],
+                                  block["budget_usd"], now)
+            return {"points": points,
+                    "split": month_split(w["window_start"], points,
+                                         block["budget_usd"]),
                     "resets": [], "start": w["window_start"],
                     "end": w["resets_at"]}
     else:

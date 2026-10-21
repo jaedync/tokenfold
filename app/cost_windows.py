@@ -69,6 +69,38 @@ def compute_window_cost_by_model(
     display_model() names (e.g. 'Sonnet 5'), so raw model-id aliases that
     share a display name are already merged.
     """
+    by_model: dict = {}
+    for _, dm, cost in _priced_groups(conn, start_epoch, end_epoch, scope,
+                                      anthropic_only, None):
+        by_model[dm] = by_model.get(dm, 0.0) + cost
+    return by_model
+
+
+def compute_window_cost_by_model_buckets(
+    conn: sqlite3.Connection,
+    start_epoch: float,
+    end_epoch: float,
+    bucket_s: float,
+    scope: str = DEFAULT_SCOPE,
+    anthropic_only: bool = False,
+) -> dict:
+    """{bucket: {display model: usd}} over [start_epoch, end_epoch).
+
+    Bucket i holds the requests whose first chunk is in
+    [start_epoch + i * bucket_s, start_epoch + (i + 1) * bucket_s). Same
+    dedupe, era and geo rules as compute_window_cost_by_model, in one query:
+    a cumulative split over a month must not cost one query per point.
+    """
+    out: dict = {}
+    for bucket, dm, cost in _priced_groups(conn, start_epoch, end_epoch, scope,
+                                           anthropic_only, bucket_s):
+        models = out.setdefault(bucket, {})
+        models[dm] = models.get(dm, 0.0) + cost
+    return out
+
+
+def _priced_groups(conn, start_epoch, end_epoch, scope, anthropic_only, bucket_s):
+    """(bucket or None, display model, usd) per priced SQL group."""
     pred = scope_predicate(scope)
     if anthropic_only:
         pred += " AND" + ANTHROPIC_ONLY_SQL
@@ -90,10 +122,17 @@ def compute_window_cost_by_model(
         # pre-era version.
         era_sel = inner_ts = era_grp = ""
         params = (start_epoch, end_epoch)
-    by_model: dict = {}
+    # A request goes to the bucket of its first chunk, so a request is never
+    # split across two buckets.
+    if bucket_s:
+        bucket_sel, bucket_grp = "bucket, ", ", bucket"
+        bucket_inner = "CAST((MIN(ts_epoch) - ?) / ? AS INTEGER) as bucket, "
+        params = (*params[:-2], start_epoch, bucket_s, *params[-2:])
+    else:
+        bucket_sel = bucket_inner = bucket_grp = ""
     for r in conn.execute(
         "SELECT model, provider, source_client, speed, inference_geo, "
-        f"{era_sel}"
+        f"{era_sel}{bucket_sel}"
         "SUM(inp) as inp, SUM(outp) as outp, "
         "SUM(cc) as cc, SUM(cr) as cr, SUM(c5m) as c5m, SUM(c1h) as c1h, "
         "SUM(ws) as ws, "
@@ -101,7 +140,7 @@ def compute_window_cost_by_model(
         "SUM(reported_cache_read) as reported_cache_read, SUM(reported_cache_write) as reported_cache_write, "
         f"{REPORTED_COST_SUM_SQL} as reported_total "
         "FROM ("
-        f"  SELECT model, provider, source_client, request_id, {inner_ts}"
+        f"  SELECT model, provider, source_client, request_id, {inner_ts}{bucket_inner}"
         "  MAX(speed) as speed, MAX(inference_geo) as inference_geo, "
         "  MAX(input_tokens) as inp, MAX(output_tokens) as outp, "
         "  MAX(cache_creation_tokens) as cc, MAX(cache_read_tokens) as cr, "
@@ -116,7 +155,7 @@ def compute_window_cost_by_model(
         f"  AND {pred} "
         "  AND ts_epoch >= ? AND ts_epoch < ? "
         "  GROUP BY model, provider, source_client, request_id"
-        f") GROUP BY model, provider, source_client, speed, inference_geo{era_grp}",
+        f") GROUP BY model, provider, source_client, speed, inference_geo{era_grp}{bucket_grp}",
         params,
     ):
         dm = display_model_for_row(r["model"], r["provider"], r["source_client"])
@@ -135,5 +174,4 @@ def compute_window_cost_by_model(
                 web_search=r["ws"] or 0,
                 ts_epoch=r["first_ts"] if bounds else None,
             )
-        by_model[dm] = by_model.get(dm, 0.0) + req_cost
-    return by_model
+        yield (r["bucket"] if bucket_s else None), dm, req_cost
