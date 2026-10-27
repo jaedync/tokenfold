@@ -20,6 +20,16 @@ function forecastText(w, now) {
   return 'no forecast';
 }
 
+// A long window's name is a button that pins it (its ::after covers the
+// row). Short windows reset too soon to be the hero, as in the server rule.
+function nameCell(w, prov, name, auto) {
+  const parts = [h('span', { class: 'rw-prov' }, prov), name,
+    auto ? h('span', { class: 'chip chip-line rw-auto', title: 'The window the dashboard picks without a pin' }, 'auto') : null];
+  if (w.kind === 'short') return h('span', { class: 'rw-name' }, parts);
+  return h('button', { class: 'rw-name rw-pick', type: 'button', 'data-label': w.label,
+    'aria-label': auto ? `${w.label}, auto pick` : w.label, title: 'Show this window as the main window' }, parts);
+}
+
 function row(w, now, auto) {
   const p = w.pace || {};
   const { prov, name } = splitLabel(w);
@@ -28,9 +38,7 @@ function row(w, now, auto) {
   const proj = f.missing(p.projected_pct) ? usedPct : clamp(p.projected_pct);
   const resets = w.kind === 'short' ? `in ${f.dur(w.resets_at - now)}` : f.when(w.resets_at, now);
   return h('li', { class: `rw${w.stale ? ' is-stale' : ''}`, 'data-hot': hot ? '' : null, 'data-window': w.id, 'data-key': w.id },
-    h('button', { class: 'rw-name rw-pick', type: 'button', 'data-pin': w.id, 'data-label': w.label, title: 'Show this window as the main window' },
-      h('span', { class: 'rw-prov' }, prov), name,
-      auto ? h('span', { class: 'chip chip-line rw-auto', title: 'The window the dashboard picks without a pin' }, 'auto') : null),
+    nameCell(w, prov, name, auto),
     h('span', { class: 'rw-pct' }, f.pct(w.pct)),
     h('span', { class: 'rw-bar', role: 'img', 'aria-label': `${f.pct(w.pct)} used. Even pace ${f.pct(p.expected_pct)}. ${forecastText(w, now)}.` },
       h('i', { style: { width: `${usedPct}%` } }),
@@ -55,11 +63,19 @@ export default {
     const foot = h('div', { class: 'rail-foot' });
     const state = h('div');
     el.append(head.el, state, list, foot);
+    // On the row, not the button: a click anywhere on a long window's row pins it.
     list.addEventListener('click', (e) => {
-      const pick = e.target.closest('[data-pin]');
+      const li = e.target.closest('.rw[data-window]');
+      const pick = li && li.querySelector('.rw-pick');
       if (!pick) return;
-      setPin(ctx.store, pick.dataset.pin);
+      const id = li.dataset.window;
+      const runway = dataOf(ctx.store.get().runway);
+      // The auto pick's row goes back to auto: a pin on it would hold it after the server pick moves.
+      setPin(ctx.store, runway && id === runway.binding ? null : id);
       ctx.announce(`${pick.dataset.label} is now the main window.`);
+      // The row leaves the rail; the hero now shows the window.
+      const hero = document.getElementById('hero-k');
+      if (hero) hero.focus();
     });
 
     function update(s) {

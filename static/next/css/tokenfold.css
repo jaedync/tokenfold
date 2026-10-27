@@ -264,7 +264,8 @@ a.lb-wait { text-decoration: none; }
 /* The name button covers the whole row: a click anywhere pins the window. */
 .rw { position: relative; }
 .rw-pick { border: 0; background: none; padding: 0; text-align: left; }
-.rw-pick::after { content: ''; position: absolute; inset: 0; }
+.rw-pick::after { content: ''; position: absolute; inset: 0; z-index: 1; }
+.rw:has(.rw-pick) { cursor: pointer; }
 .rw-auto { margin-left: 8px; font-size: 9.5px; vertical-align: 1px; }
 .rw:hover .rw-pick { text-decoration: underline; text-decoration-thickness: 2px; }
 .rw-prov { font: 700 10px/1 var(--text); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }

@@ -130,6 +130,22 @@ class CalmBindingTest(unittest.TestCase):
               _w("new", projected=120.0, reaches=NOW + 9 * H, state="above")]
         self.assertEqual(binding(ws), "new")
 
+    def test_a_waitable_fill_ranks_after_one_that_stops_work_longer(self):
+        # a fills first but resets 30 min later (runway.py sets waitable
+        # before binding); b stops work for days.
+        ws = [{**_w("a", projected=130.0, reaches=NOW + 22 * H,
+                    resets_in=22.5 * H, state="above"), "waitable": True},
+              _w("b", projected=120.0, reaches=NOW + 30 * H,
+                 resets_in=5 * 86400, state="above")]
+        self.assertEqual(binding(ws), "b")
+
+    def test_only_waitable_fills_still_bind_by_fill_time(self):
+        ws = [{**_w("a", projected=130.0, reaches=NOW + 30 * H,
+                    resets_in=30.5 * H, state="above"), "waitable": True},
+              {**_w("b", projected=120.0, reaches=NOW + 20 * H,
+                    resets_in=20.5 * H, state="above"), "waitable": True}]
+        self.assertEqual(binding(ws), "b")
+
     def test_calm_without_a_default_uses_the_rule(self):
         ws = [_w("codex:primary", projected=30.0),
               _w("opencode-go:weekly", projected=50.0)]

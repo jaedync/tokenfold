@@ -76,7 +76,9 @@ def binding(windows):
     Otherwise the window that fills first binds; without one that fills
     before its reset, the highest score. A high projected percent early in
     a window can still fill later than a fuller window (2026-10-26: Codex
-    267% in 53 h against Claude 7-day 124% in 22 h). A stale window binds
+    267% in 53 h against Claude 7-day 124% in 22 h). A waitable fill (it
+    resets within the hour; runway.py sets the flag) costs a short wait, so
+    it ranks after a fill that stops work longer. A stale window binds
     only when every candidate is stale: an old snapshot must not keep the
     hero after a fresh window exists.
     """
@@ -95,7 +97,7 @@ def binding(windows):
     filling = [(w, fill_epoch(w)) for w, _ in pool]
     filling = [(w, t) for w, t in filling if t is not None]
     if filling:
-        return min(filling, key=lambda wt: wt[1])[0]["id"]
+        return min(filling, key=lambda wt: (bool(wt[0].get("waitable")), wt[1]))[0]["id"]
     return max(pool, key=lambda ws: ws[1])[0]["id"]
 
 

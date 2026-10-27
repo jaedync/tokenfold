@@ -26,7 +26,9 @@ class TrajectoryTest(_HABase):
         _ins_reading(self.conn, "seven_day", start + 3600, 5.0, self.sd_resets)
         _ins_reading(self.conn, "seven_day", self.now - 60, 30.0, self.sd_resets)
         body = self._get()
-        self.assertEqual(set(body), {"points", "resets", "start", "end"})
+        self.assertEqual(set(body), {"points", "resets", "start", "end", "window"})
+        # The answer names its window: two windows can share bounds.
+        self.assertEqual(body["window"], "claude:seven_day")
         self.assertEqual(body["start"], start)
         self.assertEqual(body["end"], _minute(self.sd_resets))
         self.assertEqual(body["points"], [[_minute(start + 3600), 5.0],
@@ -155,7 +157,8 @@ class HistoryDegradeTest(_HABase):
                 "scope": "personal", "window": "claude:seven_day"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"points": [], "resets": [],
-                                    "start": None, "end": None})
+                                    "start": None, "end": None,
+                                    "window": "claude:seven_day"})
 
     def test_window_history_failure_is_empty_not_500(self):
         with patch.object(app.config, "LOCKED_SCOPE", None), \

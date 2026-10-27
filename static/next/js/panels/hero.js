@@ -99,13 +99,15 @@ export default {
   id: 'hero',
   label: 'Binding window',
   mount(el, ctx) {
-    const kick = h('span', { class: 'kicker', id: 'hero-k' }, 'Binding window');
+    // tabindex: a pin action moves focus here (the button that had it goes away).
+    const kick = h('span', { class: 'kicker', id: 'hero-k', tabindex: '-1' }, 'Binding window');
     const name = h('b', null, f.DASH);
     const auto = h('button', { class: 'hero-auto', type: 'button', hidden: true,
       title: 'Let the dashboard pick the window' }, 'Back to auto');
     auto.addEventListener('click', () => {
       setPin(ctx.store, null);
       ctx.announce('The main window is the auto pick again.');
+      kick.focus();
     });
     const big = h('div', { class: 'hero-v' }, f.DASH);
     const unit = h('div', { class: 'hero-unit' });

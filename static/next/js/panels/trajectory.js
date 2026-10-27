@@ -68,8 +68,11 @@ const near = (a, b) => f.missing(a) || f.missing(b) || Math.abs(a - b) <= SAME_W
 // The trajectory answer if it is for window w, else null. When the binding
 // window changes, the refetch keeps the old answer in the store until the
 // new one comes: its points belong to another window and must not show.
+// The answer names its window (two windows can share bounds); an answer
+// without the name is matched by its bounds only.
 export function trajectoryFor(traj, w) {
   if (!traj || !w) return null;
+  if (traj.window && traj.window !== w.id) return null;
   return near(traj.start, w.window_start) && near(traj.end, w.resets_at) ? traj : null;
 }
 

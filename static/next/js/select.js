@@ -4,10 +4,12 @@
 export const dataOf = (feed) => (feed && feed.data) || null;
 
 // id of the hero window: the owner's pin (pin.js) when the runway has that
-// window, else the server's binding window.
+// long window, else the server's binding window. The work hero is always the
+// billing meter: the pin is a personal-scope choice.
 export function heroId(runway, pin = null) {
   if (!runway || !Array.isArray(runway.windows)) return null;
-  if (pin && runway.windows.some((w) => w.id === pin)) return pin;
+  const pinned = pin && runway.scope !== 'enterprise' ? runway.windows.find((w) => w.id === pin) : null;
+  if (pinned && pinned.kind !== 'short') return pin;
   return runway.binding ?? null;
 }
 

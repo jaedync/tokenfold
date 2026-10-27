@@ -118,14 +118,23 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.waitForSelector('.p-rail .rw');
       assert.match(await text(page, '#hero-k'), /binding window/i);
       assert.equal(await page.locator('.p-hero .hero-auto').isHidden(), true);
-      await page.click('.p-rail .rw[data-window="opencode-go:monthly"] .rw-pick');
+      // A click on the bar, not the name: the whole row pins.
+      const bar = page.locator('.p-rail .rw[data-window="opencode-go:monthly"] .rw-bar');
+      await bar.scrollIntoViewIfNeeded();
+      const bb = await bar.boundingBox();
+      await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
       await page.waitForFunction(() => /OpenCode Go/.test(document.querySelector('.p-hero .hero-k b').textContent));
+      // Focus moves to the hero, not to the body.
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'hero-k');
       assert.match(await text(page, '#hero-k'), /pinned window/i);
       assert.match(await text(page, '.p-hero .hero-v'), /^38%$/);
       assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), 'opencode-go:monthly');
       // The pinned window leaves the rail; the automatic pick joins it, marked.
       assert.equal(await page.locator('.p-rail .rw[data-window="opencode-go:monthly"]').count(), 0);
       assert.match(await text(page, '.p-rail .rw[data-window="claude:seven_day"]'), /auto/i);
+      assert.equal(await page.getAttribute('.p-rail .rw[data-window="claude:seven_day"] .rw-pick', 'aria-label'), 'Claude · 7-day, auto pick');
+      // Short windows reset too soon to be the hero: not pickable.
+      assert.equal(await page.locator('.p-rail .rw[data-window="claude:five_hour"] .rw-pick').count(), 0);
       // The live session split belongs to the automatic window only.
       assert.equal(await page.locator('.p-hero .burn-list').count(), 0);
       await page.reload();
@@ -133,6 +142,13 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.click('.p-hero .hero-auto');
       await page.waitForFunction(() => /binding window/i.test(document.querySelector('#hero-k').textContent));
       assert.match(await text(page, '.p-hero .hero-k b'), /7-day/);
+      assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), null);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'hero-k');
+      // A click on the auto pick's row goes back to auto, it does not pin it.
+      await page.click('.p-rail .rw[data-window="opencode-go:weekly"] .rw-pick');
+      await page.waitForFunction(() => /pinned window/i.test(document.querySelector('#hero-k').textContent));
+      await page.click('.p-rail .rw[data-window="claude:seven_day"] .rw-pick');
+      await page.waitForFunction(() => /binding window/i.test(document.querySelector('#hero-k').textContent));
       assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), null);
       assert.deepEqual(errors, []);
       await context.close();
@@ -145,6 +161,63 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.waitForSelector('.p-hero .verdict-word');
       assert.match(await text(page, '#hero-k'), /binding window/i);
       assert.match(await text(page, '.p-hero .hero-k b'), /7-day/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('pin: the work scope ignores a personal pin', async () => {
+      // A work runway can carry provider windows too (provider_usage_block).
+      const addCodex = (name, body) => (name === 'runway-work'
+        ? {...body, windows: [...body.windows, {...body.windows[0], id: 'codex:primary', provider: 'codex', key: 'primary', kind: 'long', label: 'Codex · Weekly'}]}
+        : null);
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#runway', fixtureOverride: addCodex});
+      await page.evaluate(() => localStorage.setItem('tf_hero_window', 'codex:primary'));
+      await page.reload();
+      await page.waitForFunction(() => /pinned window/i.test(document.querySelector('#hero-k').textContent));
+      await page.click('[data-scope="enterprise"]');
+      await page.waitForFunction(() => /Billing meter/i.test(document.querySelector('#hero-k').textContent));
+      assert.equal(await page.locator('.p-hero .hero-auto').isHidden(), true);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('pin selectors: heroId, isPinned, otherWindows, loadPin; trajectoryFor matches the window id', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1280, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-hero .verdict-word');
+      const r = await page.evaluate(async () => {
+        const base = document.body.dataset.static;
+        const sel = await import(`${base}/js/select.js`);
+        const pin = await import(`${base}/js/pin.js`);
+        const {trajectoryFor} = await import(`${base}/js/panels/trajectory.js`);
+        const runway = {scope: 'personal', binding: 'claude:seven_day', windows: [
+          {id: 'claude:seven_day', kind: 'long', window_start: 0, resets_at: 100},
+          {id: 'claude:scoped:fable', kind: 'long', window_start: 0, resets_at: 100},
+          {id: 'claude:five_hour', kind: 'short'}]};
+        const mem = (v) => ({getItem: () => v, setItem() { throw new Error('off'); }, removeItem() {}});
+        return {
+          pinned: sel.heroId(runway, 'claude:scoped:fable'),
+          gone: sel.heroId(runway, 'codex:gone'),
+          short: sel.heroId(runway, 'claude:five_hour'),
+          work: sel.heroId({...runway, scope: 'enterprise'}, 'claude:scoped:fable'),
+          isPinned: [sel.isPinned(runway, 'claude:scoped:fable'), sel.isPinned(runway, 'codex:gone'), sel.isPinned(runway, null)],
+          others: sel.otherWindows(runway, 'claude:scoped:fable').map((w) => w.id).sort(),
+          load: [pin.loadPin(mem('codex:primary')), pin.loadPin(mem('<img src=x>')), pin.loadPin(mem(null)),
+            pin.loadPin({getItem() { throw new Error('off'); }})],
+          trajOther: trajectoryFor({window: 'claude:seven_day', start: 0, end: 100}, runway.windows[1]),
+          trajSame: Boolean(trajectoryFor({window: 'claude:scoped:fable', start: 0, end: 100}, runway.windows[1])),
+          trajNoId: Boolean(trajectoryFor({start: 0, end: 100}, runway.windows[1])),
+        };
+      });
+      assert.equal(r.pinned, 'claude:scoped:fable');
+      assert.equal(r.gone, 'claude:seven_day');
+      assert.equal(r.short, 'claude:seven_day');
+      assert.equal(r.work, 'claude:seven_day');
+      assert.deepEqual(r.isPinned, [true, false, false]);
+      assert.deepEqual(r.others, ['claude:five_hour', 'claude:seven_day']);
+      assert.deepEqual(r.load, ['codex:primary', null, null, null]);
+      assert.equal(r.trajOther, null);
+      assert.equal(r.trajSame, true);
+      assert.equal(r.trajNoId, true);
       assert.deepEqual(errors, []);
       await context.close();
     });
