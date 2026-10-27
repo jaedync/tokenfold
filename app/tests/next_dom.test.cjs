@@ -113,6 +113,42 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('pin: a click on another window makes it the hero; the browser keeps it; Back to auto clears it', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#runway'});
+      await page.waitForSelector('.p-rail .rw');
+      assert.match(await text(page, '#hero-k'), /binding window/i);
+      assert.equal(await page.locator('.p-hero .hero-auto').isHidden(), true);
+      await page.click('.p-rail .rw[data-window="opencode-go:monthly"] .rw-pick');
+      await page.waitForFunction(() => /OpenCode Go/.test(document.querySelector('.p-hero .hero-k b').textContent));
+      assert.match(await text(page, '#hero-k'), /pinned window/i);
+      assert.match(await text(page, '.p-hero .hero-v'), /^38%$/);
+      assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), 'opencode-go:monthly');
+      // The pinned window leaves the rail; the automatic pick joins it, marked.
+      assert.equal(await page.locator('.p-rail .rw[data-window="opencode-go:monthly"]').count(), 0);
+      assert.match(await text(page, '.p-rail .rw[data-window="claude:seven_day"]'), /auto/i);
+      // The live session split belongs to the automatic window only.
+      assert.equal(await page.locator('.p-hero .burn-list').count(), 0);
+      await page.reload();
+      await page.waitForFunction(() => /OpenCode Go/.test(document.querySelector('.p-hero .hero-k b').textContent));
+      await page.click('.p-hero .hero-auto');
+      await page.waitForFunction(() => /binding window/i.test(document.querySelector('#hero-k').textContent));
+      assert.match(await text(page, '.p-hero .hero-k b'), /7-day/);
+      assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), null);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
+    await check('pin: a pinned window that is gone falls back to the automatic pick', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#runway'});
+      await page.evaluate(() => localStorage.setItem('tf_hero_window', 'codex:gone'));
+      await page.reload();
+      await page.waitForSelector('.p-hero .verdict-word');
+      assert.match(await text(page, '#hero-k'), /binding window/i);
+      assert.match(await text(page, '.p-hero .hero-k b'), /7-day/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('live bar: fits at 1440, 1024, 800 and 390 with no sideways scroll; the clock and data age stay in view above 700 px', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
       await page.waitForSelector('.p-hero .verdict-word');

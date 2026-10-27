@@ -179,6 +179,8 @@ a.lb-wait { text-decoration: none; }
 .p-hero::after { content: ''; position: absolute; right: 0; top: 0; width: 36px; height: 36px; background: var(--yellow); border-left: var(--rule) solid var(--ink); border-bottom: var(--rule) solid var(--ink); }
 .hero-k { display: grid; gap: 3px; padding-right: 40px; }
 .hero-k b { font: 800 13px/1.2 var(--text); letter-spacing: .02em; color: var(--ink); }
+.hero-auto { justify-self: start; margin-top: 4px; border: 2px solid var(--ink); background: var(--paper); padding: 4px 9px; min-height: 28px; font: 800 10.5px/1 var(--text); letter-spacing: .12em; text-transform: uppercase; }
+.hero-auto:hover { background: var(--paper-2); }
 .hero-big { display: flex; align-items: flex-end; gap: 10px; }
 .hero-v { font: 400 clamp(96px, 8.6vw, 132px)/.8 var(--display); letter-spacing: -.05em; white-space: nowrap; }
 .hero-v small { font-size: .46em; letter-spacing: -.02em; margin-left: .04em; }
@@ -259,6 +261,12 @@ a.lb-wait { text-decoration: none; }
 .rw { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 9px 0 10px; border-top: 2px solid var(--hair); }
 .rw:first-child { border-top: 3px solid var(--ink); }
 .rw-name { font-weight: 800; font-size: 13.5px; line-height: 1.2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name button covers the whole row: a click anywhere pins the window. */
+.rw { position: relative; }
+.rw-pick { border: 0; background: none; padding: 0; text-align: left; }
+.rw-pick::after { content: ''; position: absolute; inset: 0; }
+.rw-auto { margin-left: 8px; font-size: 9.5px; vertical-align: 1px; }
+.rw:hover .rw-pick { text-decoration: underline; text-decoration-thickness: 2px; }
 .rw-prov { font: 700 10px/1 var(--text); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
 .rw-pct { font: 400 19px/1 var(--display); text-align: right; min-width: 3.2ch; }
 .rw-bar { grid-column: 1 / -1; position: relative; height: 10px; border: 2px solid var(--ink); background: var(--paper); }

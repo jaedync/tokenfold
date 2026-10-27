@@ -100,7 +100,7 @@ const listOrder = (layers) => [...layers.filter((l) => !l.unrecorded).reverse(),
 
 // Chart model from the feeds: everything the hooks draw, in data units.
 function model(s, zoom) {
-  const w = bindingWindow(dataOf(s.runway));
+  const w = bindingWindow(dataOf(s.runway), s.pin);
   if (!w) return null;
   const answer = trajectoryFor(dataOf(s.trajectory), w);
   const traj = answer || { points: [], resets: [] };
@@ -192,7 +192,7 @@ export default {
     let m = null;
     // Layer colours for the current split (chrome() sets them).
     let colors = null;
-    const zoomFor = (s) => picked || autoZoom(bindingWindow(dataOf(s.runway)), nowFrom(s));
+    const zoomFor = (s) => picked || autoZoom(bindingWindow(dataOf(s.runway), s.pin), nowFrom(s));
     const head = panelHead('Trajectory');
     const seg = segmented('Chart range', [['window', 'Window'], ['day', 'Last 24 h']], 'window', (z) => { picked = z; redraw(); });
     seg.el.classList.add('zoom');
@@ -453,7 +453,7 @@ export default {
     function update(s) {
       lastState = s;
       const line1 = feedLine(s.runway, 'the limit feed');
-      if (line1 || !bindingWindow(dataOf(s.runway))) {
+      if (line1 || !bindingWindow(dataOf(s.runway), s.pin)) {
         patch(state, line1);
         body.hidden = true; seg.el.hidden = true;
         return;

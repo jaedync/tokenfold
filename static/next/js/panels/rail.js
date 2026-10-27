@@ -1,9 +1,11 @@
-// Other windows: every limit window except the binding one, tightest server
-// forecast first. Work scope has one meter and no other windows, so the panel
+// Other windows: every limit window except the hero, tightest server
+// forecast first. A click on a window pins it as the hero (pin.js); while a
+// pin holds, the server's own pick shows here with an Auto chip. Work scope has one meter and no other windows, so the panel
 // hides there (the hero says the meter is the limit) and Now takes its place.
 import { h, patch, panelHead } from '../dom.js';
 import * as f from '../format.js';
-import { dataOf, nowFrom, otherWindows } from '../select.js';
+import { dataOf, isPinned, nowFrom, otherWindows } from '../select.js';
+import { setPin } from '../pin.js';
 import { splitLabel } from '../palette.js';
 import { feedLine, staleNote } from '../panel.js';
 
@@ -18,7 +20,7 @@ function forecastText(w, now) {
   return 'no forecast';
 }
 
-function row(w, now) {
+function row(w, now, auto) {
   const p = w.pace || {};
   const { prov, name } = splitLabel(w);
   const hot = w.verdict === 'runs_out' || w.verdict === 'tight' || (p.projected_pct ?? 0) >= 95;
@@ -26,7 +28,9 @@ function row(w, now) {
   const proj = f.missing(p.projected_pct) ? usedPct : clamp(p.projected_pct);
   const resets = w.kind === 'short' ? `in ${f.dur(w.resets_at - now)}` : f.when(w.resets_at, now);
   return h('li', { class: `rw${w.stale ? ' is-stale' : ''}`, 'data-hot': hot ? '' : null, 'data-window': w.id, 'data-key': w.id },
-    h('span', { class: 'rw-name' }, h('span', { class: 'rw-prov' }, prov), name),
+    h('button', { class: 'rw-name rw-pick', type: 'button', 'data-pin': w.id, 'data-label': w.label, title: 'Show this window as the main window' },
+      h('span', { class: 'rw-prov' }, prov), name,
+      auto ? h('span', { class: 'chip chip-line rw-auto', title: 'The window the dashboard picks without a pin' }, 'auto') : null),
     h('span', { class: 'rw-pct' }, f.pct(w.pct)),
     h('span', { class: 'rw-bar', role: 'img', 'aria-label': `${f.pct(w.pct)} used. Even pace ${f.pct(p.expected_pct)}. ${forecastText(w, now)}.` },
       h('i', { style: { width: `${usedPct}%` } }),
@@ -42,7 +46,7 @@ function row(w, now) {
 export default {
   id: 'rail',
   label: 'Other windows',
-  mount(el) {
+  mount(el, ctx) {
     const head = panelHead('Other windows');
     const sub = h('span', { class: 'panel-sub' }, 'tightest first');
     head.el.append(sub);
@@ -51,6 +55,12 @@ export default {
     const foot = h('div', { class: 'rail-foot' });
     const state = h('div');
     el.append(head.el, state, list, foot);
+    list.addEventListener('click', (e) => {
+      const pick = e.target.closest('[data-pin]');
+      if (!pick) return;
+      setPin(ctx.store, pick.dataset.pin);
+      ctx.announce(`${pick.dataset.label} is now the main window.`);
+    });
 
     function update(s) {
       el.hidden = s.scope === 'enterprise';
@@ -60,14 +70,15 @@ export default {
       const line = feedLine(s.runway, 'the limit feed');
       patch(state, line, staleNote(s.runway, now));
       if (line) { patch(list); patch(foot); sub.hidden = true; return; }
-      const rows = otherWindows(runway);
+      const rows = otherWindows(runway, s.pin);
+      const autoId = isPinned(runway, s.pin) ? runway.binding : null;
       sub.hidden = !rows.length;
       if (!rows.length) {
         patch(list);
         patch(foot, 'No other window has data.');
         return;
       }
-      patch(list, rows.map((w) => row(w, now)));
+      patch(list, rows.map((w) => row(w, now, w.id === autoId)));
       patch(foot, h('span', { class: 'tick' }), h('span', null, 'even pace now · hatched: server forecast to reset'));
     }
 

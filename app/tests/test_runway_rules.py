@@ -92,6 +92,44 @@ class CalmBindingTest(unittest.TestCase):
                  state="above", projected=300.0)]
         self.assertEqual(binding(ws), "claude:seven_day")
 
+    def test_window_that_fills_first_binds(self):
+        # Production, 2026-10-26: Codex weekly 16% early in its window
+        # projects 267% but fills in 53 h; Claude 7-day (84%, 124%) fills
+        # in 22 h. The window that stops work first is the hero.
+        ws = [_w("claude:seven_day", pct=84.0, projected=124.4,
+                 reaches=NOW + 22 * H, resets_in=55 * H, state="above"),
+              _w("codex:secondary", pct=16.0, projected=267.4,
+                 reaches=NOW + 53 * H, resets_in=158 * H, state="above")]
+        self.assertEqual(binding(ws), "claude:seven_day")
+
+    def test_tight_time_counts_as_the_fill_time(self):
+        ws = [_w("a", projected=150.0, reaches=NOW + 30 * H, state="above"),
+              _w("b", projected=80.0, tight=NOW + 5 * H)]
+        self.assertEqual(binding(ws), "b")
+
+    def test_earlier_of_pace_and_tight_time(self):
+        ws = [_w("a", projected=150.0, reaches=NOW + 30 * H,
+                 tight=NOW + 2 * H, state="above"),
+              _w("b", projected=200.0, reaches=NOW + 10 * H, state="above")]
+        self.assertEqual(binding(ws), "a")
+
+    def test_a_window_that_fills_beats_one_that_only_projects_high(self):
+        ws = [_w("a", projected=99.0),
+              _w("b", projected=95.0, reaches=NOW + 40 * H, state="above")]
+        self.assertEqual(binding(ws), "b")
+
+    def test_fill_after_the_reset_does_not_count(self):
+        ws = [_w("a", projected=99.0),
+              _w("b", projected=95.0, reaches=NOW + 5 * 86400,
+                 resets_in=86400, state="above")]
+        self.assertEqual(binding(ws), "a")
+
+    def test_stale_window_that_fills_first_loses_to_a_fresh_one(self):
+        ws = [_w("old", projected=150.0, reaches=NOW + H, stale=True,
+                 state="above"),
+              _w("new", projected=120.0, reaches=NOW + 9 * H, state="above")]
+        self.assertEqual(binding(ws), "new")
+
     def test_calm_without_a_default_uses_the_rule(self):
         ws = [_w("codex:primary", projected=30.0),
               _w("opencode-go:weekly", projected=50.0)]

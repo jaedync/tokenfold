@@ -56,6 +56,15 @@ def at_risk(window):
             or (_num(projected) and projected >= AT_RISK_PROJECTED_PCT))
 
 
+def fill_epoch(window):
+    """The earliest 100% time (pace or TIGHT) before the reset, else None."""
+    resets_at = window.get("resets_at")
+    pace = window.get("pace") or {}
+    times = [t for t in (pace.get("reaches_100_epoch"), window.get("tight_epoch"))
+             if _num(t) and (not _num(resets_at) or t < resets_at)]
+    return min(times) if times else None
+
+
 def binding(windows):
     """id of the long window most likely to stop work, or None.
 
@@ -64,9 +73,12 @@ def binding(windows):
     providers' projections would otherwise take the hero from a limit that
     is merely too early to project (owner decision, 2026-10-15).
 
-    Otherwise the highest score among long (and month) windows. A stale
-    window binds only when every candidate is stale: an old snapshot must
-    not keep the hero after a fresh window exists.
+    Otherwise the window that fills first binds; without one that fills
+    before its reset, the highest score. A high projected percent early in
+    a window can still fill later than a fuller window (2026-10-26: Codex
+    267% in 53 h against Claude 7-day 124% in 22 h). A stale window binds
+    only when every candidate is stale: an old snapshot must not keep the
+    hero after a fresh window exists.
     """
     long_windows = [w for w in windows if w.get("kind") in LONG_KINDS]
     if not any(at_risk(w) for w in long_windows):
@@ -80,6 +92,10 @@ def binding(windows):
     pool = fresh or scored
     if not pool:
         return None
+    filling = [(w, fill_epoch(w)) for w, _ in pool]
+    filling = [(w, t) for w, t in filling if t is not None]
+    if filling:
+        return min(filling, key=lambda wt: wt[1])[0]["id"]
     return max(pool, key=lambda ws: ws[1])[0]["id"]
 
 
