@@ -67,7 +67,7 @@ def build_runway(scope, conn):
     return {
         "generated_at": now,
         "scope": scope,
-        "binding": binding(windows),
+        "binding": binding(windows, now),
         "windows": windows,
         "budget": (_part("budget", lambda: budget_block(month))
                    if month else None),
@@ -149,7 +149,7 @@ def _trajectory_body(effective, provider, key, window_id):
             dependencies=[Depends(require_dashboard_auth)])
 async def runway_trajectory(window: str = Query(...),
                             scope: Optional[str] = Query(default=None)):
-    """{points: [[t, pct]], resets: [t], start, end} for the current window.
+    """{points: [[t, pct]], resets: [t], start, end, window} for the current window.
 
     resets are the 5 h window boundaries inside a long Claude window.
     """
@@ -159,7 +159,9 @@ async def runway_trajectory(window: str = Query(...),
     body = await run_in_threadpool(_trajectory, effective, window)
     if body is None:
         raise HTTPException(status_code=404, detail="not found")
-    return body
+    # Two windows can share bounds (claude:seven_day and a scoped 7-day):
+    # the browser matches an answer to its window by this id.
+    return {**body, "window": window}
 
 
 @router.get("/api/window-history",

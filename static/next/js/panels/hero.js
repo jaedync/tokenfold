@@ -1,10 +1,12 @@
-// Hero: "can I keep working?" The binding window (personal) or the monthly
-// billing meter against the budget (work), its verdict, the pace facts and
-// what burns it now. Every forecast here is a server field (pace block,
-// tight_epoch, verdict); the browser only picks words for them.
+// Hero: "can I keep working?" The binding window (personal; or the window
+// the owner pinned, pin.js) or the monthly billing meter against the budget
+// (work), its verdict, the pace facts and what burns it now. Every forecast
+// here is a server field (pace block, tight_epoch, verdict); the browser
+// only picks words for them.
 import { h, patch, setText, setAttr, approx } from '../dom.js';
 import * as f from '../format.js';
-import { bindingWindow, claudeShortWindow, dataOf, roomElsewhere, nowFrom } from '../select.js';
+import { bindingWindow, claudeShortWindow, dataOf, isPinned, roomElsewhere, nowFrom } from '../select.js';
+import { setPin } from '../pin.js';
 import { familyColor, splitLabel } from '../palette.js';
 import { feedLine, staleNote } from '../panel.js';
 
@@ -66,8 +68,11 @@ function paceSub(w, now) {
 
 // What the live sessions add to the meter rate. The rate above is the quota
 // meter's; the per-session split shows only when agents report live state.
-function burnDetail(now, meterRate) {
+// The server splits by the binding window only (now.py
+// share_of_binding_pct_per_h), so a pinned window has no split.
+function burnDetail(now, meterRate, offAuto) {
   if (!now) return null;
+  if (offAuto) return h('p', { class: 'burn-none' }, 'The live session split shows only for the auto window.');
   const sessions = Array.isArray(now.sessions) ? now.sessions : [];
   if (!sessions.length) {
     return h('p', { class: 'burn-none' }, 'No live session data. Agents report live state through the notify hooks.');
@@ -96,6 +101,13 @@ export default {
   mount(el, ctx) {
     const kick = h('span', { class: 'kicker', id: 'hero-k' }, 'Binding window');
     const name = h('b', null, f.DASH);
+    const auto = h('button', { class: 'hero-auto', type: 'button', hidden: true,
+      title: 'Let the dashboard pick the window' }, 'Back to auto');
+    auto.addEventListener('click', () => {
+      setPin(ctx.store, null);
+      ctx.announce('The main window is the auto pick again.');
+      headline.focus();
+    });
     const big = h('div', { class: 'hero-v' }, f.DASH);
     const unit = h('div', { class: 'hero-unit' });
     const used = h('i'), fore = h('u'), notch = h('b');
@@ -113,7 +125,10 @@ export default {
       h('div', { class: 'meter-scale' }, s0, sPace, s1), verdict, facts, burn, short, note);
     const state = h('div');
     el.setAttribute('aria-labelledby', 'hero-k');
-    el.append(h('div', { class: 'hero-k' }, kick, name, age), state, body);
+    // tabindex: a pin action moves focus here (the button that had it goes
+    // away); the heading reads the kicker and the window name.
+    const headline = h('div', { class: 'hero-k', tabindex: '-1' }, kick, name, age, auto);
+    el.append(headline, state, body);
 
     function setMeter(usedPct, projPct, expectedPct, label) {
       used.style.width = `${clamp(usedPct)}%`;
@@ -130,9 +145,9 @@ export default {
       setText(text, t);
     }
 
-    function renderPersonal(w, s, now) {
+    function renderPersonal(w, s, now, pinned, offAuto) {
       const p = w.pace || {};
-      setText(kick, 'Binding window');
+      setText(kick, pinned ? 'Pinned window' : 'Binding window');
       setText(name, w.label);
       patch(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
       patch(unit, 'used', h('span', null, 'of the window'));
@@ -149,20 +164,20 @@ export default {
         fact('Resets', f.dayClock(w.resets_at), `in ${f.dur(w.resets_at - now)}`),
         fact('Left', f.missing(w.usd_left) ? f.DASH : [approx(), f.usd(w.usd_left)],
           f.missing(w.usd_per_point) ? 'value per point unknown' : `${(100 - w.pct).toFixed(1)} pts × ≈${f.usd(w.usd_per_point, { cents: true })} per point`));
-      renderBurn(w, s);
+      renderBurn(w, s, offAuto);
       renderShort(s);
       patch(note, h('b', null, 'Dollars are API-equivalent at list price, not billed.'),
         ' Your subscription pays for them. They show what the rest of the quota is worth.');
     }
 
-    function renderBurn(w, s) {
+    function renderBurn(w, s, offAuto) {
       const h1 = w.burn_pct_per_h ? w.burn_pct_per_h.h1 : null;
       burn.hidden = false;
       patch(burn,
         h('div', { class: 'burn-head' },
           h('span', { class: 'kicker' }, 'Meter rate, last hour'),
           h('b', null, f.missing(h1) ? f.DASH : `+${h1.toFixed(2)}%/h`)),
-        burnDetail(dataOf(s.now), h1));
+        burnDetail(dataOf(s.now), h1, offAuto));
     }
 
     function renderShort(s) {
@@ -213,7 +228,9 @@ export default {
     function update(s) {
       const runway = dataOf(s.runway);
       const line = feedLine(s.runway, 'the limit feed');
-      const w = bindingWindow(runway);
+      const w = bindingWindow(runway, s.pin);
+      const pinned = isPinned(runway, s.pin);
+      auto.hidden = !(w && pinned);
       if (line || !w) {
         patch(state, line || (runway ? h('div', { class: 'p-state' }, 'No limit window has data yet.',
           h('small', null, 'The quota feed reports every 2 min.')) : null));
@@ -224,7 +241,7 @@ export default {
       patch(state);
       body.hidden = false;
       const now = nowFrom(s);
-      if (w.kind === 'month') renderWork(w, runway.budget, now); else renderPersonal(w, s, now);
+      if (w.kind === 'month') renderWork(w, runway.budget, now); else renderPersonal(w, s, now, pinned, pinned && w.id !== runway.binding);
       big.classList.toggle('is-stale', Boolean(w.stale));
       patch(age, w.stale ? h('span', { class: 'age' }, `Window data ${f.age(w.age_s)}`) : null, staleNote(s.runway, now));
     }

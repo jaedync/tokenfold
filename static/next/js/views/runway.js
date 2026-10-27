@@ -10,7 +10,7 @@ import rail from '../panels/rail.js';
 import trajectory from '../panels/trajectory.js';
 import today from '../panels/today.js';
 import exchange from '../panels/exchange.js';
-import { dataOf } from '../select.js';
+import { dataOf, heroId } from '../select.js';
 
 export default {
   id: 'runway',
@@ -21,10 +21,10 @@ export default {
     runway: { endpoint: 'runway', intervalMs: 30000, bump: true },
     today: { endpoint: 'today', intervalMs: 60000, bump: true },
     limitRate: { endpoint: 'limitRate', bump: true, params: (s) => (s.scope === 'enterprise' ? null : {}) },
-    // Waits for the binding window, then refetches when it changes.
+    // Waits for the hero window, then refetches when it (or the pin) changes.
     trajectory: {
       endpoint: 'trajectory', bump: true, intervalMs: 120000,
-      params: (s) => { const r = dataOf(s.runway); return r && r.binding ? { window: r.binding } : null; },
+      params: (s) => { const id = heroId(dataOf(s.runway), s.pin); return id ? { window: id } : null; },
     },
   },
   panels: [hero, now, rail, trajectory, today, exchange],

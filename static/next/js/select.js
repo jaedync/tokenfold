@@ -3,9 +3,21 @@
 
 export const dataOf = (feed) => (feed && feed.data) || null;
 
-export function bindingWindow(runway) {
+// id of the hero window: the owner's pin (pin.js) when the runway has that
+// long window, else the server's binding window. The work hero is always the
+// billing meter: the pin is a personal-scope choice.
+export function heroId(runway, pin = null) {
   if (!runway || !Array.isArray(runway.windows)) return null;
-  return runway.windows.find((w) => w.id === runway.binding) || null;
+  const pinned = pin && runway.scope !== 'enterprise' ? runway.windows.find((w) => w.id === pin) : null;
+  if (pinned && pinned.kind !== 'short') return pin;
+  return runway.binding ?? null;
+}
+
+export const isPinned = (runway, pin) => Boolean(pin) && heroId(runway, pin) === pin;
+
+export function bindingWindow(runway, pin = null) {
+  const id = heroId(runway, pin);
+  return (id && runway.windows.find((w) => w.id === id)) || null;
 }
 
 export function claudeShortWindow(runway) {
@@ -15,10 +27,11 @@ export function claudeShortWindow(runway) {
 
 const projected = (w) => (w.pace && typeof w.pace.projected_pct === 'number' ? w.pace.projected_pct : -1);
 
-// Every window but the binding one, tightest forecast first (unknown last).
-export function otherWindows(runway) {
+// Every window but the hero, tightest forecast first (unknown last).
+export function otherWindows(runway, pin = null) {
   if (!runway || !Array.isArray(runway.windows)) return [];
-  return runway.windows.filter((w) => w.id !== runway.binding)
+  const id = heroId(runway, pin);
+  return runway.windows.filter((w) => w.id !== id)
     .slice()
     .sort((a, b) => projected(b) - projected(a) || (b.pct ?? -1) - (a.pct ?? -1));
 }

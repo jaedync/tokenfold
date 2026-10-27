@@ -21,7 +21,8 @@ approved Runway mockup (`.ux/mockups/runway/index.html`).
 | `js/format.js` | `usd`, `pct`, `dur`, `shortDur`, `age`, `clock`, `dayClock`, `when`, `esc`. Missing values print `—`. |
 | `js/dom.js` | `h()`, `fill()`, `patch()`, `setText()`, `approx()`, `segmented()`, `panelHead()`. |
 | `js/panel.js` | `mountPanel()`, `feedLine()`, `feedStatus()`, `staleNote()`, `stateLine()`. |
-| `js/select.js` | Pure selectors: `bindingWindow`, `otherWindows`, `sortSessions`, `nowFrom`. |
+| `js/select.js` | Pure selectors: `heroId`, `bindingWindow`, `otherWindows`, `sortSessions`, `nowFrom`. The hero is the pinned window when the runway has it, else the server's `binding`. |
+| `js/pin.js` | The hero window the owner pinned (a click on an Other windows row; Back to auto clears it). This browser keeps it in `localStorage` (`tf_hero_window`); the store key is `pin`. |
 | `js/palette.js` | Model family colours (CSS variables only), provider names. |
 | `js/views/*.js` | One module per view: the feeds it wants and its panels. |
 | `js/panels/*.js` | One module per panel. |

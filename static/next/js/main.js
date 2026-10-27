@@ -9,6 +9,7 @@ import { mountInto, mountPanel, feedStatus } from './panel.js';
 import { createScroll } from './scroll.js';
 import { createReserve } from './reserve.js';
 import { bindingWindow, dataOf, nowFrom } from './select.js';
+import { loadPin } from './pin.js';
 import { windowTag } from './palette.js';
 import livebar from './panels/livebar.js';
 import runway from './views/runway.js';
@@ -31,6 +32,7 @@ const store = createStore({
   view: null,
   skew: 0,
   mock,
+  pin: loadPin(),
 });
 const feeds = createFeeds({ store, api, mock });
 const announcer = document.getElementById('announce');
@@ -216,7 +218,7 @@ function prefetchOthers() {
 // ---------------------------------------------------------------- tab title
 const baseTitle = document.title;
 store.subscribe((s) => {
-  const w = bindingWindow(dataOf(s.runway));
+  const w = bindingWindow(dataOf(s.runway), s.pin);
   const live = dataOf(s.now) && s.now.data.live;
   const parts = [];
   if (w && typeof w.pct === 'number') parts.push(`${Math.floor(w.pct)}% ${windowTag(w)}`);

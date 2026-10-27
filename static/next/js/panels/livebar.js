@@ -58,7 +58,7 @@ export default {
       const status = feedStatus(s.now);
       setAttr(el, 'data-conn', status === 'ok' ? 'live' : 'stale');
       const live = dataOf(s.now) && s.now.data.live;
-      const bind = bindingWindow(dataOf(s.runway));
+      const bind = bindingWindow(dataOf(s.runway), s.pin);
       const usdH = live && live.burn_usd_per_h ? live.burn_usd_per_h.m30 : null;
       const pctH = bind && bind.burn_pct_per_h ? bind.burn_pct_per_h.h1 : null;
       // The phone hides the dollar part; with no window rate the dollars are all there is.

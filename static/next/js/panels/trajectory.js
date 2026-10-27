@@ -68,8 +68,11 @@ const near = (a, b) => f.missing(a) || f.missing(b) || Math.abs(a - b) <= SAME_W
 // The trajectory answer if it is for window w, else null. When the binding
 // window changes, the refetch keeps the old answer in the store until the
 // new one comes: its points belong to another window and must not show.
+// The answer names its window (two windows can share bounds); an answer
+// without the name is matched by its bounds only.
 export function trajectoryFor(traj, w) {
   if (!traj || !w) return null;
+  if (traj.window && traj.window !== w.id) return null;
   return near(traj.start, w.window_start) && near(traj.end, w.resets_at) ? traj : null;
 }
 
@@ -100,7 +103,7 @@ const listOrder = (layers) => [...layers.filter((l) => !l.unrecorded).reverse(),
 
 // Chart model from the feeds: everything the hooks draw, in data units.
 function model(s, zoom) {
-  const w = bindingWindow(dataOf(s.runway));
+  const w = bindingWindow(dataOf(s.runway), s.pin);
   if (!w) return null;
   const answer = trajectoryFor(dataOf(s.trajectory), w);
   const traj = answer || { points: [], resets: [] };
@@ -192,7 +195,7 @@ export default {
     let m = null;
     // Layer colours for the current split (chrome() sets them).
     let colors = null;
-    const zoomFor = (s) => picked || autoZoom(bindingWindow(dataOf(s.runway)), nowFrom(s));
+    const zoomFor = (s) => picked || autoZoom(bindingWindow(dataOf(s.runway), s.pin), nowFrom(s));
     const head = panelHead('Trajectory');
     const seg = segmented('Chart range', [['window', 'Window'], ['day', 'Last 24 h']], 'window', (z) => { picked = z; redraw(); });
     seg.el.classList.add('zoom');
@@ -453,7 +456,7 @@ export default {
     function update(s) {
       lastState = s;
       const line1 = feedLine(s.runway, 'the limit feed');
-      if (line1 || !bindingWindow(dataOf(s.runway))) {
+      if (line1 || !bindingWindow(dataOf(s.runway), s.pin)) {
         patch(state, line1);
         body.hidden = true; seg.el.hidden = true;
         return;
