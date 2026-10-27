@@ -74,7 +74,7 @@ export default {
       setPin(ctx.store, runway && id === runway.binding ? null : id);
       ctx.announce(`${pick.dataset.label} is now the main window.`);
       // The row leaves the rail; the hero now shows the window.
-      const hero = document.getElementById('hero-k');
+      const hero = document.querySelector('.p-hero .hero-k');
       if (hero) hero.focus();
     });
 

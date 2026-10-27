@@ -139,6 +139,14 @@ class CalmBindingTest(unittest.TestCase):
                  resets_in=5 * 86400, state="above")]
         self.assertEqual(binding(ws), "b")
 
+    def test_a_window_full_now_keeps_the_hero_even_when_waitable(self):
+        # Work is stopped now; the reset in 40 min does not make it calm.
+        ws = [{**_w("a", pct=100.0, projected=130.0, reaches=NOW - H,
+                    resets_in=40 * 60, state="above"), "waitable": True},
+              _w("b", projected=120.0, reaches=NOW + 3 * 86400,
+                 resets_in=5 * 86400, state="above")]
+        self.assertEqual(binding(ws, now=NOW), "a")
+
     def test_only_waitable_fills_still_bind_by_fill_time(self):
         ws = [{**_w("a", projected=130.0, reaches=NOW + 30 * H,
                     resets_in=30.5 * H, state="above"), "waitable": True},

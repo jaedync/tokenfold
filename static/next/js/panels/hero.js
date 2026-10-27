@@ -99,15 +99,14 @@ export default {
   id: 'hero',
   label: 'Binding window',
   mount(el, ctx) {
-    // tabindex: a pin action moves focus here (the button that had it goes away).
-    const kick = h('span', { class: 'kicker', id: 'hero-k', tabindex: '-1' }, 'Binding window');
+    const kick = h('span', { class: 'kicker', id: 'hero-k' }, 'Binding window');
     const name = h('b', null, f.DASH);
     const auto = h('button', { class: 'hero-auto', type: 'button', hidden: true,
       title: 'Let the dashboard pick the window' }, 'Back to auto');
     auto.addEventListener('click', () => {
       setPin(ctx.store, null);
       ctx.announce('The main window is the auto pick again.');
-      kick.focus();
+      headline.focus();
     });
     const big = h('div', { class: 'hero-v' }, f.DASH);
     const unit = h('div', { class: 'hero-unit' });
@@ -126,7 +125,10 @@ export default {
       h('div', { class: 'meter-scale' }, s0, sPace, s1), verdict, facts, burn, short, note);
     const state = h('div');
     el.setAttribute('aria-labelledby', 'hero-k');
-    el.append(h('div', { class: 'hero-k' }, kick, name, age, auto), state, body);
+    // tabindex: a pin action moves focus here (the button that had it goes
+    // away); the heading reads the kicker and the window name.
+    const headline = h('div', { class: 'hero-k', tabindex: '-1' }, kick, name, age, auto);
+    el.append(headline, state, body);
 
     function setMeter(usedPct, projPct, expectedPct, label) {
       used.style.width = `${clamp(usedPct)}%`;

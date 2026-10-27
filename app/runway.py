@@ -67,7 +67,7 @@ def build_runway(scope, conn):
     return {
         "generated_at": now,
         "scope": scope,
-        "binding": binding(windows),
+        "binding": binding(windows, now),
         "windows": windows,
         "budget": (_part("budget", lambda: budget_block(month))
                    if month else None),

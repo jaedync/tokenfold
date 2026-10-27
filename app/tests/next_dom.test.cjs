@@ -124,8 +124,8 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       const bb = await bar.boundingBox();
       await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
       await page.waitForFunction(() => /OpenCode Go/.test(document.querySelector('.p-hero .hero-k b').textContent));
-      // Focus moves to the hero, not to the body.
-      assert.equal(await page.evaluate(() => document.activeElement.id), 'hero-k');
+      // Focus moves to the hero heading (kicker and window name), not to the body.
+      assert.equal(await page.evaluate(() => document.activeElement.className), 'hero-k');
       assert.match(await text(page, '#hero-k'), /pinned window/i);
       assert.match(await text(page, '.p-hero .hero-v'), /^38%$/);
       assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), 'opencode-go:monthly');
@@ -143,7 +143,7 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await page.waitForFunction(() => /binding window/i.test(document.querySelector('#hero-k').textContent));
       assert.match(await text(page, '.p-hero .hero-k b'), /7-day/);
       assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), null);
-      assert.equal(await page.evaluate(() => document.activeElement.id), 'hero-k');
+      assert.equal(await page.evaluate(() => document.activeElement.className), 'hero-k');
       // A click on the auto pick's row goes back to auto, it does not pin it.
       await page.click('.p-rail .rw[data-window="opencode-go:weekly"] .rw-pick');
       await page.waitForFunction(() => /pinned window/i.test(document.querySelector('#hero-k').textContent));

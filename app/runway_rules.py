@@ -65,7 +65,7 @@ def fill_epoch(window):
     return min(times) if times else None
 
 
-def binding(windows):
+def binding(windows, now=None):
     """id of the long window most likely to stop work, or None.
 
     When no long window is at risk, the main limit binds (claude:seven_day,
@@ -78,7 +78,8 @@ def binding(windows):
     a window can still fill later than a fuller window (2026-10-26: Codex
     267% in 53 h against Claude 7-day 124% in 22 h). A waitable fill (it
     resets within the hour; runway.py sets the flag) costs a short wait, so
-    it ranks after a fill that stops work longer. A stale window binds
+    it ranks after a fill that stops work longer, unless it is full by
+    `now`: then work is stopped already. A stale window binds
     only when every candidate is stale: an old snapshot must not keep the
     hero after a fresh window exists.
     """
@@ -97,7 +98,11 @@ def binding(windows):
     filling = [(w, fill_epoch(w)) for w, _ in pool]
     filling = [(w, t) for w, t in filling if t is not None]
     if filling:
-        return min(filling, key=lambda wt: (bool(wt[0].get("waitable")), wt[1]))[0]["id"]
+        def rank(wt):
+            w, t = wt
+            full_now = _num(now) and t <= now
+            return (bool(w.get("waitable")) and not full_now, t)
+        return min(filling, key=rank)[0]["id"]
     return max(pool, key=lambda ws: ws[1])[0]["id"]
 
 
