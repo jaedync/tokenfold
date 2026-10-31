@@ -15,6 +15,9 @@ from app.models import ClaudeUsageRequest
 FIXTURE = json.loads((Path(__file__).parent / "fixtures"
                       / "claude_usage_metadata.json").read_text())
 OBSERVED_MS = FIXTURE["observed_at_epoch"] * 1000
+# The shared fixture's five_hour already reset (test_claude_usage needs that);
+# the parser skips such a bucket, so these tests use an open 5-hour window.
+FIXTURE["buckets"][0]["resets_at_epoch"] = FIXTURE["observed_at_epoch"] + 3600
 MACHINE = "test-personal"
 
 
@@ -66,8 +69,9 @@ class RejectionTest(unittest.TestCase):
             lambda b: b["sources"].pop("oauth"),
             lambda b: b["sources"]["oauth"].update(fetchedAt=OBSERVED_MS - 86400001),
             lambda b: b["sources"]["oauth"].update(fetchedAt=OBSERVED_MS + 300001),
-            lambda b: b["buckets"][0].update(observedAt=OBSERVED_MS + 1),
-            lambda b: b["buckets"][0].update(source="sdk"),
+            # Without its OAuth seven_day the sample has no required bucket.
+            lambda b: b["buckets"][1].update(observedAt=OBSERVED_MS + 1),
+            lambda b: b["buckets"][1].update(source="sdk"),
             lambda b: b["buckets"].append(b["buckets"][0]),
             lambda b: b["buckets"][0].update(utilization=77),
             lambda b: b["buckets"][0].update(resetsAt=math.inf),
@@ -77,6 +81,57 @@ class RejectionTest(unittest.TestCase):
             body = quota()
             mutate(body)
             self.assertIsNone(parse(body), i)
+
+    def test_absent_five_hour_is_no_open_window_not_a_fault(self):
+        # Anthropic leaves five_hour out while no 5-hour window is open.
+        body = quota()
+        body["buckets"] = [b for b in body["buckets"] if b["type"] != "five_hour"]
+        payload = parse(body)
+        self.assertEqual([b["key"] for b in payload["buckets"]], ["seven_day", "scoped:fable"])
+        ClaudeUsageRequest.model_validate(payload)
+
+    def test_seven_day_stays_required(self):
+        body = quota()
+        body["buckets"] = [b for b in body["buckets"] if b["type"] != "seven_day"]
+        self.assertIsNone(parse(body))
+
+    def test_malformed_oauth_five_hour_still_rejects(self):
+        for patch in ({"utilization": math.nan}, {"utilization": 2}, {"resetsAt": -1}):
+            body = quota()
+            body["buckets"][0].update(patch)
+            self.assertIsNone(parse(body), patch)
+
+    def test_stale_sdk_five_hour_is_skipped_not_a_fault(self):
+        # Meridian seeds buckets from its SDK store, which keeps the last
+        # five_hour after the window ends; OAuth then leaves five_hour out.
+        for patch in ({"observedAt": OBSERVED_MS - 3600000, "resetsAt": OBSERVED_MS - 60000},
+                      {"source": "sdk"}):
+            body = quota()
+            body["buckets"][0].update(patch)
+            payload = parse(body)
+            self.assertEqual([b["key"] for b in payload["buckets"]], ["seven_day", "scoped:fable"], patch)
+
+    def test_oauth_five_hour_without_reset_is_no_open_window(self):
+        body = quota()
+        body["buckets"][0].update(resetsAt=None, utilization=0)
+        self.assertEqual([b["key"] for b in parse(body)["buckets"]], ["seven_day", "scoped:fable"])
+
+    def test_oauth_five_hour_with_past_reset_is_no_open_window(self):
+        # Meridian fills a null OAuth reset from an old SDK entry.
+        body = quota()
+        body["buckets"][0].update(resetsAt=OBSERVED_MS - 60000, utilization=0)
+        self.assertEqual([b["key"] for b in parse(body)["buckets"]], ["seven_day", "scoped:fable"])
+
+    def test_oauth_five_hour_in_use_without_reset_rejects(self):
+        body = quota()
+        body["buckets"][0].update(resetsAt=None, utilization=0.3)
+        self.assertIsNone(parse(body))
+
+    def test_bad_seven_day_still_rejects(self):
+        for patch in ({"resetsAt": None}, {"utilization": math.nan}):
+            body = quota()
+            body["buckets"][1].update(patch)
+            self.assertIsNone(parse(body), patch)
 
     def test_reject_non_numeric_fetched_at(self):
         for value in (math.nan, math.inf, -1, 0, "1788706007457", True, None, 10 ** 400):

@@ -1,3 +1,5 @@
+import { PROVIDER_ORDER } from './palette.js';
+
 // Pure selectors over the feed payloads. They pick and sort server values;
 // they never forecast (the one forecast is the server's pace block).
 
@@ -25,15 +27,33 @@ export function claudeShortWindow(runway) {
   return runway.windows.find((w) => w.provider === 'claude' && w.kind === 'short') || null;
 }
 
-const projected = (w) => (w.pace && typeof w.pace.projected_pct === 'number' ? w.pace.projected_pct : -1);
+const KIND_RANK = { short: 0, long: 1, month: 2 };
+const rankOf = (order, key) => { const i = order.indexOf(key); return i < 0 ? order.length : i; };
 
-// Every window but the hero, tightest forecast first (unknown last).
-export function otherWindows(runway, pin = null) {
+// Every window in a fixed order that does not move between polls: provider
+// (PROVIDER_ORDER, then by name), then short before long before month, then
+// window length, then label. Forecasts change each poll, so they never sort.
+export function allWindows(runway) {
   if (!runway || !Array.isArray(runway.windows)) return [];
-  const id = heroId(runway, pin);
-  return runway.windows.filter((w) => w.id !== id)
-    .slice()
-    .sort((a, b) => projected(b) - projected(a) || (b.pct ?? -1) - (a.pct ?? -1));
+  const str = (v) => String(v ?? '');
+  return runway.windows.slice().sort((a, b) =>
+    rankOf(PROVIDER_ORDER, a.provider) - rankOf(PROVIDER_ORDER, b.provider)
+    || str(a.provider).localeCompare(str(b.provider))
+    || (KIND_RANK[a.kind] ?? 3) - (KIND_RANK[b.kind] ?? 3)
+    || (a.window_s ?? 0) - (b.window_s ?? 0)
+    || str(a.label).localeCompare(str(b.label))
+    || str(a.id).localeCompare(str(b.id)));
+}
+
+// allWindows split into runs of one provider, for the provider headings.
+export function windowsByProvider(runway) {
+  const groups = [];
+  for (const w of allWindows(runway)) {
+    const last = groups[groups.length - 1];
+    if (last && last.provider === w.provider) last.windows.push(w);
+    else groups.push({ provider: w.provider, windows: [w] });
+  }
+  return groups;
 }
 
 // One window per other provider, the fullest, for "room elsewhere".

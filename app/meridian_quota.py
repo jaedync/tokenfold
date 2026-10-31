@@ -43,6 +43,26 @@ def _identity(kind):
     return f"scoped:{slug}", slug[0].upper() + slug[1:].replace("_", " ")
 
 
+FIXED_TYPES = ("five_hour", "seven_day")
+
+
+def _bad_oauth_fixed_bucket(bucket, fetched_at):
+    """True for a fixed bucket from this OAuth fetch whose values are bad.
+
+    Meridian seeds the answer from its SDK store, which keeps the last
+    five_hour after the window ends (other observedAt or source): that is not
+    this observation, so it is skipped like an absent bucket. An idle OAuth
+    five_hour without a reset time is no open window. Any other bad fixed
+    bucket from this fetch is a fault and rejects the sample.
+    """
+    if bucket.get("type") not in FIXED_TYPES:
+        return False
+    if bucket.get("observedAt") != fetched_at or bucket.get("source", "oauth") != "oauth":
+        return False
+    idle = bucket.get("utilization") in (None, 0)
+    return not (bucket["type"] == "five_hour" and bucket.get("resetsAt") is None and idle)
+
+
 def _bucket(raw, fetched_at):
     """One validated bucket, or None to skip it. Meridian times are ms."""
     bucket = _record(raw)
@@ -87,12 +107,19 @@ def parse_meridian_quota(body, machine, now_epoch):
     for raw in raw_buckets:
         bucket = _bucket(raw, fetched_at)
         if bucket is None:
+            if _bad_oauth_fixed_bucket(_record(raw), fetched_at):
+                return None
+            continue
+        # A five_hour that already reset is no open window: Meridian fills a
+        # null OAuth reset from its old SDK entry.
+        if bucket["key"] == "five_hour" and bucket["resets_at_epoch"] * 1000 <= fetched_at:
             continue
         if any(b["key"] == bucket["key"] for b in buckets):
             return None
         buckets.append(bucket)
-    keys = {b["key"] for b in buckets}
-    if not {"five_hour", "seven_day"} <= keys:
+    # Anthropic leaves five_hour out while no 5-hour window is open; seven_day
+    # is always there.
+    if "seven_day" not in {b["key"] for b in buckets}:
         return None
     payload = {"machine": machine, "account_class": "personal",
                "source": "meridian-oauth", "source_profile": "default",

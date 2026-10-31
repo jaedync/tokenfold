@@ -61,7 +61,14 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       assert.match(await text(page, '.p-hero .verdict-word'), /^TIGHT$/i);
       assert.match(await text(page, '.p-hero .hero-v'), /^92%$/);
       assert.equal(await page.locator('.p-chart canvas').count() > 0, true);
-      assert.equal(await page.locator('.p-rail .rw').count(), 6);
+      // All windows, the hero too, under one heading per provider in a fixed order.
+      assert.equal(await page.locator('.p-rail .rw').count(), 7);
+      assert.deepEqual(await page.locator('.p-rail .rw-grp-h').allTextContents(), ['Claude', 'Codex', 'OpenCode Go']);
+      assert.deepEqual(await page.locator('.p-rail .rw').evaluateAll((els) => els.map((e) => e.dataset.window)),
+        ['claude:five_hour', 'claude:seven_day', 'claude:scoped:fable', 'codex:primary',
+          'opencode-go:five_hour', 'opencode-go:weekly', 'opencode-go:monthly']);
+      assert.match(await text(page, '.p-rail .rw[data-window="claude:seven_day"]'), /main/i);
+      assert.equal(await page.locator('.p-rail .rw[data-window="claude:seven_day"] .rw-pick').count(), 0);
       assert.match(await text(page, '.p-now .grp[data-state="waiting"] .grp-head'), /Waiting on you · 2/i);
       assert.equal(await page.locator('.p-now .row').count(), 8);
       assert.match(await text(page, '.p-now .row'), /laptop/);
@@ -129,8 +136,10 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       assert.match(await text(page, '#hero-k'), /pinned window/i);
       assert.match(await text(page, '.p-hero .hero-v'), /^38%$/);
       assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), 'opencode-go:monthly');
-      // The pinned window leaves the rail; the automatic pick joins it, marked.
-      assert.equal(await page.locator('.p-rail .rw[data-window="opencode-go:monthly"]').count(), 0);
+      // The pinned window keeps its place, marked Main; the automatic pick is marked Auto.
+      assert.match(await text(page, '.p-rail .rw[data-window="opencode-go:monthly"]'), /main/i);
+      assert.equal(await page.locator('.p-rail .rw[data-window="opencode-go:monthly"] .rw-pick').count(), 0);
+      assert.equal(await page.locator('.p-rail .rw').count(), 7);
       assert.match(await text(page, '.p-rail .rw[data-window="claude:seven_day"]'), /auto/i);
       assert.equal(await page.getAttribute('.p-rail .rw[data-window="claude:seven_day"] .rw-pick', 'aria-label'), 'Claude · 7-day, auto pick');
       // Short windows reset too soon to be the hero: not pickable.
@@ -181,7 +190,7 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
-    await check('pin selectors: heroId, isPinned, otherWindows, loadPin; trajectoryFor matches the window id', async () => {
+    await check('pin selectors: heroId, isPinned, allWindows, loadPin; trajectoryFor matches the window id', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1280, height: 900}, url: '/next?mock=1&scope=personal'});
       await page.waitForSelector('.p-hero .verdict-word');
       const r = await page.evaluate(async () => {
@@ -193,6 +202,14 @@ const text = (page, sel) => page.locator(sel).first().innerText();
           {id: 'claude:seven_day', kind: 'long', window_start: 0, resets_at: 100},
           {id: 'claude:scoped:fable', kind: 'long', window_start: 0, resets_at: 100},
           {id: 'claude:five_hour', kind: 'short'}]};
+        const mixed = [
+          {id: 'zed:a', provider: 'zed', kind: 'long', window_s: 7, label: 'Zed · A'},
+          {id: 'opencode-go:monthly', provider: 'opencode-go', kind: 'long', window_s: 30, label: 'OpenCode Go · Monthly'},
+          {id: 'codex:primary', provider: 'codex', kind: 'long', window_s: 7, label: 'Codex · Weekly'},
+          {id: 'claude:seven_day', provider: 'claude', kind: 'long', window_s: 7, label: 'Claude · 7-day'},
+          {id: 'claude:five_hour', provider: 'claude', kind: 'short', window_s: 5, label: 'Claude · 5-hour'},
+          {id: 'claude:scoped:fable', provider: 'claude', kind: 'long', window_s: 7, label: 'Claude · Fable 7-day'},
+          {id: 'opencode-go:weekly', provider: 'opencode-go', kind: 'long', window_s: 7, label: 'OpenCode Go · Weekly'}];
         const mem = (v) => ({getItem: () => v, setItem() { throw new Error('off'); }, removeItem() {}});
         return {
           pinned: sel.heroId(runway, 'claude:scoped:fable'),
@@ -200,7 +217,9 @@ const text = (page, sel) => page.locator(sel).first().innerText();
           short: sel.heroId(runway, 'claude:five_hour'),
           work: sel.heroId({...runway, scope: 'enterprise'}, 'claude:scoped:fable'),
           isPinned: [sel.isPinned(runway, 'claude:scoped:fable'), sel.isPinned(runway, 'codex:gone'), sel.isPinned(runway, null)],
-          others: sel.otherWindows(runway, 'claude:scoped:fable').map((w) => w.id).sort(),
+          // Same order for any input order: provider, kind, length, label.
+          all: [mixed, mixed.slice().reverse()].map((ws) => sel.allWindows({windows: ws}).map((w) => w.id)),
+          groups: sel.windowsByProvider({windows: mixed}).map((g) => `${g.provider}:${g.windows.length}`),
           load: [pin.loadPin(mem('codex:primary')), pin.loadPin(mem('<img src=x>')), pin.loadPin(mem(null)),
             pin.loadPin({getItem() { throw new Error('off'); }})],
           trajOther: trajectoryFor({window: 'claude:seven_day', start: 0, end: 100}, runway.windows[1]),
@@ -213,7 +232,8 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       assert.equal(r.short, 'claude:seven_day');
       assert.equal(r.work, 'claude:seven_day');
       assert.deepEqual(r.isPinned, [true, false, false]);
-      assert.deepEqual(r.others, ['claude:five_hour', 'claude:seven_day']);
+      assert.deepEqual(r.all, [['claude:five_hour', 'claude:seven_day', 'claude:scoped:fable', 'codex:primary', 'opencode-go:weekly', 'opencode-go:monthly', 'zed:a'], ['claude:five_hour', 'claude:seven_day', 'claude:scoped:fable', 'codex:primary', 'opencode-go:weekly', 'opencode-go:monthly', 'zed:a']]);
+      assert.deepEqual(r.groups, ['claude:3', 'codex:1', 'opencode-go:2', 'zed:1']);
       assert.deepEqual(r.load, ['codex:primary', null, null, null]);
       assert.equal(r.trajOther, null);
       assert.equal(r.trajSame, true);
