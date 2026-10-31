@@ -58,10 +58,10 @@ function row(w, now, auto, main) {
 
 // One provider: its name as a heading over its windows.
 function group(g, now, autoId, mainId) {
-  const title = providerName(g.provider);
+  const headId = `rw-grp-${String(g.provider).replace(/[^a-z0-9-]/gi, '_')}`;
   return h('li', { class: 'rw-grp', 'data-key': `grp:${g.provider}` },
-    h('h3', { class: 'rw-grp-h' }, title),
-    h('ol', { class: 'rw-list', 'aria-label': `${title} windows` },
+    h('h3', { class: 'rw-grp-h', id: headId }, providerName(g.provider) || 'Other'),
+    h('ol', { class: 'rw-list', 'aria-labelledby': headId },
       g.windows.map((w) => row(w, now, w.id === autoId, w.id === mainId))));
 }
 

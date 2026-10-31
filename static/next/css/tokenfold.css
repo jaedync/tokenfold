@@ -80,14 +80,14 @@ main[aria-busy='true']::before { content: ''; position: fixed; z-index: 11; top:
 .panel:has([data-loading]) { min-height: var(--reserve, var(--reserve-default, 0px)); align-content: start; }
 .p-hero { --reserve-default: 680px; }
 .p-now { --reserve-default: 300px; }
-.p-rail { --reserve-default: 330px; }
+.p-rail { --reserve-default: 600px; }
 .p-chart { --reserve-default: 380px; }
 .p-today { --reserve-default: 180px; }
 .p-exchange { --reserve-default: 250px; }
 @media (max-width: 700px) {
   .p-hero { --reserve-default: 580px; }
   .p-now { --reserve-default: 400px; }
-  .p-rail { --reserve-default: 430px; }
+  .p-rail { --reserve-default: 780px; }
   .p-chart { --reserve-default: 350px; }
   .p-today { --reserve-default: 330px; }
   .p-exchange { --reserve-default: 680px; }

@@ -66,8 +66,9 @@ class RejectionTest(unittest.TestCase):
             lambda b: b["sources"].pop("oauth"),
             lambda b: b["sources"]["oauth"].update(fetchedAt=OBSERVED_MS - 86400001),
             lambda b: b["sources"]["oauth"].update(fetchedAt=OBSERVED_MS + 300001),
-            lambda b: b["buckets"][0].update(observedAt=OBSERVED_MS + 1),
-            lambda b: b["buckets"][0].update(source="sdk"),
+            # Without its OAuth seven_day the sample has no required bucket.
+            lambda b: b["buckets"][1].update(observedAt=OBSERVED_MS + 1),
+            lambda b: b["buckets"][1].update(source="sdk"),
             lambda b: b["buckets"].append(b["buckets"][0]),
             lambda b: b["buckets"][0].update(utilization=77),
             lambda b: b["buckets"][0].update(resetsAt=math.inf),
@@ -91,10 +92,31 @@ class RejectionTest(unittest.TestCase):
         body["buckets"] = [b for b in body["buckets"] if b["type"] != "seven_day"]
         self.assertIsNone(parse(body))
 
-    def test_malformed_five_hour_still_rejects(self):
-        for patch in ({"utilization": math.nan}, {"observedAt": OBSERVED_MS + 1}):
+    def test_malformed_oauth_five_hour_still_rejects(self):
+        for patch in ({"utilization": math.nan}, {"utilization": 2}, {"resetsAt": -1}):
             body = quota()
             body["buckets"][0].update(patch)
+            self.assertIsNone(parse(body), patch)
+
+    def test_stale_sdk_five_hour_is_skipped_not_a_fault(self):
+        # Meridian seeds buckets from its SDK store, which keeps the last
+        # five_hour after the window ends; OAuth then leaves five_hour out.
+        for patch in ({"observedAt": OBSERVED_MS - 3600000, "resetsAt": OBSERVED_MS - 60000},
+                      {"source": "sdk"}):
+            body = quota()
+            body["buckets"][0].update(patch)
+            payload = parse(body)
+            self.assertEqual([b["key"] for b in payload["buckets"]], ["seven_day", "scoped:fable"], patch)
+
+    def test_oauth_five_hour_without_reset_is_no_open_window(self):
+        body = quota()
+        body["buckets"][0].update(resetsAt=None, utilization=0)
+        self.assertEqual([b["key"] for b in parse(body)["buckets"]], ["seven_day", "scoped:fable"])
+
+    def test_bad_seven_day_still_rejects(self):
+        for patch in ({"resetsAt": None}, {"utilization": math.nan}):
+            body = quota()
+            body["buckets"][1].update(patch)
             self.assertIsNone(parse(body), patch)
 
     def test_reject_non_numeric_fetched_at(self):
