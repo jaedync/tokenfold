@@ -15,6 +15,9 @@ from app.models import ClaudeUsageRequest
 FIXTURE = json.loads((Path(__file__).parent / "fixtures"
                       / "claude_usage_metadata.json").read_text())
 OBSERVED_MS = FIXTURE["observed_at_epoch"] * 1000
+# The shared fixture's five_hour already reset (test_claude_usage needs that);
+# the parser skips such a bucket, so these tests use an open 5-hour window.
+FIXTURE["buckets"][0]["resets_at_epoch"] = FIXTURE["observed_at_epoch"] + 3600
 MACHINE = "test-personal"
 
 
@@ -112,6 +115,17 @@ class RejectionTest(unittest.TestCase):
         body = quota()
         body["buckets"][0].update(resetsAt=None, utilization=0)
         self.assertEqual([b["key"] for b in parse(body)["buckets"]], ["seven_day", "scoped:fable"])
+
+    def test_oauth_five_hour_with_past_reset_is_no_open_window(self):
+        # Meridian fills a null OAuth reset from an old SDK entry.
+        body = quota()
+        body["buckets"][0].update(resetsAt=OBSERVED_MS - 60000, utilization=0)
+        self.assertEqual([b["key"] for b in parse(body)["buckets"]], ["seven_day", "scoped:fable"])
+
+    def test_oauth_five_hour_in_use_without_reset_rejects(self):
+        body = quota()
+        body["buckets"][0].update(resetsAt=None, utilization=0.3)
+        self.assertIsNone(parse(body))
 
     def test_bad_seven_day_still_rejects(self):
         for patch in ({"resetsAt": None}, {"utilization": math.nan}):
