@@ -212,12 +212,13 @@ class ClaudeUsageRequest(BaseModel):
     source: Literal["meridian-oauth"]
     source_profile: Literal["default"]
     observed_at_epoch: float = Field(gt=0, le=10**11)
-    buckets: list[ClaudeUsageBucket] = Field(min_length=2, max_length=16)
+    buckets: list[ClaudeUsageBucket] = Field(min_length=1, max_length=16)
     extra_usage: ClaudeExtraUsage | None = None
 
     @model_validator(mode="after")
     def unique_required_buckets(self):
         keys = [b.key for b in self.buckets]
-        if len(set(keys)) != len(keys) or not {"five_hour", "seven_day"} <= set(keys):
-            raise ValueError("unique five_hour and seven_day buckets required")
+        # five_hour is absent while no 5-hour window is open.
+        if len(set(keys)) != len(keys) or "seven_day" not in keys:
+            raise ValueError("unique buckets with seven_day required")
         return self

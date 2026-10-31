@@ -43,6 +43,9 @@ def _identity(kind):
     return f"scoped:{slug}", slug[0].upper() + slug[1:].replace("_", " ")
 
 
+FIXED_TYPES = ("five_hour", "seven_day")
+
+
 def _bucket(raw, fetched_at):
     """One validated bucket, or None to skip it. Meridian times are ms."""
     bucket = _record(raw)
@@ -87,12 +90,16 @@ def parse_meridian_quota(body, machine, now_epoch):
     for raw in raw_buckets:
         bucket = _bucket(raw, fetched_at)
         if bucket is None:
+            # A fixed bucket that is present but bad is a fault, not an absent window.
+            if _record(raw).get("type") in FIXED_TYPES:
+                return None
             continue
         if any(b["key"] == bucket["key"] for b in buckets):
             return None
         buckets.append(bucket)
-    keys = {b["key"] for b in buckets}
-    if not {"five_hour", "seven_day"} <= keys:
+    # Anthropic leaves five_hour out while no 5-hour window is open; seven_day
+    # is always there.
+    if "seven_day" not in {b["key"] for b in buckets}:
         return None
     payload = {"machine": machine, "account_class": "personal",
                "source": "meridian-oauth", "source_profile": "default",

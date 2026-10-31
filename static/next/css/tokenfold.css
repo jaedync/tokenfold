@@ -255,20 +255,21 @@ a.lb-wait { text-decoration: none; }
 .zoom button { min-height: 28px; padding: 4px 9px; font-size: 10.5px; }
 .chart-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
 
-/* ================= rail: every other window ================= */
-.rail { list-style: none; display: grid; }
-@container (min-width: 520px) { .rail { grid-template-columns: 1fr 1fr; column-gap: 26px; } .rw:nth-child(2) { border-top: 3px solid var(--ink); } }
+/* ================= rail: all windows, one group per provider ================= */
+.rail { list-style: none; display: grid; gap: 16px; }
+.rw-grp-h { font: 400 16px/1.1 var(--display); padding: 8px 0 2px; border-top: 3px solid var(--ink); }
+.rw-list { list-style: none; display: grid; }
+@container (min-width: 520px) { .rw-list { grid-template-columns: 1fr 1fr; column-gap: 26px; } .rw:nth-child(2) { border-top: 0; } }
 .rw { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 9px 0 10px; border-top: 2px solid var(--hair); }
-.rw:first-child { border-top: 3px solid var(--ink); }
+.rw:first-child { border-top: 0; }
 .rw-name { font-weight: 800; font-size: 13.5px; line-height: 1.2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The name button covers the whole row: a click anywhere pins the window. */
 .rw { position: relative; }
 .rw-pick { border: 0; background: none; padding: 0; text-align: left; }
 .rw-pick::after { content: ''; position: absolute; inset: 0; z-index: 1; }
 .rw:has(.rw-pick) { cursor: pointer; }
-.rw-auto { margin-left: 8px; font-size: 9.5px; vertical-align: 1px; }
+.rw-chip { margin-left: 8px; font-size: 9.5px; vertical-align: 1px; }
 .rw:hover .rw-pick { text-decoration: underline; text-decoration-thickness: 2px; }
-.rw-prov { font: 700 10px/1 var(--text); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
 .rw-pct { font: 400 19px/1 var(--display); text-align: right; min-width: 3.2ch; }
 .rw-bar { grid-column: 1 / -1; position: relative; height: 10px; border: 2px solid var(--ink); background: var(--paper); }
 .rw-bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink); }

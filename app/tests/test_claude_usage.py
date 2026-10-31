@@ -49,6 +49,14 @@ class ClaudeUsageTest(TempDBTestCase):
         self.assertIsNone(self.stored())
         self.assertEqual(self.conn.execute("SELECT count(*) FROM limit_readings").fetchone()[0], 0)
 
+    def test_no_five_hour_bucket_is_accepted(self):
+        payload = {**self.payload,
+                   "buckets": [b for b in self.payload["buckets"] if b["key"] != "five_hour"]}
+        self.assertEqual(self.post(payload).status_code, 200)
+        self.assertNotIn("five_hour", self.stored()["data"])
+        self.assertEqual(self.post({**payload, "observed_at_epoch": self.now - 300,
+                                    "buckets": payload["buckets"][1:]}).status_code, 422)
+
     def test_metadata_and_history_keep_observation_and_source(self):
         self.assertEqual(self.post().status_code, 200)
         stored = self.stored()

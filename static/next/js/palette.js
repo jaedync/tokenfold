@@ -25,6 +25,8 @@ export const FAMILY_NAME = {
 };
 
 const PROVIDER_NAME = { claude: 'Claude', 'opencode-go': 'OpenCode Go', codex: 'Codex' };
+// Display order of providers in the window list.
+export const PROVIDER_ORDER = ['claude', 'codex', 'opencode-go'];
 export const providerName = (p) => PROVIDER_NAME[p] || String(p || '');
 
 // "Claude · 7-day" -> {prov: "Claude", name: "7-day"}

@@ -1,12 +1,14 @@
-// Other windows: every limit window except the hero, tightest server
-// forecast first. A click on a window pins it as the hero (pin.js); while a
-// pin holds, the server's own pick shows here with an Auto chip. Work scope has one meter and no other windows, so the panel
-// hides there (the hero says the meter is the limit) and Now takes its place.
+// All windows: every limit window, grouped under a heading per provider, in
+// a fixed order (select.allWindows) so rows never trade places between polls.
+// The hero's row carries a Main chip. A click on another long window pins it
+// as the hero (pin.js); while a pin holds, the server's own pick shows an Auto
+// chip. Work scope has one meter and no other windows, so the panel hides
+// there (the hero says the meter is the limit) and Now takes its place.
 import { h, patch, panelHead } from '../dom.js';
 import * as f from '../format.js';
-import { dataOf, isPinned, nowFrom, otherWindows } from '../select.js';
+import { dataOf, heroId, isPinned, nowFrom, windowsByProvider } from '../select.js';
 import { setPin } from '../pin.js';
-import { splitLabel } from '../palette.js';
+import { providerName, splitLabel } from '../palette.js';
 import { feedLine, staleNote } from '../panel.js';
 
 const clamp = (v) => Math.max(0, Math.min(100, v));
@@ -21,24 +23,27 @@ function forecastText(w, now) {
 }
 
 // A long window's name is a button that pins it (its ::after covers the
-// row). Short windows reset too soon to be the hero, as in the server rule.
-function nameCell(w, prov, name, auto) {
-  const parts = [h('span', { class: 'rw-prov' }, prov), name,
-    auto ? h('span', { class: 'chip chip-line rw-auto', title: 'The window the dashboard picks without a pin' }, 'auto') : null];
-  if (w.kind === 'short') return h('span', { class: 'rw-name' }, parts);
+// row). Short windows reset too soon to be the hero, as in the server rule,
+// and the hero's own row has nothing to pick. The provider is the group
+// heading, so the row shows only the window name.
+function nameCell(w, name, auto, main) {
+  const parts = [name,
+    main ? h('span', { class: 'chip chip-ink rw-chip', title: 'The window shown large above' }, 'main') : null,
+    auto ? h('span', { class: 'chip chip-line rw-chip', title: 'The window the dashboard picks without a pin' }, 'auto') : null];
+  if (w.kind === 'short' || main) return h('span', { class: 'rw-name' }, parts);
   return h('button', { class: 'rw-name rw-pick', type: 'button', 'data-label': w.label,
     'aria-label': auto ? `${w.label}, auto pick` : w.label, title: 'Show this window as the main window' }, parts);
 }
 
-function row(w, now, auto) {
+function row(w, now, auto, main) {
   const p = w.pace || {};
-  const { prov, name } = splitLabel(w);
+  const { name } = splitLabel(w);
   const hot = w.verdict === 'runs_out' || w.verdict === 'tight' || (p.projected_pct ?? 0) >= 95;
   const usedPct = f.missing(w.pct) ? 0 : clamp(w.pct);
   const proj = f.missing(p.projected_pct) ? usedPct : clamp(p.projected_pct);
   const resets = w.kind === 'short' ? `in ${f.dur(w.resets_at - now)}` : f.when(w.resets_at, now);
   return h('li', { class: `rw${w.stale ? ' is-stale' : ''}`, 'data-hot': hot ? '' : null, 'data-window': w.id, 'data-key': w.id },
-    nameCell(w, prov, name, auto),
+    nameCell(w, name, auto, main),
     h('span', { class: 'rw-pct' }, f.pct(w.pct)),
     h('span', { class: 'rw-bar', role: 'img', 'aria-label': `${f.pct(w.pct)} used. Even pace ${f.pct(p.expected_pct)}. ${forecastText(w, now)}.` },
       h('i', { style: { width: `${usedPct}%` } }),
@@ -51,13 +56,20 @@ function row(w, now, auto) {
       h('span', null, resets)));
 }
 
+// One provider: its name as a heading over its windows.
+function group(g, now, autoId, mainId) {
+  const title = providerName(g.provider);
+  return h('li', { class: 'rw-grp', 'data-key': `grp:${g.provider}` },
+    h('h3', { class: 'rw-grp-h' }, title),
+    h('ol', { class: 'rw-list', 'aria-label': `${title} windows` },
+      g.windows.map((w) => row(w, now, w.id === autoId, w.id === mainId))));
+}
+
 export default {
   id: 'rail',
-  label: 'Other windows',
+  label: 'All windows',
   mount(el, ctx) {
-    const head = panelHead('Other windows');
-    const sub = h('span', { class: 'panel-sub' }, 'tightest first');
-    head.el.append(sub);
+    const head = panelHead('All windows');
     el.setAttribute('aria-labelledby', head.id);
     const list = h('ol', { class: 'rail' });
     const foot = h('div', { class: 'rail-foot' });
@@ -73,7 +85,7 @@ export default {
       // The auto pick's row goes back to auto: a pin on it would hold it after the server pick moves.
       setPin(ctx.store, runway && id === runway.binding ? null : id);
       ctx.announce(`${pick.dataset.label} is now the main window.`);
-      // The row leaves the rail; the hero now shows the window.
+      // The hero now shows the window; its row here gets the Main chip.
       const hero = document.querySelector('.p-hero .hero-k');
       if (hero) hero.focus();
     });
@@ -85,16 +97,16 @@ export default {
       const runway = dataOf(s.runway);
       const line = feedLine(s.runway, 'the limit feed');
       patch(state, line, staleNote(s.runway, now));
-      if (line) { patch(list); patch(foot); sub.hidden = true; return; }
-      const rows = otherWindows(runway, s.pin);
+      if (line) { patch(list); patch(foot); return; }
+      const groups = windowsByProvider(runway);
+      const mainId = heroId(runway, s.pin);
       const autoId = isPinned(runway, s.pin) ? runway.binding : null;
-      sub.hidden = !rows.length;
-      if (!rows.length) {
+      if (!groups.length) {
         patch(list);
-        patch(foot, 'No other window has data.');
+        patch(foot, 'No window has data.');
         return;
       }
-      patch(list, rows.map((w) => row(w, now, w.id === autoId)));
+      patch(list, groups.map((g) => group(g, now, autoId, mainId)));
       patch(foot, h('span', { class: 'tick' }), h('span', null, 'even pace now · hatched: server forecast to reset'));
     }
 

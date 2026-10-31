@@ -78,6 +78,25 @@ class RejectionTest(unittest.TestCase):
             mutate(body)
             self.assertIsNone(parse(body), i)
 
+    def test_absent_five_hour_is_no_open_window_not_a_fault(self):
+        # Anthropic leaves five_hour out while no 5-hour window is open.
+        body = quota()
+        body["buckets"] = [b for b in body["buckets"] if b["type"] != "five_hour"]
+        payload = parse(body)
+        self.assertEqual([b["key"] for b in payload["buckets"]], ["seven_day", "scoped:fable"])
+        ClaudeUsageRequest.model_validate(payload)
+
+    def test_seven_day_stays_required(self):
+        body = quota()
+        body["buckets"] = [b for b in body["buckets"] if b["type"] != "seven_day"]
+        self.assertIsNone(parse(body))
+
+    def test_malformed_five_hour_still_rejects(self):
+        for patch in ({"utilization": math.nan}, {"observedAt": OBSERVED_MS + 1}):
+            body = quota()
+            body["buckets"][0].update(patch)
+            self.assertIsNone(parse(body), patch)
+
     def test_reject_non_numeric_fetched_at(self):
         for value in (math.nan, math.inf, -1, 0, "1788706007457", True, None, 10 ** 400):
             body = quota()
