@@ -5,10 +5,11 @@ Pi prices each request from its own model registry, and cost figures use
 that reported cost (it is the only source that prices 1-hour cache writes,
 which Pi rows do not split out). The registry was wrong for a while:
 
-- Sonnet 5.5 cache reads at $0.20 per million instead of $0.10, until 8 to
-  12 Oct 2026 (the date differs per machine);
+- Sonnet 5.5 cache reads at $0.20 per million after Anthropic cut them to
+  $0.10 on 7 Oct 2026, until 8 to 12 Oct (the update date differs per
+  machine); before the cut $0.20 was right;
 - Fable 5.1 cache reads at $1.00 (the Fable 5 rate) or other values
-  instead of $0.25, from Sep 2026.
+  instead of $0.25 (its rate since its launch on 1 Sep 2026).
 
 So input and cache-read components are recomputed from tokens at the
 verified rate when they differ. Output anchors the check: a row whose
@@ -28,13 +29,14 @@ checked against one rate.
 import json
 from typing import Optional
 
-from .pricing import display_model
+from .pricing import SONNET55_CR_CUT_UTC, display_model
 
-# Display name -> (input, output, cache read) per million tokens.
+# Display name -> (input, output, cache read) per million tokens, or an
+# ascending list of (effective_from_epoch, rates) as in pricing.MODEL_PRICING.
 VERIFIED_RATES = {
     "Opus 5.5": (4.00, 20.00, 0.20),
     "Opus 5": (5.00, 25.00, 0.50),
-    "Sonnet 5.5": (2.00, 10.00, 0.10),
+    "Sonnet 5.5": [(0.0, (2.00, 10.00, 0.20)), (SONNET55_CR_CUT_UTC, (2.00, 10.00, 0.10))],
     "Sonnet 5": (2.00, 10.00, 0.20),
     "Fable 5.1": (10.00, 50.00, 0.25),
     "Fable 5": (10.00, 50.00, 1.00),
@@ -54,11 +56,26 @@ def _off(got: float, want: float) -> bool:
     return abs(got - want) > max(REL_TOL * want, ABS_TOL)
 
 
-def corrected(model: Optional[str], inp: int, out: int, cr: int, reported: dict) -> Optional[dict]:
+def rates_at(model: Optional[str], ts: Optional[float]) -> Optional[tuple]:
+    entry = VERIFIED_RATES.get(display_model(model)) if model else None
+    if not isinstance(entry, list):
+        return entry
+    if ts is None:
+        return None  # an era model needs the request time
+    rates = entry[0][1]
+    for since, r in entry:
+        if since <= ts:
+            rates = r
+    return rates
+
+
+def corrected(model: Optional[str], ts: Optional[float], inp: int, out: int, cr: int,
+              reported: dict) -> Optional[dict]:
     """New reported components {input, output, cache_read, cache_write,
-    total} for one Pi Anthropic row, or None when the row stays as is.
-    ``reported`` holds the same keys (None where Pi sent nothing)."""
-    rates = VERIFIED_RATES.get(display_model(model)) if model else None
+    total} for one Pi Anthropic row at request time ``ts``, or None when the
+    row stays as is. ``reported`` holds the same keys (None where Pi sent
+    nothing)."""
+    rates = rates_at(model, ts)
     if rates is None or not out or reported.get("output") is None:
         return None
     rate_in, rate_out, rate_cr = rates
@@ -84,8 +101,8 @@ def apply_to_row(row: dict) -> None:
     if (row.get("provider") or "").lower() != "anthropic":
         return
     reported = {k: row.get(f"reported_cost_{k}") for k in COMPONENTS}
-    new = corrected(row.get("model"), row.get("input_tokens"), row.get("output_tokens"),
-                    row.get("cache_read_tokens"), reported)
+    new = corrected(row.get("model"), row.get("ts_epoch"), row.get("input_tokens"),
+                    row.get("output_tokens"), row.get("cache_read_tokens"), reported)
     if new is None:
         return
     row["reported_cost_pi_raw"] = json.dumps(reported)
@@ -96,10 +113,10 @@ def apply_to_row(row: dict) -> None:
 _SELECT = (
     "SELECT rowid, model, day, input_tokens, output_tokens, cache_read_tokens, "
     "reported_cost_input, reported_cost_output, reported_cost_cache_read, "
-    "reported_cost_cache_write, reported_cost_total, reported_cost_pi_raw "
+    "reported_cost_cache_write, reported_cost_total, reported_cost_pi_raw, ts_epoch "
     "FROM events WHERE source_client='pi-agent' AND LOWER(provider)='anthropic' "
     "AND type='assistant' AND rowid > ? ORDER BY rowid LIMIT ?")
-_NEEDED = ("model", "day", "input_tokens", "output_tokens", "cache_read_tokens",
+_NEEDED = ("model", "day", "ts_epoch", "input_tokens", "output_tokens", "cache_read_tokens",
            "source_client", "provider", "type", "reported_cost_pi_raw",
            *(f"reported_cost_{k}" for k in COMPONENTS))
 _UPDATE = (
@@ -110,8 +127,9 @@ _UPDATE = (
 
 def recheck_all(conn) -> set:
     """Startup, once per VERSION: re-check every Pi Anthropic row from its
-    original values. Returns the days whose stored costs changed (their
-    rollups must be rebuilt). The caller owns the transaction."""
+    original values. Returns the days whose costs changed (their rollups
+    must be rebuilt), with the days that a new price era in pricing.py
+    reprices. The caller owns the transaction."""
     row = conn.execute("SELECT value FROM meta WHERE key=?", (VERSION_KEY,)).fetchone()
     if row is not None and row[0] == VERSION:
         return set()
@@ -126,7 +144,7 @@ def recheck_all(conn) -> set:
             current = dict(zip(COMPONENTS, r[6:11]))
             raw_json = r[11]
             original = json.loads(raw_json) if raw_json else current
-            new = corrected(r[1], r[3], r[4], r[5], original)
+            new = corrected(r[1], r[12], r[3], r[4], r[5], original)
             target = new if new is not None else original
             target_raw = json.dumps(original) if new is not None else None
             if target != current or target_raw != raw_json:
@@ -135,5 +153,15 @@ def recheck_all(conn) -> set:
         if updates:
             conn.executemany(_UPDATE, updates)
         last = rows[-1][0]
+    days |= _era_days(conn)
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (VERSION_KEY, VERSION))
     return {d for d in days if d}
+
+
+def _era_days(conn) -> set:
+    """Days with Sonnet 5.5 requests before its cache-read cut. Rows priced
+    from tokens (SDK rows, Pi rows without a cost) were rolled up at the one
+    undated LiteLLM price; pricing.MODEL_PRICING now has the era."""
+    return {r[0] for r in conn.execute(
+        "SELECT DISTINCT day FROM events WHERE type='assistant' "
+        "AND model LIKE 'claude-sonnet-5-5%' AND ts_epoch < ?", (SONNET55_CR_CUT_UTC,))}

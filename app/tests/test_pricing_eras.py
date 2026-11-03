@@ -123,8 +123,20 @@ class EraResolutionTest(unittest.TestCase):
 
     def test_era_boundaries_helper(self):
         bounds = pricing.era_boundaries()
-        self.assertEqual(bounds, [SEP_TS])
+        self.assertEqual(bounds, [SEP_TS, pricing.SONNET55_CR_CUT_UTC])
         self.assertTrue(all(b > 0 for b in bounds))
+
+
+class Sonnet55CacheReadEraTest(unittest.TestCase):
+    """Sonnet 5.5 cache reads: $0.20 until the 2026-10-07 cut, then $0.10;
+    the era list wins over LiteLLM's one undated price."""
+
+    def test_cut(self):
+        cut = pricing.SONNET55_CR_CUT_UTC
+        with patch.dict(pricing._dynamic_pricing, {"Sonnet 5.5": (2.0, 10.0, 2.5, 0.1)}, clear=True):
+            self.assertEqual(pricing.display_model("claude-sonnet-5-5"), "Sonnet 5.5")
+            self.assertEqual(pricing.get_pricing("Sonnet 5.5", cut - 1), (2.00, 10.00, 2.50, 0.20))
+            self.assertEqual(pricing.get_pricing("Sonnet 5.5", cut), (2.00, 10.00, 2.50, 0.10))
 
 
 class StaticEraPrecedenceTest(unittest.TestCase):
