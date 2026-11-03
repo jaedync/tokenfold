@@ -55,8 +55,9 @@ class LoadRequestsTest(TempDBTestCase):
         self.conn.commit()
         rows = load_requests(self.conn, T, T + 3600)
         self.assertEqual(len(rows), 1)
-        t, fam, parts = rows[0]
+        t, fam, parts, toks = rows[0]
         self.assertEqual(fam, "opus")
+        self.assertEqual(toks, [1_000_000] * 4)
         self.assertAlmostEqual(t, T + 10)
         for got, want in zip(parts, (5.0, 25.0, 6.25, 0.5)):
             self.assertAlmostEqual(got, want)
@@ -86,7 +87,7 @@ class LoadRequestsTest(TempDBTestCase):
         self.conn.execute("UPDATE events SET reported_cost_output=20, "
                           "reported_cost_cache_write=10 WHERE uuid='pi'")
         self.conn.commit()
-        (t, fam, parts), = load_requests(self.conn, T, T + 3600)
+        (t, fam, parts, _), = load_requests(self.conn, T, T + 3600)
         # Components give the split; the reported total wins (20+10 -> 40).
         self.assertAlmostEqual(parts[1], 40 * 20 / 30)
         self.assertAlmostEqual(parts[2], 40 * 10 / 30)

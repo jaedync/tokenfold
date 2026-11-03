@@ -9,7 +9,7 @@ from app.tests._support import TempDBTestCase
 from app.tests.test_limit_rate_data import insert_event, insert_reading
 
 KEYS = {"generated_at", "period_start", "fit_quality", "usd_per_point", "steps",
-        "families", "peak", "cache_read_weight"}
+        "family_main", "families", "peak", "cache_read_weight"}
 
 
 class _Base(TempDBTestCase):

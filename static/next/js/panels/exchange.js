@@ -44,8 +44,20 @@ function sizeBlock(d) {
     h('p', { class: 'ex-text' }, `Fit from ${f.int(q.intervals)} reading intervals since ${f.dateShort(d.period_start)}${f.missing(q.r2) ? '' : `, R² ${q.r2.toFixed(2)}`}.`));
 }
 
+const METERS = [['seven_day', '7-day'], ['five_hour', '5-hour']];
+
+// Limit use of the same tokens relative to the main family, per meter.
+function perToken(x, main) {
+  const pt = x.per_token || {};
+  const known = METERS.filter(([k]) => pt[k] && !f.missing(pt[k].value));
+  if (x.family === main || !known.length) return null;
+  return h('span', { class: 'fper', title: known.map(([k, label]) => `${label}: ${f.fixed(pt[k].lo, 2)} to ${f.fixed(pt[k].hi, 2)} (90% range)`).join('; ') },
+    `Per token vs ${FAMILY_NAME[main] || main}: ${known.map(([k, label]) => `${label} ≈${f.fixed(pt[k].value, 2)}×`).join(' · ')}`);
+}
+
 function familyBlock(d) {
   const fams = d.families || [];
+  const main = d.family_main;
   const max = Math.max(10, ...fams.map((x) => x.hi ?? x.usd_per_point ?? 0)) * 1.05;
   return h('div', { class: 'ex-block' },
     h('div', { class: 'kicker' }, 'Dollars per 7-day point, by model'),
@@ -53,9 +65,10 @@ function familyBlock(d) {
       h('span', { class: 'swatch', style: { background: familyColor(x.family) } }),
       h('span', { class: 'fn' }, FAMILY_NAME[x.family] || x.family),
       f.missing(x.usd_per_point) ? h('span', { class: 'fnote' }, x.note || 'not enough data') : bandEl(x.lo, x.hi, x.usd_per_point, max),
-      h('span', { class: 'fv' }, f.missing(x.usd_per_point) ? f.DASH : [approx(), f.usd(x.usd_per_point, { cents: true })]))))
+      h('span', { class: 'fv' }, f.missing(x.usd_per_point) ? f.DASH : [approx(), f.usd(x.usd_per_point, { cents: true })]),
+      main ? perToken(x, main) : null)))
       : h('p', { class: 'ex-text' }, 'No model has enough spend for a fit.'),
-    h('p', { class: 'ex-text' }, 'More dollars per point means the model uses less limit for each dollar. Bars show the 90% range.'));
+    h('p', { class: 'ex-text' }, 'More dollars per point means the model uses less limit for each dollar. Per token compares the same tokens. Bars show the 90% range.'));
 }
 
 function peakBlock(d, now) {

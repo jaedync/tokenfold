@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 CACHE_KEY = "limit_rate_cache"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: windowed family fit, per_token, family_main
 RECOMPUTE_S = 3600.0
 WAIT_S = 2.0
 RETRY_AFTER_ERROR_S = 600.0
@@ -174,7 +174,7 @@ def empty_payload(status: str, note: str, now: float) -> dict:
         "generated_at": now, "period_start": None,
         "fit_quality": {"r2": None, "intervals": 0, "status": status, "note": note},
         "usd_per_point": {"seven_day": dict(band), "five_hour": dict(band)},
-        "steps": [], "families": [],
+        "steps": [], "family_main": None, "families": [],
         "peak": {"active": False, "factor": None, "until": None, "tz": PEAK_TZ,
                  "hours": [], "next_start": None, "min_factor": PEAK_MIN_FACTOR},
         "cache_read_weight": dict(band, family=None),

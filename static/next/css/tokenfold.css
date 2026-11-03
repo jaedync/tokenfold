@@ -391,6 +391,7 @@ a.lb-wait { text-decoration: none; }
 .fam .fn { font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fam .fv { font-weight: 800; text-align: right; white-space: nowrap; }
 .fam .fnote { color: var(--muted); font-weight: 600; font-size: 12px; }
+.fam .fper { grid-column: 2 / -1; color: var(--muted); font-weight: 600; font-size: 12px; }
 /* Band: light block = 90% interval, ink tick = best estimate. */
 .band { position: relative; height: 14px; background: var(--paper-2); }
 .band > u { position: absolute; top: 0; bottom: 0; background: var(--blue-tint); box-shadow: inset 0 0 0 1.5px var(--blue); }

@@ -136,7 +136,8 @@ def _split_cost(r) -> list:
 
 def load_requests(conn: sqlite3.Connection, since: float, until: float,
                   scope: str = "personal") -> list:
-    """[(t, family, [usd_in, usd_out, usd_cache_write, usd_cache_read])] by t.
+    """[(t, family, [usd_in, usd_out, usd_cache_write, usd_cache_read],
+    [tokens in, out, cache write, cache read])] by t.
 
     Personal scope and Anthropic-bound rows only: the subscription meter
     never sees Codex, OpenCode or work-account traffic."""
@@ -146,6 +147,7 @@ def load_requests(conn: sqlite3.Connection, since: float, until: float,
     cur = conn.cursor()
     cur.row_factory = sqlite3.Row  # per cursor: never touch a shared connection
     rows = cur.execute(sql, (since, until)).fetchall()
-    out = [(float(r["t"]), family_of(r["model"]), _split_cost(r)) for r in rows]
+    out = [(float(r["t"]), family_of(r["model"]), _split_cost(r),
+            [r["inp"] or 0, r["outp"] or 0, r["cc"] or 0, r["cr"] or 0]) for r in rows]
     out.sort(key=lambda x: x[0])
     return out
