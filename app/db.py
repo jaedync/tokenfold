@@ -320,6 +320,9 @@ _ADDED_COLUMNS = {
         # Pi copies (event_dedupe.pi_copy_key): key set at ingest, flag set
         # on the later-ingested rows of a key. NULL flag = not a copy.
         "pi_copy_key": "TEXT", "pi_copy": "INTEGER",
+        # Pi's own cost components (JSON) when app/pi_price_check.py
+        # corrected them; NULL for rows kept as reported.
+        "reported_cost_pi_raw": "TEXT",
     },
     "tool_uses": {
         "source_client": "TEXT NOT NULL DEFAULT 'claude-code'",
@@ -453,6 +456,12 @@ def _migrate(conn) -> None:
     from .event_dedupe import mark_pi_copies
     queue_rollup_days(conn, mark_pi_copies(conn))
     conn.execute(_PI_UNKEYED_INDEX)
+
+    # Pi Anthropic costs priced from a wrong Pi registry entry: corrected
+    # once per check version (app/pi_price_check.py), in the same commit as
+    # the rebuild obligation for the changed days.
+    from .pi_price_check import recheck_all
+    queue_rollup_days(conn, recheck_all(conn))
 
     # The usage fallback no longer refreshes or caches the OAuth login
     # (app/usage_fetcher.py). Drop the token pair older code kept here: it is
