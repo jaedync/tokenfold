@@ -99,6 +99,9 @@ _SELECT = (
     "reported_cost_cache_write, reported_cost_total, reported_cost_pi_raw "
     "FROM events WHERE source_client='pi-agent' AND LOWER(provider)='anthropic' "
     "AND type='assistant' AND rowid > ? ORDER BY rowid LIMIT ?")
+_NEEDED = ("model", "day", "input_tokens", "output_tokens", "cache_read_tokens",
+           "source_client", "provider", "type", "reported_cost_pi_raw",
+           *(f"reported_cost_{k}" for k in COMPONENTS))
 _UPDATE = (
     "UPDATE events SET reported_cost_input=?, reported_cost_output=?, "
     "reported_cost_cache_read=?, reported_cost_cache_write=?, reported_cost_total=?, "
@@ -112,6 +115,9 @@ def recheck_all(conn) -> set:
     row = conn.execute("SELECT value FROM meta WHERE key=?", (VERSION_KEY,)).fetchone()
     if row is not None and row[0] == VERSION:
         return set()
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+    if not columns.issuperset(_NEEDED):
+        return set()  # a legacy table from before token capture holds no Pi rows
     days: set = set()
     last = 0
     while rows := conn.execute(_SELECT, (last, _PAGE_ROWS)).fetchall():
