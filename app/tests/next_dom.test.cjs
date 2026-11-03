@@ -303,6 +303,23 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('exchange: per-token weights against the main family', async () => {
+      const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal'});
+      await page.waitForSelector('.p-exchange .fam li[data-key="sonnet"] .fper');
+      assert.equal(await text(page, '.p-exchange .fam li[data-key="sonnet"] .fper'), 'Per token vs Opus: 7-day ≈0.60× · 5-hour ≈0.67×');
+      assert.equal(await text(page, '.p-exchange .fam li[data-key="fable"] .fper'), 'Per token vs Opus: 7-day ≈4.40×');
+      assert.match(await page.locator('.p-exchange .fam li[data-key="sonnet"] .fper').getAttribute('title'), /7-day: 0\.47 to 0\.67/);
+      for (const fam of ['opus', 'haiku']) {
+        assert.equal(await page.locator(`.p-exchange .fam li[data-key="${fam}"] .fper`).count(), 0, fam);
+      }
+      // The line sits under the name, not in the value column.
+      const box = await page.locator('.p-exchange .fam li[data-key="sonnet"] .fper').boundingBox();
+      const name = await page.locator('.p-exchange .fam li[data-key="sonnet"] .fn').boundingBox();
+      assert.ok(Math.abs(box.x - name.x) < 1 && box.y > name.y, JSON.stringify({box, name}));
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
+
     await check('exchange: peak hours use the server threshold', async () => {
       const flat = (min) => (name, body) => {
         if (name !== 'limit-rate') return null;

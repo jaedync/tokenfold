@@ -318,6 +318,10 @@ def peak_hours():
     return hours
 
 
+def band(value, lo, hi):
+    return {"value": value, "lo": lo, "hi": hi}
+
+
 def limit_rate_payload():
     granted = datetime(2026, 10, 4, 22, tzinfo=timezone.utc).timestamp()
     return {"generated_at": floor_min(NOW - 1500), "period_start": granted,
@@ -335,11 +339,16 @@ def limit_rate_payload():
                  "to_usd_per_point": 24.4, "cause": "granted_reset"},
                 {"at": granted, "bucket": "five_hour", "from_usd_per_point": 1.01,
                  "to_usd_per_point": 3.7, "cause": "granted_reset"}],
+            "family_main": "opus",
             "families": [
-                {"family": "opus", "usd_per_point": 24.7, "lo": 23.9, "hi": 25.6, "spend_usd": 2100.0},
-                {"family": "sonnet", "usd_per_point": 19.2, "lo": 11.9, "hi": 40.1, "spend_usd": 182.0},
-                {"family": "fable", "usd_per_point": 13.6, "lo": 12.0, "hi": 25.8, "spend_usd": 131.0},
+                {"family": "opus", "usd_per_point": 24.7, "lo": 23.9, "hi": 25.6, "spend_usd": 2100.0,
+                 "per_token": {"seven_day": band(1.0, 1.0, 1.0), "five_hour": band(1.0, 1.0, 1.0)}},
+                {"family": "sonnet", "usd_per_point": 19.8, "lo": 17.6, "hi": 24.7, "spend_usd": 182.0,
+                 "per_token": {"seven_day": band(0.6, 0.47, 0.67), "five_hour": band(0.67, 0.62, 0.72)}},
+                {"family": "fable", "usd_per_point": 13.6, "lo": 12.0, "hi": 25.8, "spend_usd": 131.0,
+                 "per_token": {"seven_day": band(4.4, 3.1, 5.6), "five_hour": band(None, None, None)}},
                 {"family": "haiku", "usd_per_point": None, "lo": None, "hi": None, "spend_usd": 18.0,
+                 "per_token": {"seven_day": band(None, None, None), "five_hour": band(None, None, None)},
                  "note": "not enough data"}],
             "peak": {"active": False, "factor": 1.37, "until": None, "min_factor": 1.15,
                      "next_start": datetime(2026, 10, 16, 5, tzinfo=PEAK_TZ).timestamp(),
@@ -354,7 +363,7 @@ def limit_rate_unavailable():
             "fit_quality": {"r2": None, "intervals": 0, "status": "not_available_for_scope",
                             "note": "Work scope has no subscription windows."},
             "usd_per_point": {"seven_day": None, "five_hour": None}, "steps": [],
-            "families": [], "peak": None, "cache_read_weight": None}
+            "family_main": None, "families": [], "peak": None, "cache_read_weight": None}
 
 
 # ---------------------------------------------------------------- history

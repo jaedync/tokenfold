@@ -7,13 +7,16 @@ Port of the limit-xray method (~/.cache/limit-xray, REPORT.md):
    dollars-per-point against the period median; cuts whose two sides differ
    by less than MERGE_TOL on both meters are merged away again;
 4. in the current period: dollars per point per meter (ratio estimator),
-   non-negative least squares by family, a cache-read weight from the token
-   type fit of the main family, and day-block bootstrap 90% bands;
-5. a 5-hour peak factor from family-fit residuals (app/limit_peak.py).
+   token-type weights of the main family and family weights, both with a
+   base rate per 7-day window (app/limit_family.py), and day-block
+   bootstrap 90% bands;
+5. a 5-hour peak factor from family-fit residuals (app/limit_peak.py); the
+   5-hour family weights scale peak-hour dollars by it.
 
 Inputs: readings {bucket: [(t, pct, resets_at_epoch)]}, requests
-[(t, family, [usd_in, usd_out, usd_cache_write, usd_cache_read])] sorted by
-t, granted reset epochs. Output: the /api/limit-rate payload minus the
+[(t, family, [usd_in, usd_out, usd_cache_write, usd_cache_read], tokens)]
+sorted by t (tokens, the same four types, are optional: without them no
+per-token weight), granted reset epochs. Output: the /api/limit-rate payload minus the
 serve-time peak state.
 """
 
@@ -21,8 +24,9 @@ import logging
 from datetime import datetime, timezone
 from typing import NamedTuple, Optional, Sequence
 
+from . import limit_family as lfam
 from . import limit_fit as lf
-from .limit_peak import compute_peak, empty_peak, peak_state  # noqa: F401 (re-export)
+from .limit_peak import compute_peak, empty_peak, peak_hours, peak_state  # noqa: F401 (re-export)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +43,8 @@ REFINE_BACK_S = 48 * HOUR
 MERGE_TOL = 0.20            # smaller rate differences are not a step
 GRANT_SHADOW_S = 12 * HOUR  # a rate cut this close to a grant is the grant
 SEGMENT_MIN_PTS = 10.0      # points a segment needs for its rate to count
-FAMILY_MIN_USD = 100.0      # BUILD.md: show a family only from $100
 FEATURE_MIN_USD = 5.0       # smaller features only add noise to the fit
+TYPE_MIN_SHARE = 0.02       # of the main family's dollars, for a token type column
 PEAK_LOOKBACK_S = 28 * 86400
 BOOT_DRAWS = 200
 BOOT_SEED = 20261015
@@ -270,56 +274,53 @@ def nnls_fit(series: Series, idx, cols: Sequence) -> Optional[dict]:
             "usd": st.sum_x, "boot": boot}
 
 
-def _inv(v: Optional[float]) -> Optional[float]:
-    return 1.0 / v if v else None
+def _type_fit(series: Series, idx, n_fams, main, blocks, nb) -> tuple:
+    """Windowed fit (app/limit_family.py) of the main family's four token
+    types, pivot output; other families enter as one dollar column so their
+    use does not leak in. Returns (fit or None, kept columns; 0-3 are token
+    types, 4 is the other families)."""
+    groups = [[main * 4 + t] for t in range(4)]
+    other = [f * 4 + t for f in range(n_fams) if f != main for t in range(4)]
+    groups = groups + ([other] if other else [])
+    totals = [sum(sum(series.feats[i][c] for c in g) for i in idx) for g in groups]
+    main_usd = sum(totals[:4])
+    # A token type with a tiny share (input, about 0.01% in production) only
+    # adds noise; it keeps its price weight.
+    keep = [j for j, v in enumerate(totals)
+            if v >= FEATURE_MIN_USD and (j == 4 or v >= TYPE_MIN_SHARE * main_usd)]
+    if TYPE_OUT not in keep or TYPE_CR not in keep:
+        return None, keep
+
+    def cols(i):
+        f = series.feats[i]
+        return [sum(f[c] for c in groups[j]) for j in keep]
+
+    res = lfam.fit(series, idx, cols, len(keep), keep.index(TYPE_OUT), blocks, nb,
+                   BOOT_DRAWS, BOOT_SEED)
+    return res, keep
 
 
-def families_payload(fams, spend, fit, used) -> list:
-    """fams: families by spend; used: family index -> fit column."""
-    out = []
-    for fi, fam in enumerate(fams):
-        usd = spend.get(fam, 0.0)
-        if usd <= 0:
-            continue
-        entry = {"family": fam, "usd_per_point": None, "lo": None, "hi": None,
-                 "spend_usd": round(usd, 2)}
-        col = used.get(fi)
-        if usd < FAMILY_MIN_USD or fit is None or col is None:
-            entry["note"] = "not enough data"
-        elif not fit["coef"][col]:
-            entry["note"] = "no measurable limit use"
-        else:
-            entry.update(usd_per_point=_r(_inv(fit["coef"][col])),
-                         lo=_r(_inv(fit["hi"][col])), hi=_r(_inv(fit["lo"][col])))
-        out.append(entry)
-    return out
+def type_coefs(tf) -> Optional[dict]:
+    """{token type: limit weight per $ relative to output}, from _type_fit."""
+    res, keep = tf
+    if res is None:
+        return None
+    return {t: res["m"][j] for j, t in enumerate(keep) if t < 4}
 
 
-def cache_read_weight(series: Series, idx, fams, n_fams, main) -> dict:
+def cache_read_payload(tf, fams, main) -> dict:
     """Cache-read limit weight per $ relative to output, main family only.
 
-    1.0 = cache reads use the limit in line with their API price. Other
-    families enter as one dollar feature so their use does not leak in."""
+    1.0 = cache reads use the limit in line with their API price."""
     none = {"value": None, "lo": None, "hi": None, "family": None}
     if main is None:
         return none
-    cols = [[main * 4 + t] for t in range(4)]
-    other = [f * 4 + t for f in range(n_fams) if f != main for t in range(4)]
-    cols = cols + ([other] if other else [])
-    totals = [sum(sum(series.feats[i][c] for c in g) for i in idx) for g in cols]
-    keep = [j for j, v in enumerate(totals) if v >= FEATURE_MIN_USD]
-    if TYPE_OUT not in keep or TYPE_CR not in keep:
+    res, keep = tf
+    if res is None:
         return dict(none, family=fams[main])
-    fit = nnls_fit(series, idx, [cols[j] for j in keep])
-    if fit is None:
-        return dict(none, family=fams[main])
-    jo, jc = keep.index(TYPE_OUT), keep.index(TYPE_CR)
-
-    def weight(c):
-        return c[jc] / c[jo] if c[jo] > 0 else None
-
-    boot = [w for w in (weight(b) for b in fit["boot"]) if w is not None]
-    return {"value": _r(weight(fit["coef"])), "lo": _r(lf.percentile(boot, 5)),
+    jc = keep.index(TYPE_CR)
+    boot = [mb[jc] for _, mb in res["boot"]]
+    return {"value": _r(res["m"][jc]), "lo": _r(lf.percentile(boot, 5)),
             "hi": _r(lf.percentile(boot, 95)), "family": fams[main]}
 
 
@@ -366,12 +367,67 @@ def _family_cols(series: Series, idx, n_fams: int, out_used=None) -> list:
     return cols
 
 
+def _peak_rows(rows: Sequence, peak: dict) -> list:
+    """Request vectors with peak-hour dollars scaled by the peak factor, so
+    the 5-hour family fit is not misled by when each model ran."""
+    factor = (peak or {}).get("factor")
+    if not factor:
+        return list(rows)
+    is_peak = peak_hours(peak)
+    return [(t, [x * factor for x in vec]) if is_peak(t) else (t, vec) for t, vec in rows]
+
+
+def _family_fits(readings, rows, width, s7, idx7, start, n_fams, main, w, peak) -> dict:
+    """Per meter: the windowed family fit (app/limit_family.py) on effective
+    dollars, or None."""
+    ends = lfam.window_ends(readings.get("seven_day") or [])
+    s5 = _series(readings.get("five_hour") or [], FIVE_HOUR_MIN_S, _peak_rows(rows, peak), width)
+    idx5 = _idx(s5, start, float("inf")) if start is not None else []
+    out = {}
+    for name, s, idx in (("seven_day", s7, idx7), ("five_hour", s5, idx5)):
+        fitted = [fi for fi in range(n_fams)
+                  if sum(s.feats[i][fi * 4 + t] for i in idx for t in range(4)) >= FEATURE_MIN_USD]
+        if main is None or main not in fitted:
+            out[name] = None
+            continue
+        blocks, nb = lfam.block_ids(s.intervals, idx, ends)
+
+        def cols(i, s=s, fitted=fitted):
+            return [lfam.effective(s.feats[i], fi, w) for fi in fitted]
+
+        res = lfam.fit(s, idx, cols, len(fitted), fitted.index(main), blocks, nb,
+                       BOOT_DRAWS, BOOT_SEED)
+        out[name] = None if res is None else {
+            "res": res, "fitted": fitted,
+            "e": {fi: lfam.eff_ratio(s, idx, fi, w) for fi in fitted}}
+    return out
+
+
+def _period_sums(requests, start, now) -> tuple:
+    """Spend, dollars by type and tokens by type per family in the period.
+    Requests may carry tokens as a 4th element; without them no family has
+    a per-token weight."""
+    spend: dict = {}
+    usd_t: dict = {}
+    tok_t: dict = {}
+    for req in requests:
+        t, fam, parts = req[0], req[1], req[2]
+        if start is None or not start <= t <= now:
+            continue
+        spend[fam] = spend.get(fam, 0.0) + sum(parts)
+        usd_t[fam] = [a + b for a, b in zip(usd_t.get(fam, [0.0] * 4), parts)]
+        if len(req) > 3 and req[3] is not None:
+            tok_t[fam] = [a + b for a, b in zip(tok_t.get(fam, [0.0] * 4), req[3])]
+    return spend, usd_t, tok_t
+
+
 def analyze(readings: dict, requests: Sequence, granted: Sequence, now: float) -> dict:
     fams = sorted({r[1] for r in requests})
     fidx = {f: i for i, f in enumerate(fams)}
     width = 4 * len(fams)
     rows = []
-    for t, fam, parts in requests:
+    for req in requests:
+        t, fam, parts = req[0], req[1], req[2]
         vec = [0.0] * width
         vec[fidx[fam] * 4:fidx[fam] * 4 + 4] = parts
         rows.append((t, vec))
@@ -384,36 +440,38 @@ def analyze(readings: dict, requests: Sequence, granted: Sequence, now: float) -
     start = cuts[-1].at if cuts else (r7[0][0] if r7 else None)
     idx7 = _idx(s7, start, float("inf")) if start is not None else []
     idx5 = _idx(s5, start, float("inf")) if start is not None else []
-    spend: dict = {}
-    for t, fam, parts in requests:
-        if start is not None and start <= t <= now:
-            spend[fam] = spend.get(fam, 0.0) + sum(parts)
+    spend, usd_t, tok_t = _period_sums(requests, start, now)
     by_spend = sorted(fams, key=lambda f: -spend.get(f, 0.0))
     nullband = {"value": None, "lo": None, "hi": None}
     upp = {"seven_day": _guard("usd_per_point", lambda: usd_per_point(s7, idx7), nullband, notes),
            "five_hour": _guard("usd_per_point", lambda: usd_per_point(s5, idx5), nullband, notes)}
-    used: dict = {}
-    cols = _family_cols(s7, idx7, len(fams), used)
-    fit = _guard("families", lambda: nnls_fit(s7, idx7, cols) if cols else None, None, notes)
-    families = families_payload(fams, spend, fit, used)
-    families.sort(key=lambda f: -f["spend_usd"])
     main = fidx[by_spend[0]] if by_spend and spend.get(by_spend[0]) else None
-    crw = _guard("cache_read_weight",
-                 lambda: cache_read_weight(s7, idx7, fams, len(fams), main),
+    blocks7, nb7 = lfam.block_ids(s7.intervals, idx7, lfam.window_ends(r7))
+    tf = _guard("cache_read_weight",
+                lambda: _type_fit(s7, idx7, len(fams), main, blocks7, nb7)
+                if main is not None else (None, []), (None, []), notes)
+    crw = _guard("cache_read_weight", lambda: cache_read_payload(tf, fams, main),
                  {"value": None, "lo": None, "hi": None, "family": None}, notes)
+    w = lfam.type_weights(type_coefs(tf))
     peak = _guard("peak", lambda: _peak(s5, cuts, len(fams), now), empty_peak(), notes)
+    fits = _guard("families", lambda: _family_fits(readings, rows, width, s7, idx7, start,
+                                                   len(fams), main, w, peak), {}, notes)
+    families = _guard("families", lambda: lfam.families_payload(
+        fams, spend, usd_t, tok_t, main, w, fits), [], notes)
     status = "ok"
     if upp["seven_day"]["value"] is None:
         status = "insufficient_data"
         notes.insert(0, "too few 7-day points since the period start to fit")
+    seven = fits.get("seven_day")
+    r2 = seven["res"]["r2"] if seven else None
     return {
         "generated_at": now,
         "period_start": _floor_min(start),
-        "fit_quality": {"r2": _r(fit["r2"]) if fit and fit["r2"] is not None else None,
-                        "intervals": len(idx7), "status": status,
+        "fit_quality": {"r2": _r(r2), "intervals": len(idx7), "status": status,
                         "note": "; ".join(notes) or None},
         "usd_per_point": upp,
         "steps": steps,
+        "family_main": fams[main] if main is not None else None,
         "families": families,
         "peak": peak,
         "cache_read_weight": crw,

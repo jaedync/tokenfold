@@ -65,6 +65,8 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 | `app/limit_windows.py` | Shared helpers, no routes: `_iso_to_epoch`, `_scrub_to_minute_or_none` (fail-closed minute scrub) and `_bucket_window_start` (limit window start, moved to the latest granted reset) |
 | `app/meridian_quota.py` | Meridian `/v1/usage/quota` -> `/api/usage/claude` payload; port of dotfleet `parseClaudeUsage`, parity-tested on the shared fixture |
 | `app/meridian_collector.py` | `quota-collector` compose service (profile `meridian`): polls host-loopback Meridian every 120s (OAuth usage endpoint 429s faster polls), posts through `/api/usage/claude` |
+| `app/limit_family.py` | `/api/limit-rate` model weights: a base rate per 7-day window times a weight per family (or token type), solved on per-day sums with a day-block bootstrap; `per_token` relative to `family_main` |
+| `app/pi_price_check.py` | Pi-reported Anthropic cost components (input, cache read) checked against verified list rates at ingest and once per `VERSION` at startup; originals kept in `events.reported_cost_pi_raw`, changed days queued for re-roll |
 | `app/limit_readings.py` | Quota history writer (managed flat runs compacted; burn, resets and boundaries unchanged at the latest observation), reset detection, `/api/limit-history` |
 | `app/config.py` | Environment variable config |
 | `app/models.py` | Pydantic request/response schemas |

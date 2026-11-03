@@ -29,6 +29,10 @@ MODEL_DISPLAY = {
 
 # Sonnet 5 intro pricing ends here; billing cutover timezone assumed UTC.
 SEPT1_2026_UTC = datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp()
+# Sonnet 5.5 cache reads: $0.20 per MTok at launch (2026-09-28), $0.10 from
+# the Haiku 5.5 launch on 2026-10-07 (anthropic.com/claude-haiku-5-5:
+# "starting today"). The hour is not published; 12:00 CDT as in Kiln's card.
+SONNET55_CR_CUT_UTC = datetime(2026, 10, 7, 17, tzinfo=timezone.utc).timestamp()
 
 # Pricing per MTok: (input, output, cache_write_5m, cache_read).
 # Values are either a constant 4-tuple, or an ASCENDING list of
@@ -43,6 +47,12 @@ MODEL_PRICING = {
     # Sonnet 5: intro rates through August 2026, standard from Sept 1 UTC.
     # Standard-period cache rates 3.75/0.30 are ASSUMED 1.25x/0.1x of the $3
     # base pending Anthropic confirmation (only intro cache rates published).
+    # LiteLLM has one undated Sonnet 5.5 price ($0.10 cache reads), wrong for
+    # the first nine days.
+    "Sonnet 5.5": [
+        (0.0, (2.00, 10.00, 2.50, 0.20)),
+        (SONNET55_CR_CUT_UTC, (2.00, 10.00, 2.50, 0.10)),
+    ],
     "Sonnet 5": [
         (0.0, (2.00, 10.00, 2.50, 0.20)),
         (SEPT1_2026_UTC, (3.00, 15.00, 3.75, 0.30)),

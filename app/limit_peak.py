@@ -77,6 +77,17 @@ def empty_peak() -> dict:
     return {"factor": None, "tz": PEAK_TZ, "hours": []}
 
 
+def peak_hours(peak: dict):
+    """t -> True in a peak cell of the fitted hour table."""
+    table = {(h["dow"], h["hour"]): h["factor"] for h in (peak or {}).get("hours") or []}
+
+    def is_peak(t):
+        d = datetime.fromtimestamp(t, _PT)
+        f = table.get((d.weekday(), d.hour))
+        return f is not None and f >= PEAK_MIN_FACTOR
+    return is_peak
+
+
 def peak_state(peak: dict, now: float) -> dict:
     """Serve-time state: is now a peak hour, when does it end or start.
 
@@ -85,12 +96,7 @@ def peak_state(peak: dict, now: float) -> dict:
     hours, so UTC hour boundaries are Pacific hour boundaries.
     """
     table = {(h["dow"], h["hour"]): h["factor"] for h in (peak or {}).get("hours") or []}
-
-    def is_peak(t):
-        d = datetime.fromtimestamp(t, _PT)
-        f = table.get((d.weekday(), d.hour))
-        return f is not None and f >= PEAK_MIN_FACTOR
-
+    is_peak = peak_hours(peak)
     none = {"active": False, "until": None, "next_start": None}
     if not any(f is not None and f >= PEAK_MIN_FACTOR for f in table.values()):
         return none

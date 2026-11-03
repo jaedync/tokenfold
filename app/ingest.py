@@ -17,6 +17,7 @@ from .auth import require_api_key
 from .config import TZ_NAME
 from .db import get_conn, write_txn
 from .claude_usage import parse_claude_usage
+from .pi_price_check import apply_to_row as apply_pi_price_check
 from .event_dedupe import (flag_new_pi_copies, matching_claude_days,
                            matching_pi_days, pi_copy_key,
                            record_mirror_sessions, session_days,
@@ -415,7 +416,7 @@ _EVENT_SQL = (
     f"INSERT OR IGNORE INTO events({','.join(EVENT_COLS)}) "
     f"VALUES({','.join('?' for _ in EVENT_COLS)})"
 )
-PI_EVENT_COLS = EVENT_COLS + ["pi_copy_key"]
+PI_EVENT_COLS = EVENT_COLS + ["pi_copy_key", "reported_cost_pi_raw"]
 _PI_EVENT_SQL = (
     f"INSERT OR IGNORE INTO events({','.join(PI_EVENT_COLS)}) "
     f"VALUES({','.join('?' for _ in PI_EVENT_COLS)})"
@@ -671,6 +672,8 @@ def _pi_event_row(event, machine: str, project_dir: str, session_file: str,
         "reported_cost_total": usage.cost_total if usage else None,
     })
     row["pi_copy_key"] = pi_copy_key(row)
+    row["reported_cost_pi_raw"] = None
+    apply_pi_price_check(row)
     tools = []
     for tool in event.tools:
         tools.append({
