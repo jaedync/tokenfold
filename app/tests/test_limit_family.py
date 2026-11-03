@@ -142,6 +142,27 @@ class HelperTest(unittest.TestCase):
         self.assertAlmostEqual(lfam.token_ratio(usd, tok, main_usd, main_tok, [1, 1, 1, 0.4]), 0.5)
         self.assertIsNone(lfam.token_ratio(usd, [0] * 4, main_usd, main_tok, [1] * 4))
 
+    def test_family_only_in_windows_without_the_main_family_is_not_identified(self):
+        # Opus alone in windows 0 and 1, Sonnet alone in window 2: only
+        # k_2 * m is known, so the fit must not report a weight.
+        ivs, feats, blocks = [], [], {}
+        for i in range(9):
+            b = i // 3
+            usd = 10.0 + i
+            feats.append([0, usd, 0, 0, 0, 0, 0, 0] if b < 2 else [0, 0, 0, 0, 0, usd, 0, 0])
+            ivs.append(lf.Interval(i * 3600.0, i * 3600.0 + 3000, usd * (1.3 if b == 2 else 1.0)))
+            blocks[i] = b
+        s = lra.Series(ivs, feats, [sum(f) for f in feats])
+        res = lfam.fit(s, list(range(9)), lambda i: [feats[i][1], feats[i][5]], 2, 0,
+                       blocks, 3, 20, 1)
+        self.assertEqual(res["identified"], [True, False])
+        fits = {"seven_day": {"res": res, "fitted": [0, 1], "e": {0: 1.0, 1: 1.0}}}
+        out = lfam.families_payload(["opus", "sonnet"], {"opus": 500.0, "sonnet": 300.0},
+                                    {}, {}, 0, [1.0] * 4, fits)
+        son = next(f for f in out if f["family"] == "sonnet")
+        self.assertEqual(son["note"], "not enough data")
+        self.assertIsNone(son["usd_per_point"])
+
     def test_als_recovers_weight_on_exact_data(self):
         # Two windows with base rates 1 and 2, family weight 1.5, no noise.
         series = lra.Series(

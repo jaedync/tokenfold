@@ -32,6 +32,8 @@ ALS_START_ITERS = 8
 ALS_ITERS = 100
 ALS_TOL = 1e-10
 BOOT_ITERS = 40
+# Dollars (or units) a column and the pivot need in one window to share it.
+IDENT_MIN = 5.0
 # A weight this far from price-proportional is a collinearity artifact of
 # the type fit (cache reads and writes move together), not a measurement.
 TYPE_WEIGHT_MIN, TYPE_WEIGHT_MAX = 0.05, 3.0
@@ -155,6 +157,12 @@ def _sse(s: _View, k, m) -> float:
     return out
 
 
+def _m_gradient(s: _View, k, m, a: int) -> float:
+    """-1/2 d(SSE)/d(m_a)."""
+    return sum(k[b] * (s.aty(b, a) - k[b] * sum(s.g(b, a, c) * m[c] for c in range(s.F)))
+               for b in range(s.nb))
+
+
 def _lm_step(s: _View, k, m, free_k, free_m, lam) -> tuple:
     """One damped Gauss-Newton step on the free parameters (normal
     equations of the Jacobian, all from the window sums)."""
@@ -211,7 +219,8 @@ def solve(vec, nb: int, F: int, main: int, start=None, iters: int = ALS_ITERS) -
     free_k = [b for b in range(nb) if any(s.g(b, a, a) > 0 for a in range(F))]
     sse, lam = _sse(s, k, m), 1e-3
     for _ in range(iters):
-        free_m = [a for a in others if m[a] > 0]
+        # A weight clipped to 0 comes back when the error falls as it grows.
+        free_m = [a for a in others if m[a] > 0 or _m_gradient(s, k, m, a) > 0]
         nk, nm = _lm_step(s, k, m, free_k, free_m, lam)
         new = _sse(s, nk, nm)
         if new <= sse:
@@ -265,8 +274,17 @@ def fit(series, idx, cols, F: int, pivot: int, blocks: dict, nb: int,
         return (kk, mb) if kk else None
 
     boot = lf.block_bootstrap(days, stat, draws, seed)
-    return {"k": k, "m": m, "kbar": kbar, "boot": boot,
+    return {"k": k, "m": m, "kbar": kbar, "boot": boot, "identified": identified(total, nb, F, pivot),
             "r2": _r2(total, nb, F, k, m), "intervals": len(idx)}
+
+
+def identified(vec, nb: int, F: int, pivot: int) -> list:
+    """Per column: does it have spend in windows where the pivot has spend?
+    In a window without the pivot only k_b * m_f is known, so a column seen
+    only there gets its start value back, with a band of zero width."""
+    s = _View(vec, nb, F)
+    shared = [b for b in range(nb) if s.sx(b, pivot) >= IDENT_MIN]
+    return [a == pivot or sum(s.sx(b, a) for b in shared) >= IDENT_MIN for a in range(F)]
 
 
 def band(values: Sequence) -> tuple:
@@ -323,6 +341,8 @@ def _per_token(fit_entry, fi: int, main: int, q: Optional[float]) -> dict:
         return _null()
     res = fit_entry["res"]
     pos = fit_entry["fitted"].index(fi)
+    if not res["identified"][pos]:
+        return _null()
     lo, hi = band([mb[pos] * q for _, mb in res["boot"]])
     return {"value": _r(res["m"][pos] * q), "lo": _r(lo), "hi": _r(hi)}
 
@@ -342,7 +362,8 @@ def families_payload(fams, spend, usd_t, tok_t, main, w, fits: dict) -> list:
                  "spend_usd": round(usd, 2),
                  "per_token": {"seven_day": _null(), "five_hour": _null()}}
         out.append(entry)
-        if usd < FAMILY_MIN_USD or seven is None or fi not in seven["fitted"]:
+        if (usd < FAMILY_MIN_USD or seven is None or fi not in seven["fitted"]
+                or not seven["res"]["identified"][seven["fitted"].index(fi)]):
             entry["note"] = "not enough data"
             continue
         pos = seven["fitted"].index(fi)

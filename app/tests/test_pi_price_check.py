@@ -77,6 +77,10 @@ class RuleTest(unittest.TestCase):
         self.assertIsNone(new["total"])
         self.assertIsNone(new["input"])
 
+    def test_unknown_token_count_keeps_the_component(self):
+        self.assertIsNone(ppc.corrected("claude-opus-5-5", AFTER, None, M, None,
+                                        reported(inp=0.002, out=20.0, cr=2.0)))
+
     def test_dated_model_id(self):
         new = ppc.corrected("claude-sonnet-5-5-20260928", AFTER, 0, M, 10 * M,
                             reported(out=10.0, cr=2.0))

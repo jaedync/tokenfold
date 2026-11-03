@@ -43,7 +43,7 @@ VERIFIED_RATES = {
 }
 # Bump when VERIFIED_RATES or the rule changes: the next start re-checks
 # every Pi Anthropic row.
-VERSION = "1"
+VERSION = "2"  # 2: Sonnet 5.5 cache-read era
 VERSION_KEY = "pi_price_check_version"
 OUTPUT_TOL = 0.02     # output within 2% of list: the standard tier
 REL_TOL = 0.01        # a component off by more than 1% ...
@@ -85,8 +85,10 @@ def corrected(model: Optional[str], ts: Optional[float], inp: int, out: int, cr:
     delta = 0.0
     for key, tokens, rate in (("input", inp, rate_in), ("cache_read", cr, rate_cr)):
         got = reported.get(key)
-        want = (tokens or 0) * rate / 1e6
-        if got is not None and _off(got, want):
+        if got is None or tokens is None:
+            continue  # nothing to check against
+        want = tokens * rate / 1e6
+        if _off(got, want):
             new[key] = want
             delta += want - got
     if new == reported:
