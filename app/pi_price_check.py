@@ -20,7 +20,7 @@ for every verified model). The original values are kept in
 ``events.reported_cost_pi_raw`` (JSON), so a later table change is applied
 again from them.
 
-Rates: platform.claude.com/docs/en/about-claude/pricing, read 2026-11-03.
+Rates: platform.claude.com/docs/en/about-claude/pricing, read 2026-11-09.
 Haiku 5.5 is not here: it has prompt-size tiers ($0.10/$0.50 up to 100k
 prompt tokens, $0.50/$2.50 above), and Pi's tiered prices cannot be
 checked against one rate.
@@ -38,12 +38,13 @@ VERIFIED_RATES = {
     "Opus 5": (5.00, 25.00, 0.50),
     "Sonnet 5.5": [(0.0, (2.00, 10.00, 0.20)), (SONNET55_CR_CUT_UTC, (2.00, 10.00, 0.10))],
     "Sonnet 5": (2.00, 10.00, 0.20),
+    "Fable 5.2": (8.00, 40.00, 0.20),
     "Fable 5.1": (10.00, 50.00, 0.25),
     "Fable 5": (10.00, 50.00, 1.00),
 }
 # Bump when VERIFIED_RATES or the rule changes: the next start re-checks
 # every Pi Anthropic row.
-VERSION = "2"  # 2: Sonnet 5.5 cache-read era
+VERSION = "3"  # 2: Sonnet 5.5 cache-read era; 3: Fable 5.2
 VERSION_KEY = "pi_price_check_version"
 OUTPUT_TOL = 0.02     # output within 2% of list: the standard tier
 REL_TOL = 0.01        # a component off by more than 1% ...

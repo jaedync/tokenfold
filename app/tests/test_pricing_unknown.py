@@ -27,7 +27,8 @@ class FablePricingTest(unittest.TestCase):
             self.assertEqual(pricing.get_pricing("Fable 5"), (10.00, 50.00, 12.50, 1.00))
 
     def test_fable_sorts_first(self):
-        self.assertEqual(pricing.MODEL_ORDER[0], "Fable 5")
+        # Newest Fable first, then the older Fable, then Opus.
+        self.assertEqual(pricing.MODEL_ORDER[:2], ["Fable 5.2", "Fable 5"])
 
 
 class NoSilentFallbackTest(unittest.TestCase):

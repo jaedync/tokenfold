@@ -81,6 +81,19 @@ class RuleTest(unittest.TestCase):
         self.assertIsNone(ppc.corrected("claude-opus-5-5", AFTER, None, M, None,
                                         reported(inp=0.002, out=20.0, cr=2.0)))
 
+    def test_fable_52_rates(self):
+        # $8 in, $40 out, $0.20 cache read (Fable 5.2 launch, 2026-11-09).
+        self.assertIsNone(ppc.corrected("claude-fable-5-2", AFTER, M, M, 10 * M,
+                                        reported(inp=8.0, out=40.0, cr=2.0)))
+        # A cache read priced at the Fable 5.1 rate ($0.25) is corrected.
+        new = ppc.corrected("claude-fable-5-2", AFTER, M, M, 10 * M,
+                            reported(inp=8.0, out=40.0, cr=2.5))
+        self.assertAlmostEqual(new["cache_read"], 2.0)
+        self.assertAlmostEqual(new["total"], 50.0)
+        # Output at the Fable 5.1 rate is not the standard tier: left alone.
+        self.assertIsNone(ppc.corrected("claude-fable-5-2", AFTER, M, M, 10 * M,
+                                        reported(inp=10.0, out=50.0, cr=2.5)))
+
     def test_dated_model_id(self):
         new = ppc.corrected("claude-sonnet-5-5-20260928", AFTER, 0, M, 10 * M,
                             reported(out=10.0, cr=2.0))

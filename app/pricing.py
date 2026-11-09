@@ -39,6 +39,9 @@ SONNET55_CR_CUT_UTC = datetime(2026, 10, 7, 17, tzinfo=timezone.utc).timestamp()
 # (effective_from_epoch_utc, 4-tuple) eras selected by EVENT timestamp —
 # never wall clock — so re-summarizing history can't reprice old usage.
 MODEL_PRICING = {
+    # Fable 5.2 (launch 2026-11-09, pricing page read that day). Static
+    # because LiteLLM had no claude-fable-5-2 entry at launch.
+    "Fable 5.2": (8.00, 40.00, 10.00, 0.20),
     "Fable 5":   (10.00, 50.00, 12.50, 1.00),
     "Opus 4.8":  (5.00, 25.00, 6.25, 0.50),
     "Opus 4.7":  (5.00, 25.00, 6.25, 0.50),
@@ -76,9 +79,14 @@ _UNPRICED = (0.0, 0.0, 0.0, 0.0)
 UNKNOWN_REFRESH_INTERVAL_S = 900
 _unknown_refresh_ts = 0.0
 
-# Fast-mode Opus base (input, output) per MTok; cache rates re-derived from base.
-# Keyed by display name — only Opus has a fast tier.
-FAST_OPUS_BASE = {
+# Fast-mode base (input, output) per MTok, keyed by display name. Cache rates
+# keep the model's own multipliers on the fast input rate ("prompt caching
+# multipliers apply on top of fast mode pricing"): 0.1x reads on Opus 4.x,
+# 0.05x on Opus 5.5, 0.025x on Fable 5.2. Pricing page read 2026-11-09.
+FAST_BASE = {
+    "Fable 5.2": (16.0, 80.0),
+    "Opus 5.5": (8.0, 40.0),
+    "Opus 5": (10.0, 50.0),
     "Opus 4.8": (10.0, 50.0),
     "Opus 4.7": (30.0, 150.0),
     "Opus 4.6": (30.0, 150.0),
@@ -363,7 +371,7 @@ def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
                  speed: str | None = None, inference_geo: str | None = None,
                  cw_5m: int = 0, cw_1h: int = 0, web_search: int = 0,
                  ts_epoch: float | None = None) -> float:
-    """List-price cost. Optional speed='fast' (Opus only) and inference_geo='us'
+    """List-price cost. Optional speed='fast' (FAST_BASE models) and inference_geo='us'
     modifiers layer on the LiteLLM-or-static base rate; defaults reproduce prior
     pricing exactly. Mirrors claude-usage-telemetry's effective_rates().
 
@@ -381,9 +389,11 @@ def compute_cost(model_name: str, inp: int, out: int, cw: int, cr: int,
     charged even for unpriced models — the fee is confirmed, model-independent
     pricing, unlike token rates which are $0 when unconfirmed."""
     base_in, out_p, cw_p, cr_p = get_pricing(model_name, ts_epoch)
-    if (speed or "").lower() == "fast" and model_name in FAST_OPUS_BASE:
-        b_in, b_out = FAST_OPUS_BASE[model_name]
-        base_in, out_p, cw_p, cr_p = b_in, b_out, b_in * 1.25, b_in * 0.1
+    # base_in == 0: unpriced, and a fast rate alone is no confirmed price.
+    if (speed or "").lower() == "fast" and model_name in FAST_BASE and base_in > 0:
+        b_in, b_out = FAST_BASE[model_name]
+        base_in, out_p, cw_p, cr_p = (
+            b_in, b_out, b_in * (cw_p / base_in), b_in * (cr_p / base_in))
     cw_1h_p = base_in * 2.0  # 1h cache write = 2x base, stacks on fast-mode base
     if (inference_geo or "").lower() == "us":
         base_in, out_p, cw_p, cr_p, cw_1h_p = (
