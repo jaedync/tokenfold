@@ -44,8 +44,15 @@ class TempDBTestCase(unittest.TestCase):
         _agg._cached_data.clear()
         _agg._previous_data.clear()
         _agg._cached_at.clear()
-        self.addCleanup(self._restore)
         from unittest.mock import patch as _patch
+        # Tests see each rebuild at once; test_write_amplification sets a gap.
+        # Registered before _restore, so it reverts AFTER _restore joined the
+        # worker: else a worker with a pending generation waits the 30 s
+        # default and leaks into the next test (review 2026-11-13).
+        _gap = _patch.object(_agg, "REBUILD_MIN_INTERVAL_S", 0.0)
+        _gap.start()
+        self.addCleanup(_gap.stop)
+        self.addCleanup(self._restore)
         _prewarm = _patch.object(_config, "PREWARM", False)
         _prewarm.start()
         self.addCleanup(_prewarm.stop)

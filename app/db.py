@@ -16,6 +16,13 @@ _generation = 0
 # run _migrate again while the process stops.
 _shutdown = threading.Event()
 
+# Sorters and temp B-trees of GROUP BY, ORDER BY and IN (SELECT ...) stay in
+# RAM. With the default (FILE) they spill out of the 2 MB page cache into
+# unlinked /var/tmp/etilqs_* files: each dashboard build wrote about 90 MB
+# there, about 14 MB/s on ms01 (2026-11-13), on the container overlay, so on
+# the SSD. One build holds about 35 MB of temp data in RAM instead.
+TEMP_STORE_PRAGMA = "PRAGMA temp_store=MEMORY"
+
 
 class DatabaseClosed(RuntimeError):
     """The shared connection is closed because the app shutdown started."""
@@ -521,6 +528,7 @@ def get_conn() -> sqlite3.Connection:
                 # Bound the WAL: without a limit the file never shrinks after a
                 # checkpoint (the 2026-06-23 9GB-WAL incident). 64 MiB.
                 conn.execute("PRAGMA journal_size_limit=67108864")
+                conn.execute(TEMP_STORE_PRAGMA)
                 conn.row_factory = sqlite3.Row
                 conn.executescript(SCHEMA)
                 _migrate(conn)
@@ -589,6 +597,7 @@ def read_conn(*, snapshot=False):
                            uri=True, timeout=5, cached_statements=0,
                            isolation_level=None)
     conn.row_factory = sqlite3.Row
+    conn.execute(TEMP_STORE_PRAGMA)
     try:
         if snapshot:
             conn.execute("BEGIN")
