@@ -12,6 +12,10 @@ after their last request. A stop before the worker runs leaves them for the
 next startup (main._backfill_if_needed); the hourly sweep also re-rolls the
 last 7 days.
 
+The worker re-rolls each day alone (a failing day cannot block today; it gets
+MAX_ATTEMPTS tries), reads on its own connection and writes through
+db.background_write, like the other background work.
+
 Lock order: db.WRITE_LOCK, then _lock. request() never holds _lock while it
 writes, so the two orders cannot meet.
 """
@@ -46,40 +50,74 @@ def _interval_from_env() -> float:
 # 0 re-rolls in the calling thread, as before (the test support sets 0).
 ROLLUP_MIN_INTERVAL_S = _interval_from_env()
 
+# A day that fails this many re-rolls in a row leaves the worker; it stays in
+# the durable list for the startup re-roll (and the hourly sweep re-rolls the
+# last 7 days), so one bad day cannot block the others.
+MAX_ATTEMPTS = 3
+
 _lock = threading.Lock()
 _pending: set[str] = set()
+_failures: dict[str, int] = {}
 _thread: threading.Thread | None = None
 _last_started: float | None = None
 _wake = threading.Event()
 
 
-def _roll(days: list[str]) -> None:
-    from .aggregator import trigger_eager_rebuild
+def _roll_day(day: str) -> None:
     from .summarizer import summarize_days
-    summarize_days(days)
-    trigger_eager_rebuild()
+    summarize_days([day], background=True)
+
+
+def _roll(days: list[str]) -> set[str]:
+    """Re-roll each day alone, so one failing day cannot hold back the others.
+    Returns the days that were re-rolled. Stops between days at shutdown."""
+    done: set[str] = set()
+    for day in days:
+        if db.shutting_down():
+            break
+        try:
+            _roll_day(day)
+        except Exception:
+            logger.exception("coalesced rollup failed for %s", day)
+            continue
+        done.add(day)
+    if done:
+        from .aggregator import trigger_eager_rebuild
+        trigger_eager_rebuild()
+    return done
 
 
 def request(days) -> None:
     """Re-roll these days soon. Raises only when the durable record fails
     (interval > 0) or, with interval 0, when the re-roll fails."""
-    global _thread
     days = {d for d in days if d}
     if not days:
         return
     if ROLLUP_MIN_INTERVAL_S <= 0:
-        _roll(sorted(days))
+        from .aggregator import trigger_eager_rebuild
+        from .summarizer import summarize_days
+        summarize_days(sorted(days))
+        trigger_eager_rebuild()
         return
     # Pending first, then durable: _unqueue reads _pending inside its write
     # transaction, so it either sees these days or runs before this write.
     with _lock:
         _pending.update(days)
-    with db.write_txn() as conn:
-        db.queue_rollup_days(conn, days)
+    try:
+        with db.write_txn() as conn:
+            db.queue_rollup_days(conn, days)
+    finally:
+        _ensure_worker()  # also when the durable write failed
+
+
+def _ensure_worker() -> None:
+    global _thread
     with _lock:
-        if _thread is None and _pending:
-            _thread = threading.Thread(target=_run, daemon=True, name="rollup")
-            _thread.start()
+        if _thread is not None or not _pending:
+            return
+        thread = threading.Thread(target=_run, daemon=True, name="rollup")
+        thread.start()  # under _lock: the worker cannot exit before it is recorded
+        _thread = thread
 
 
 def _wait_interval() -> None:
@@ -107,18 +145,34 @@ def _run() -> None:
                 _pending.clear()
                 _last_started = time.monotonic()
             try:
-                _roll(days)
+                done = _roll(days)
             except Exception:
-                # The days stay durable; try them again after the interval.
-                logger.exception("coalesced rollup failed (days=%s); retried", days)
-                with _lock:
-                    _pending.update(days)
-                continue
-            _unqueue(days)
+                logger.exception("coalesced rollup failed (days=%s)", days)
+                done = set()
+            if db.shutting_down():
+                return  # the days not done stay listed for the startup re-roll
+            _retry_or_give_up(set(days) - done, done)
+            if done:
+                _unqueue(sorted(done))
     finally:
         with _lock:
             if _thread is me:
                 _thread = None
+
+
+def _retry_or_give_up(failed: set[str], done: set[str]) -> None:
+    with _lock:
+        for day in done:
+            _failures.pop(day, None)
+        for day in failed:
+            n = _failures.get(day, 0) + 1
+            if n >= MAX_ATTEMPTS:
+                _failures.pop(day, None)
+                logger.error("rollup of %s failed %d times; left for the startup re-roll",
+                             day, n)
+                continue
+            _failures[day] = n
+            _pending.add(day)
 
 
 def _unqueue(days: list[str]) -> None:

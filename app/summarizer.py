@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import ENTERPRISE_PRED, IDLE_THRESHOLD_S, TZ_NAME
-from .db import get_conn, write_txn
+from contextlib import contextmanager
+
+from .db import DatabaseClosed, background_write, get_conn, read_conn, write_txn
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (compute_cost, display_model, display_model_for_row,
                       effective_geo, load_pricing, reported_cost)
@@ -427,7 +429,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     return day_data
 
 
-def summarize_days(days: list[str] | None = None):
+def summarize_days(days: list[str] | None = None, *, background: bool = False):
     """Recompute daily_summary rows for the given days (or all days if None).
 
     Each (day, account_email) pair gets a self-contained summary row derived
@@ -435,8 +437,27 @@ def summarize_days(days: list[str] | None = None):
     daily_summary table via DELETE + INSERT.
     """
     load_pricing()
-    conn = get_conn()
+    if not background:
+        _summarize(get_conn(), days, write_txn)
+        return
+    if days is None:
+        raise ValueError("a background re-roll needs explicit days")
+    # Background threads read on their own connection and write through
+    # background_write: close_conn() under a running statement on the shared
+    # connection crashes the process (review 2026-11-13, exit 139).
+    with read_conn() as conn:
+        _summarize(conn, days, _background_txn)
 
+
+@contextmanager
+def _background_txn():
+    with background_write() as conn:
+        if conn is None:
+            raise DatabaseClosed("shutdown started; the day stays listed for the startup re-roll")
+        yield conn
+
+
+def _summarize(conn, days, txn):
     if days is None:
         days = [r["day"] for r in conn.execute(
             "SELECT DISTINCT day FROM events ORDER BY day"
@@ -511,7 +532,7 @@ def summarize_days(days: list[str] | None = None):
     # neither abort this rebuild nor observe (and persist) a half-rebuilt
     # table. OR REPLACE is belt-and-braces for any writer not yet routed
     # through write_txn.
-    with write_txn() as wconn:
+    with txn() as wconn:
         wconn.execute(
             f"DELETE FROM daily_summary WHERE day IN ({placeholders})", days)
         wconn.executemany(

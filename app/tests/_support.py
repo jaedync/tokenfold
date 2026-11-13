@@ -80,6 +80,7 @@ class TempDBTestCase(unittest.TestCase):
         _rq.join(5.0)  # before join_rebuild: a re-roll triggers a rebuild
         with _rq._lock:
             _rq._pending.clear()
+            _rq._failures.clear()
             _rq._last_started = None
         _agg.join_rebuild(5.0)
         _lr.join_refresh(5.0)

@@ -5,6 +5,7 @@ in the request thread, about 1.4 s each, so the re-roll used about a third of
 a core. These tests pin the coalescing, the durable day list and the shutdown.
 """
 
+import os
 import random
 import threading
 import time
@@ -37,7 +38,7 @@ class _QueueCase(TempDBTestCase):
         self.block = None  # threading.Event the fake roll waits on
 
         def fake_roll(days):
-            start = time.monotonic()
+            start = rq._last_started  # set under _lock when the worker took the days
             with self.roll_lock:
                 self.rolls.append((start, list(days)))
                 fail = self.fail_next > 0
@@ -47,6 +48,7 @@ class _QueueCase(TempDBTestCase):
                 self.block.wait(5.0)
             if fail:
                 raise RuntimeError("roll failed (test)")
+            return set(days)
 
         p1 = patch.object(rq, "_roll", fake_roll)
         p2 = patch.object(rq, "ROLLUP_MIN_INTERVAL_S", self.INTERVAL)
@@ -66,8 +68,11 @@ class _QueueCase(TempDBTestCase):
 class RollupQueueTest(_QueueCase):
     def test_zero_interval_rolls_in_the_calling_thread(self):
         rq.ROLLUP_MIN_INTERVAL_S = 0.0
-        rq.request({"2026-11-12"})
-        self.assertEqual([d for _, d in self.rolls], [["2026-11-12"]])
+        inline = []
+        with patch("app.summarizer.summarize_days", lambda days: inline.append(
+                (threading.current_thread(), list(days)))):
+            rq.request({"2026-11-12"})
+        self.assertEqual(inline, [(threading.current_thread(), ["2026-11-12"])])
         self.assertIsNone(rq._thread)
         self.assertEqual(self.queued(), set())
 
@@ -193,15 +198,28 @@ class RollupQueuePropertyTest(_QueueCase):
         req_lock = threading.Lock()
         days = [f"2026-11-{i:02d}" for i in range(1, 6)]
 
+        class _Recorded(set):
+            """_pending that stamps each update; the stamp and the worker's
+            take (rq._last_started) are both made under rq._lock, so their
+            order is exact."""
+            def update(self, *others):
+                now = time.monotonic()
+                with req_lock:
+                    for other in others:
+                        for d in other:
+                            last_request[d] = now
+                super().update(*others)
+
+            def add(self, d):
+                self.update({d})
+
+        rq._pending = _Recorded()
+        self.addCleanup(setattr, rq, "_pending", set())
+
         def client(seed):
             r = random.Random(seed)
             for _ in range(25):
-                chosen = set(r.sample(days, r.randint(1, 3)))
-                with req_lock:
-                    now = time.monotonic()
-                    for d in chosen:
-                        last_request[d] = now
-                rq.request(chosen)
+                rq.request(set(r.sample(days, r.randint(1, 3))))
                 time.sleep(r.random() * 0.012)
 
         self.fail_next = rnd.randint(0, 2)
@@ -213,9 +231,149 @@ class RollupQueuePropertyTest(_QueueCase):
                 t.join()
             self.assertTrue(_wait_idle(timeout=10.0))
         for d, t_req in last_request.items():
-            later = [s for s, ds in self.rolls if d in ds and s >= t_req]
+            later = [s for s, ds in self.rolls if d in ds and s > t_req]
             self.assertTrue(later, f"{d} requested at {t_req} never rolled after it")
         self.assertEqual(self.queued(), set())
+
+
+class RollupIsolationTest(TempDBTestCase):
+    """Review repro 1 (2026-11-13): a day that always fails must not block
+    the others, and it must stay listed for the startup re-roll."""
+
+    def setUp(self):
+        super().setUp()
+        p = patch.object(rq, "ROLLUP_MIN_INTERVAL_S", 0.05)
+        p.start()
+        self.addCleanup(p.stop)
+        self.calls = []
+        p2 = patch("app.aggregator.trigger_eager_rebuild", lambda *a, **k: None)
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    def test_failing_day_does_not_block_today_and_stays_listed(self):
+        def roll_day(day):
+            self.calls.append(day)
+            if day == "2026-01-01":
+                raise RuntimeError("bad day (test)")
+
+        with patch.object(rq, "_roll_day", roll_day), \
+                self.assertLogs("app.rollup_queue", "ERROR") as logs:
+            rq.request({"2026-01-01"})
+            rq.request({"2026-11-12"})
+            self.assertTrue(_wait_idle(timeout=5.0))
+        self.assertIn("2026-11-12", self.calls)
+        self.assertEqual(self.calls.count("2026-01-01"), rq.MAX_ATTEMPTS)
+        self.assertTrue(any("left for the startup re-roll" in m for m in logs.output))
+        self.assertEqual(db.queued_rollup_days(db.get_conn()), {"2026-01-01"})
+
+    def test_worker_start_failure_does_not_stop_later_requests(self):
+        real_start = threading.Thread.start
+        state = {"failed": False}
+
+        def flaky_start(self_thread):
+            if not state["failed"] and self_thread.name == "rollup":
+                state["failed"] = True
+                raise RuntimeError("can't start new thread (test)")
+            return real_start(self_thread)
+
+        with patch.object(rq, "_roll_day", self.calls.append):
+            with patch.object(threading.Thread, "start", flaky_start):
+                with self.assertRaises(RuntimeError):
+                    rq.request({"2026-11-11"})
+                self.assertIsNone(rq._thread)
+                rq.request({"2026-11-12"})
+            self.assertTrue(_wait_idle())
+        self.assertEqual(sorted(self.calls), ["2026-11-11", "2026-11-12"])
+
+
+class RollupRealSummaryTest(TempDBTestCase):
+    """Review gap 7: the worker with the real summarize_days, end to end."""
+
+    def setUp(self):
+        super().setUp()
+        self.freeze_pricing()
+        p = patch.object(rq, "ROLLUP_MIN_INTERVAL_S", 0.2)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_pi_batch_lands_in_daily_summary_through_the_worker(self):
+        body = {"machine": "m", "account_class": "personal", "project_dir": "/p",
+                "session_file": "pi.jsonl", "cursor": {"last_line_num": 0}, "events": [{
+                    "event_id": "e1", "timestamp": "2026-06-09T12:00:00Z",
+                    "session_id": "s", "kind": "assistant", "provider": "openai",
+                    "api": "responses", "model": "gpt-4o", "request_id": "req",
+                    "usage": {"input": 10, "output": 20, "cost_total": 1.0}}]}
+        r = self.client().post("/api/ingest/pi", json=body, headers={"X-API-Key": self.api_key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(_wait_idle(timeout=10.0))
+        row = db.get_conn().execute(
+            "SELECT output_tokens FROM daily_summary WHERE day='2026-06-09'").fetchone()
+        self.assertIsNotNone(row, "the worker did not re-roll the batch's day")
+        self.assertEqual(row[0], 20)
+        self.assertNotIn("2026-06-09", db.queued_rollup_days(db.get_conn()))
+
+    def test_background_summary_never_reads_the_shared_connection(self):
+        import app.summarizer as summarizer
+        with db.write_txn() as conn:
+            conn.execute(
+                "INSERT INTO events(uuid, type, timestamp, ts_epoch, day, source_machine, "
+                "source_client, session_id, model, request_id, output_tokens) "
+                "VALUES('u1','assistant','2026-06-09T12:00:00Z',1781006400,'2026-06-09',"
+                "'m','claude-code','s1','claude-opus-4-8','r1',7)")
+
+        def no_shared():
+            raise AssertionError("background re-roll used the shared connection")
+
+        with patch.object(summarizer, "get_conn", no_shared):
+            summarizer.summarize_days(["2026-06-09"], background=True)
+        row = db.get_conn().execute(
+            "SELECT output_tokens FROM daily_summary WHERE day='2026-06-09'").fetchone()
+        self.assertEqual(row[0], 7)
+
+
+class RollupShutdownCrashTest(unittest.TestCase):
+    """Review repro 2 (2026-11-13): a re-roll still running when the join
+    times out must not crash the process when close_conn() runs."""
+
+    def test_close_during_a_long_roll_does_not_crash(self):
+        import subprocess
+        import sys
+        import tempfile
+        import textwrap
+        code = textwrap.dedent("""
+            import os, sys, tempfile, threading, time
+            os.environ["TOKENFOLD_PREWARM"] = "0"
+            os.environ["TOKENFOLD_PRICING_FETCH"] = "0"
+            import app.db as db
+            fd, db.DB_PATH = tempfile.mkstemp(suffix=".db"); os.close(fd)
+            db.open_conn()
+            import app.rollup_queue as rq, app.summarizer as summarizer
+            started = threading.Event()
+            real = summarizer._accumulate
+            def slow_accumulate(conn, *a, **k):
+                started.set()
+                conn.execute("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
+                             "WHERE x < 30000000) SELECT count(*) FROM c").fetchone()
+                return real(conn, *a, **k)
+            summarizer._accumulate = slow_accumulate
+            with db.write_txn() as conn:
+                conn.execute("INSERT INTO events(uuid, type, timestamp, ts_epoch, day, source_machine, "
+                             "source_client, session_id) VALUES('u','user','t',1,'2026-06-09','m','pi-agent','s')")
+            rq.ROLLUP_MIN_INTERVAL_S = 30.0
+            rq.request({"2026-06-09"})
+            assert started.wait(10), "roll never started"
+            db.begin_shutdown()
+            rq.join(0.2)
+            db.close_conn()
+            time.sleep(4)
+            print("survived", flush=True)
+        """)
+        with tempfile.TemporaryDirectory() as cwd:
+            proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                  timeout=120, cwd=os.path.dirname(os.path.dirname(
+                                      os.path.dirname(os.path.abspath(__file__)))))
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        self.assertIn("survived", proc.stdout)
 
 
 class RollupEnvTest(unittest.TestCase):
