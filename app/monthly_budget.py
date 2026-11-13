@@ -289,6 +289,6 @@ async def post_enterprise_budget(req: EnterpriseBudgetRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
     from .aggregator import trigger_eager_rebuild
-    trigger_eager_rebuild()
+    trigger_eager_rebuild(immediate=True)  # the user waits to see this change
 
     return {"budget_usd": get_budget(conn)}

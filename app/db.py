@@ -552,11 +552,6 @@ def shutting_down() -> bool:
     return _shutdown.is_set()
 
 
-def wait_for_shutdown(timeout_s: float) -> bool:
-    """Sleep up to timeout_s; True at once when the app shutdown starts."""
-    return _shutdown.wait(timeout_s)
-
-
 def generation() -> int:
     """Identity of the current shared connection (see background_write)."""
     return _generation

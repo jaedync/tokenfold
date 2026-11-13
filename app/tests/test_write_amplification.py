@@ -10,8 +10,10 @@ so the cache-rebuild thread ran without a pause at one full core.
 
 import os
 import sys
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import app.aggregator as agg
 import app.db as db
@@ -139,7 +141,11 @@ class RebuildIntervalTest(TempDBTestCase):
             final_gen = agg._cache_gen
         self.assertTrue(_wait_not_rebuilding(timeout=5.0))
         gaps = [b - a for a, b in zip(self.starts, self.starts[1:])]
-        self.assertLessEqual(len(self.starts), 1 + int(1.2 / self.INTERVAL) + 1, self.starts)
+        # 1.2 s / 0.4 s: a build at t=0, 0.4, 0.8 and one at 1.2 for the
+        # last invalidation. This tight bound also pins the current_gen
+        # refresh after the wait: without it each waited build is discarded
+        # and repeated, and the count reaches 5 or more.
+        self.assertLessEqual(len(self.starts), 4, self.starts)
         self.assertTrue(all(g >= self.INTERVAL * 0.95 for g in gaps), gaps)
         self.assertEqual(self.gens[-1], final_gen)
         self.assertEqual(agg._cached_data.get(agg.DEFAULT_SCOPE), {"scope": agg.DEFAULT_SCOPE})
@@ -153,6 +159,29 @@ class RebuildIntervalTest(TempDBTestCase):
         self.assertEqual(len(self.starts), 1, "the reader must not build in its own thread")
         self.assertTrue(_wait_not_rebuilding())
         self.assertEqual(len(self.starts), 2)
+
+    def test_immediate_trigger_skips_the_wait(self):
+        agg.REBUILD_MIN_INTERVAL_S = 30.0
+        agg.trigger_eager_rebuild()
+        self.assertTrue(_wait_not_rebuilding())
+        agg.trigger_eager_rebuild()  # an ingest: waits 30 s
+        time.sleep(0.05)
+        t0 = time.monotonic()
+        agg.trigger_eager_rebuild(immediate=True)  # the user's own write
+        self.assertTrue(_wait_not_rebuilding(timeout=2.0))
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertEqual(len(self.starts), 2)
+
+    def test_budget_post_rebuilds_without_the_wait(self):
+        import asyncio
+        import app.monthly_budget as mb
+        from app.models import EnterpriseBudgetRequest
+        with patch.object(agg, "trigger_eager_rebuild") as trig, \
+                patch.object(mb, "_require_writable", lambda: None), \
+                patch.object(mb, "set_budget", lambda conn, value: None), \
+                patch.object(mb, "get_budget", lambda conn: 5.0):
+            asyncio.run(mb.post_enterprise_budget(EnterpriseBudgetRequest(budget_usd=5.0)))
+        trig.assert_called_once_with(immediate=True)
 
     def test_shutdown_ends_the_wait(self):
         agg.trigger_eager_rebuild()
@@ -168,6 +197,64 @@ class RebuildIntervalTest(TempDBTestCase):
             self.assertEqual(len(self.starts), 1, "no build after the shutdown started")
         finally:
             db._shutdown.clear()
+
+
+class IntervalEnvTest(unittest.TestCase):
+    def _parse(self, value):
+        env = {} if value is None else {"TOKENFOLD_REBUILD_MIN_INTERVAL_S": value}
+        with patch.dict(os.environ, env, clear=False):
+            if value is None:
+                os.environ.pop("TOKENFOLD_REBUILD_MIN_INTERVAL_S", None)
+            return agg._rebuild_interval_from_env()
+
+    def test_default_and_valid_values(self):
+        self.assertEqual(self._parse(None), 30.0)
+        self.assertEqual(self._parse(""), 30.0)
+        self.assertEqual(self._parse("0"), 0.0)
+        self.assertEqual(self._parse("12.5"), 12.5)
+
+    def test_bad_values_fall_back_to_the_default_with_a_warning(self):
+        for raw in ("abc", "-1", "nan", "inf"):
+            with self.subTest(raw=raw), self.assertLogs(agg.logger, "WARNING"):
+                self.assertEqual(self._parse(raw), 30.0)
+
+
+class TeardownJoinTest(unittest.TestCase):
+    """Review repro, 2026-11-13: a worker with a pending generation must not
+    outlive the test that started it (it waited the 30 s default, because
+    the interval patch reverted before the teardown joined the worker)."""
+
+    def test_teardown_joins_a_worker_with_a_pending_generation(self):
+        orig_inner, orig_last = agg._build_dashboard_data_inner, agg._last_build_started
+        started = threading.Event()
+
+        def slow(scope):
+            started.set()
+            time.sleep(0.3)
+            return {"scope": scope}
+
+        class Inner(TempDBTestCase):
+            def test_pending(self):
+                agg._build_dashboard_data_inner = slow
+                agg.trigger_eager_rebuild()
+                self.assertTrue(started.wait(2.0))
+                agg.trigger_eager_rebuild()  # pending while the build runs
+
+        try:
+            t0 = time.monotonic()
+            result = unittest.TextTestRunner(stream=open(os.devnull, "w")).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(Inner))
+            elapsed = time.monotonic() - t0
+            self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+            with agg._cache_lock:
+                thread, rebuilding = agg._rebuild_thread, agg._rebuilding
+            self.assertFalse(thread is not None and thread.is_alive(), "worker leaked")
+            self.assertFalse(rebuilding)
+            self.assertLess(elapsed, 4.0)
+        finally:
+            agg.join_rebuild(40.0)
+            agg._build_dashboard_data_inner = orig_inner
+            agg._last_build_started = orig_last
 
 
 if __name__ == "__main__":

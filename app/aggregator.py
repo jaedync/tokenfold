@@ -21,7 +21,7 @@ from .extra_usage import build_meter_payload
 from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
-from .db import checkpoint_wal, get_conn, read_conn, shutting_down, wait_for_shutdown
+from .db import checkpoint_wal, get_conn, read_conn, shutting_down
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
@@ -249,8 +249,29 @@ _cache_gen = 0
 # full build of the warm scopes takes about 10 s, so without a gap the worker
 # rebuilt nonstop at one full core (2026-11-13). Builds start at most once per
 # this interval; readers get the previous snapshot meanwhile. 0 disables it.
-REBUILD_MIN_INTERVAL_S = float(os.environ.get("TOKENFOLD_REBUILD_MIN_INTERVAL_S", "30"))
+_REBUILD_MIN_INTERVAL_DEFAULT_S = 30.0
+
+
+def _rebuild_interval_from_env() -> float:
+    raw = os.environ.get("TOKENFOLD_REBUILD_MIN_INTERVAL_S")
+    if raw is None or raw.strip() == "":
+        return _REBUILD_MIN_INTERVAL_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not value >= 0 or value == float("inf"):
+        logger.warning("TOKENFOLD_REBUILD_MIN_INTERVAL_S=%r is not a number >= 0; "
+                       "using %s s", raw, _REBUILD_MIN_INTERVAL_DEFAULT_S)
+        return _REBUILD_MIN_INTERVAL_DEFAULT_S
+    return value
+
+
+REBUILD_MIN_INTERVAL_S = _rebuild_interval_from_env()
 _last_build_started: float | None = None
+# Set by an immediate trigger (a user's own write) and by join_rebuild (app
+# shutdown, test teardown): the worker skips the rest of its wait.
+_rebuild_wake = threading.Event()
 
 
 def _wait_rebuild_interval() -> bool:
@@ -261,8 +282,11 @@ def _wait_rebuild_interval() -> bool:
         last = _last_build_started
     if last is not None:
         delay = last + REBUILD_MIN_INTERVAL_S - _time.monotonic()
-        if delay > 0 and wait_for_shutdown(delay):
-            return False
+        if delay > 0:
+            _rebuild_wake.wait(delay)
+    # A wake that lands after this clear still bumped the generation first,
+    # so the build below (or the next loop) serves it.
+    _rebuild_wake.clear()
     if shutting_down():
         return False
     with _cache_lock:
@@ -270,8 +294,11 @@ def _wait_rebuild_interval() -> bool:
     return True
 
 
-def trigger_eager_rebuild():
+def trigger_eager_rebuild(immediate: bool = False):
     """Rebuild cache in background thread. Serves previous cache during rebuild.
+
+    immediate=True skips the REBUILD_MIN_INTERVAL_S gap: use it for a write
+    the user just made in the dashboard, which must show on the next fetch.
 
     Invalidation (version bump + cache clear) happens UNCONDITIONALLY — even
     when a rebuild is already in flight. The original early-return made a
@@ -302,6 +329,8 @@ def trigger_eager_rebuild():
         _cache_version_bump()
         _previous_data.update(_cached_data)
         _cached_data.clear()  # invalidate all scopes immediately
+        if immediate:
+            _rebuild_wake.set()
         if _rebuilding:
             return  # the running worker's drain loop will pick up this gen
         _rebuilding = True
@@ -402,6 +431,7 @@ def join_rebuild(timeout: float) -> None:
     """
     with _cache_lock:
         thread = _rebuild_thread
+    _rebuild_wake.set()  # end a gap wait; after begin_shutdown() the worker stops
     if thread is not None:
         thread.join(timeout)
 
