@@ -49,6 +49,10 @@ class TempDBTestCase(unittest.TestCase):
         _prewarm = _patch.object(_config, "PREWARM", False)
         _prewarm.start()
         self.addCleanup(_prewarm.stop)
+        # Tests see each rebuild at once; test_write_amplification sets a gap.
+        _gap = _patch.object(_agg, "REBUILD_MIN_INTERVAL_S", 0.0)
+        _gap.start()
+        self.addCleanup(_gap.stop)
 
     def _restore(self):
         # Background threads of this test (the cache rebuild worker an ingest

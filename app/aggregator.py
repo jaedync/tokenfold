@@ -21,7 +21,7 @@ from .extra_usage import build_meter_payload
 from .month_hero import month_hero_block
 from .config import DEFAULT_SCOPE, RECENCY_DAYS, TZ_NAME, scope_predicate
 from .cost_windows import compute_window_cost
-from .db import checkpoint_wal, get_conn, read_conn
+from .db import checkpoint_wal, get_conn, read_conn, shutting_down, wait_for_shutdown
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (
     MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
@@ -245,6 +245,30 @@ def invalidate_cache():
 
 _cache_gen = 0
 
+# Each Pi ingest (about one each 5 s on ms01) invalidates the cache, and one
+# full build of the warm scopes takes about 10 s, so without a gap the worker
+# rebuilt nonstop at one full core (2026-11-13). Builds start at most once per
+# this interval; readers get the previous snapshot meanwhile. 0 disables it.
+REBUILD_MIN_INTERVAL_S = float(os.environ.get("TOKENFOLD_REBUILD_MIN_INTERVAL_S", "30"))
+_last_build_started: float | None = None
+
+
+def _wait_rebuild_interval() -> bool:
+    """Wait until REBUILD_MIN_INTERVAL_S after the previous worker build began,
+    then claim the next start. False when the app shutdown started."""
+    global _last_build_started
+    with _cache_lock:
+        last = _last_build_started
+    if last is not None:
+        delay = last + REBUILD_MIN_INTERVAL_S - _time.monotonic()
+        if delay > 0 and wait_for_shutdown(delay):
+            return False
+    if shutting_down():
+        return False
+    with _cache_lock:
+        _last_build_started = _time.monotonic()
+    return True
+
 
 def trigger_eager_rebuild():
     """Rebuild cache in background thread. Serves previous cache during rebuild.
@@ -298,7 +322,12 @@ def trigger_eager_rebuild():
                 # stance. Failing one scope fails the whole iteration and drops
                 # this generation; the next invalidation retries (same semantics
                 # as the pre-scope-aware single-scope worker).
+                if not _wait_rebuild_interval():
+                    return  # the shutdown started; finally clears the flag
                 with _cache_lock:
+                    # The build reads the database after every invalidation
+                    # that landed during the wait, so it serves the newest one.
+                    current_gen = _cache_gen
                     scopes = _warm_scope_set()
                 try:
                     with _build_lock:
