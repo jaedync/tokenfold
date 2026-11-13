@@ -431,7 +431,7 @@ _TOOL_SQL = (
              dependencies=[Depends(require_api_key)])
 def ingest(req: IngestRequest):
     # Plain `def` (threadpool), NOT async: this handler blocks on WRITE_LOCK
-    # and can run summarize_days for minutes on a historical re-push — as a
+    # and (ROLLUP_MIN_INTERVAL_S=0) can run summarize_days for minutes on a historical re-push — as a
     # coroutine that would freeze the event loop for every client.
 
     conn = get_conn()
@@ -527,8 +527,7 @@ def ingest(req: IngestRequest):
     # (stale daily table / heatmap / month counter) until a manual re-roll.
     marked_days = record_mirror_sessions(message_ids)
     if accepted > 0 or marked_days:
-        from .summarizer import summarize_days
-        from .aggregator import trigger_eager_rebuild
+        from . import rollup_queue
         today = datetime.now(TZ).strftime("%Y-%m-%d")
         if accepted == 0:
             touched_days = set()
@@ -538,8 +537,8 @@ def ingest(req: IngestRequest):
                 # A session counts from its first reply, on all of its days.
                 touched_days.update(session_days(get_conn(), first_reply))
             touched_days.update(marked_days)
-            summarize_days(sorted(touched_days | {today}))
-            trigger_eager_rebuild()
+            # Coalesced: one re-roll per interval for all batches (rollup_queue).
+            rollup_queue.request(touched_days | {today})
         except Exception:
             # The events above are already durable — a rebuild failure must
             # not 500 this request (the client would retry, dedupe to
@@ -751,8 +750,7 @@ def ingest_pi(req: PiIngestRequest):
     accepted, duplicates = _store_pi_rows(req, event_rows, tool_rows)
     marked_days = record_mirror_sessions(anthropic_message_ids)
     if accepted > 0 or marked_days:
-        from .summarizer import summarize_days
-        from .aggregator import trigger_eager_rebuild
+        from . import rollup_queue
         today = datetime.now(TZ).strftime("%Y-%m-%d")
         if accepted == 0:
             touched_days = set()
@@ -763,8 +761,7 @@ def ingest_pi(req: PiIngestRequest):
                 touched_days.update(matching_claude_days(
                     get_conn(), anthropic_message_ids))
             touched_days.update(marked_days)
-            summarize_days(sorted(touched_days | {today}))
-            trigger_eager_rebuild()
+            rollup_queue.request(touched_days | {today})
         except Exception:
             logger.exception("post-Pi-ingest summary rebuild failed; events are durable")
     return IngestResponse(

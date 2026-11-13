@@ -52,6 +52,12 @@ class TempDBTestCase(unittest.TestCase):
         _gap = _patch.object(_agg, "REBUILD_MIN_INTERVAL_S", 0.0)
         _gap.start()
         self.addCleanup(_gap.stop)
+        # Same for the coalesced re-roll after ingest: 0 re-rolls in the
+        # ingest thread, as the tests expect; test_rollup_queue sets a gap.
+        import app.rollup_queue as _rq
+        _rgap = _patch.object(_rq, "ROLLUP_MIN_INTERVAL_S", 0.0)
+        _rgap.start()
+        self.addCleanup(_rgap.stop)
         self.addCleanup(self._restore)
         _prewarm = _patch.object(_config, "PREWARM", False)
         _prewarm.start()
@@ -70,6 +76,12 @@ class TempDBTestCase(unittest.TestCase):
         import app.limit_rate as _lr
         import app.prewarm as _pw
         import app.read_cache as _rc
+        import app.rollup_queue as _rq
+        _rq.join(5.0)  # before join_rebuild: a re-roll triggers a rebuild
+        with _rq._lock:
+            _rq._pending.clear()
+            _rq._failures.clear()
+            _rq._last_started = None
         _agg.join_rebuild(5.0)
         _lr.join_refresh(5.0)
         _pw.join(5.0)
