@@ -169,7 +169,10 @@ CREATE INDEX IF NOT EXISTS idx_events_session_type_ts ON events(session_id, type
 CREATE INDEX IF NOT EXISTS idx_events_day ON events(day);
 CREATE INDEX IF NOT EXISTS idx_events_request ON events(request_id) WHERE request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_model ON events(model) WHERE model IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_machine);
+-- (source_machine, ts_epoch): the newest active row per machine is an index
+-- walk, not a scan (aggregator._machine_last_active). It replaced
+-- idx_events_source(source_machine), a prefix of it (_migrate drops that).
+CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source_machine, ts_epoch);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_dir);
 CREATE INDEX IF NOT EXISTS idx_events_human ON events(is_human_prompt) WHERE is_human_prompt = 1;
 CREATE INDEX IF NOT EXISTS idx_events_session_ts ON events(session_id, ts_epoch);
@@ -410,6 +413,8 @@ def _migrate(conn) -> None:
 
     for ddl in _POST_MIGRATION_INDEXES:
         conn.execute(ddl)
+    # A prefix of idx_events_source_ts (SCHEMA): it only cost writes.
+    conn.execute("DROP INDEX IF EXISTS idx_events_source")
     if _ACTIVITY_INDEX_COLUMNS <= {r[1] for r in conn.execute("PRAGMA table_info(events)")}:
         conn.execute(_ACTIVITY_INDEX_DDL)
 

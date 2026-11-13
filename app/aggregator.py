@@ -1107,6 +1107,38 @@ def _served_model_chips_safe(conn, pred: str, cutoff_date: str) -> dict:
         return empty
 
 
+# Each distinct machine by a skip scan of idx_events_source_ts (one index seek
+# per machine, not a read of every row).
+_DISTINCT_MACHINES_SQL = (
+    "WITH RECURSIVE m(name) AS ("
+    "SELECT MIN(source_machine) FROM events "
+    "UNION ALL SELECT (SELECT MIN(source_machine) FROM events "
+    "WHERE source_machine > m.name) FROM m WHERE m.name IS NOT NULL) "
+    "SELECT name FROM m WHERE name IS NOT NULL")
+# The newest row of one machine that passes the scope and activity filters:
+# a backward walk of the index that stops at the first match.
+_LAST_ACTIVE_PER_MACHINE_SQL = (
+    "SELECT ts_epoch FROM events INDEXED BY idx_events_source_ts "
+    "WHERE source_machine = ? AND {pred} AND {activity} "
+    "ORDER BY ts_epoch DESC LIMIT 1")
+
+
+def _machine_last_active(conn, pred: str) -> list[tuple[str, float]]:
+    """(source_machine, newest active ts_epoch) for each machine with a row
+    that passes pred. Same answer as GROUP BY source_machine with MAX(ts_epoch)
+    (pinned by test_machine_last_active), which read every event: 2.8 s of each
+    personal build in production (2026-11-13); this takes 0.18 s there. A
+    scope with few rows on a busy machine walks more of that machine's rows
+    (enterprise: 1.07 s before, 1.28 s after)."""
+    sql = _LAST_ACTIVE_PER_MACHINE_SQL.format(pred=pred, activity=counts_as_activity())
+    out = []
+    for (machine,) in conn.execute(_DISTINCT_MACHINES_SQL).fetchall():
+        row = conn.execute(sql, (machine,)).fetchone()
+        if row is not None:
+            out.append((machine, row[0]))
+    return out
+
+
 def _build_dashboard_data_inner(scope: str = DEFAULT_SCOPE) -> dict:
     with read_conn() as conn:
         return _build_dashboard_data_from_conn(scope, conn)
@@ -1542,18 +1574,14 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
     # timestamps from raw events. Indexed on source_machine, cheap.
     machine_last_active: dict[str, float] = {}
     last_active_ts = None
-    for r in conn.execute(
-        f"SELECT source_machine, MAX(ts_epoch) as ts FROM events "
-        f"WHERE {pred} AND {counts_as_activity()} "
-        "GROUP BY source_machine"
-    ):
-        if r["ts"]:
-            mkey = canonical_machine(r["source_machine"])
+    for machine, ts in _machine_last_active(conn, pred):
+        if ts:
+            mkey = canonical_machine(machine)
             # variants of one machine merge: keep the most recent timestamp
-            if r["ts"] > machine_last_active.get(mkey, 0):
-                machine_last_active[mkey] = r["ts"]
-            if last_active_ts is None or r["ts"] > last_active_ts:
-                last_active_ts = r["ts"]
+            if ts > machine_last_active.get(mkey, 0):
+                machine_last_active[mkey] = ts
+            if last_active_ts is None or ts > last_active_ts:
+                last_active_ts = ts
 
     # ── Sessions count (total distinct, from summary) ──
     # Note: session counts from summaries are per-day distinct, so the total
