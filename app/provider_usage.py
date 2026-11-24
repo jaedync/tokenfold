@@ -1,4 +1,4 @@
-"""Best-effort provider quota snapshots from the Pi dotfleet extension.
+"""Best-effort quota snapshots from Pi and Antigravity reporters.
 
 Snapshots are keyed by dashboard scope (personal vs enterprise), derived from
 the reporting machine's fleet account class. Every fleet machine posts to the
@@ -10,12 +10,12 @@ import math
 import sys
 import time
 
-from .quota_freshness import quota_window_valid
-from .usage_pace import usage_pace
 from datetime import datetime, timezone
 
 from .db import get_conn, write_txn
 from .event_dedupe import not_pi_copy
+from .quota_freshness import fresh_observation, quota_window_valid
+from .usage_pace import FIVE_HOUR_S, WEEK_S, usage_pace
 
 META_KEY = "provider_usage"
 MAX_SNAPSHOT_AGE_S = 24 * 3600
@@ -28,6 +28,14 @@ _PROVIDER_EVENT_IDS = {
     "opencode-zen": ("opencode", "opencode-zen"),
 }
 _SCOPE_FOR_ACCOUNT_CLASS = {"work": "enterprise", "personal": "personal"}
+ANTIGRAVITY_PROVIDERS = {
+    "antigravity-gemini": "Antigravity Gemini",
+    "antigravity-claude-gpt": "Antigravity Claude/GPT",
+}
+_ANTIGRAVITY_WINDOWS = {
+    "five_hour": ("5-hour", FIVE_HOUR_S),
+    "seven_day": ("7-day", WEEK_S),
+}
 
 
 def scope_for_account_class(account_class):
@@ -63,16 +71,20 @@ def _load_scopes(conn):
 def _merge_snapshot(providers, limit, machine, now):
     """Return ``providers`` with one snapshot merged in, newest observation wins."""
     data = limit.model_dump(exclude_none=True)
+    provider = data["provider"]
     observed = data.get("observed_at_epoch") or now
+    if provider in ANTIGRAVITY_PROVIDERS and not (
+            -MAX_CLOCK_SKEW_S <= now - observed <= MAX_SNAPSHOT_AGE_S):
+        return providers
     if observed > now + MAX_CLOCK_SKEW_S:
         observed = now
-    previous = providers.get(data["provider"]) or {}
+    previous = providers.get(provider) or {}
     if observed < previous.get("observed_at_epoch", 0):
         return providers
-    return {
-        **providers,
-        data["provider"]: {**data, "observed_at_epoch": observed, "machine": machine},
-    }
+    # A calibration may update latest.json without a new quota observation.
+    # Accept changed data at the same timestamp, but do not write exact replays.
+    current = {**data, "observed_at_epoch": observed, "machine": machine}
+    return providers if current == previous else {**providers, provider: current}
 
 
 def store_provider_usage(machine, account_class, limits, now=None):
@@ -84,14 +96,15 @@ def store_provider_usage(machine, account_class, limits, now=None):
     # different providers concurrently, and neither report may stomp its peer.
     with write_txn(conn):
         scopes = _load_scopes(conn)
-        providers = scopes.get(scope, {})
+        previous = providers = scopes.get(scope, {})
         for limit in limits:
             providers = _merge_snapshot(providers, limit, machine, now)
-        scopes = {**scopes, scope: providers}
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-            (META_KEY, json.dumps({"scopes": scopes})),
-        )
+        if providers != previous:
+            scopes[scope] = providers
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                (META_KEY, json.dumps({"scopes": scopes})),
+            )
     return sorted(providers)
 
 
@@ -183,14 +196,32 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
             continue
         reset, duration, pct = (raw.get(k) for k in (
             "resets_at_epoch", "window_seconds", "pct"))
+        key = raw.get("key")
+        agy = provider in ANTIGRAVITY_PROVIDERS
+        if agy:
+            if key not in _ANTIGRAVITY_WINDOWS:
+                continue
+            label, duration = _ANTIGRAVITY_WINDOWS[key]
+        else:
+            label = _codex_window_label(raw) if provider == "codex" else raw.get("label")
         window = {
-            "key": raw.get("key"),
-            "label": _codex_window_label(raw) if provider == "codex" else raw.get("label"),
+            "key": key,
+            "label": label,
             "pct": pct,
             "resets_at": _minute_iso(reset),
             "window_seconds": duration,
             "pace": usage_pace(pct, reset, duration, now),
         }
+        if agy:
+            # This is a local calibration from separate tasks, not a fit to
+            # recorded monthly spend or a division by the current percentage.
+            size = raw.get("implied_window_usd")
+            if (include_costs and provider == "antigravity-gemini"
+                    and _finite(size) and size > 0 and _finite(reset) and reset > now
+                    and fresh_observation(observed, now)):
+                window["implied_window_usd"] = size
+            result.append(window)
+            continue
         # Match spend to the exact sample, not now: transcript ingestion may
         # continue for hours after a quota snapshot. Expired/future windows
         # cannot explain that sample and must never yield a dollar projection.
@@ -227,7 +258,10 @@ def provider_usage_block(scope, now=None, *, conn=None, include_costs=True,
     costs = _month_reported_costs(conn, now, scope) if month_cost else {}
     result = {}
 
-    for provider in _PROVIDER_EVENT_IDS:
+    providers = list(_PROVIDER_EVENT_IDS)
+    if scope == "personal":
+        providers.extend(ANTIGRAVITY_PROVIDERS)
+    for provider in providers:
         snapshot = snapshots.get(provider) or {}
         observed = snapshot.get("observed_at_epoch")
         fresh = _finite(observed) and -MAX_CLOCK_SKEW_S <= now - observed <= MAX_SNAPSHOT_AGE_S
@@ -238,7 +272,7 @@ def provider_usage_block(scope, now=None, *, conn=None, include_costs=True,
         plan = snapshot.get("plan") if fresh else None
         result[provider] = {
             "windows": windows,
-            **({"month_cost": cost} if month_cost else {}),
+            **({"month_cost": cost} if month_cost and provider in costs else {}),
             **({"updated_at_epoch": observed} if fresh else {}),
             **({"plan": plan} if isinstance(plan, str) else {}),
         }

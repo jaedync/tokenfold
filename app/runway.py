@@ -30,7 +30,8 @@ from .runway_windows import (budget_block, claude_windows, month_window,
 
 router = APIRouter()
 
-_WINDOW_ID_RE = re.compile(r"^(claude|codex|opencode-go):[a-z0-9_:\-]{1,64}$")
+_WINDOW_ID_RE = re.compile(
+    r"^(claude|codex|opencode-go|antigravity-(?:gemini|claude-gpt)):[a-z0-9_:\-]{1,64}$")
 _BUCKET_RE = re.compile(r"^[a-z0-9_:]{1,64}$")
 
 

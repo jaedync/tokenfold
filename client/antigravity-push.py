@@ -22,6 +22,13 @@ CURSOR_VERSION = 1
 COUNTERS = ("input_tokens", "cache_read_tokens", "output_tokens")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 ISO_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)", re.ASCII)
+_QUOTA_GROUPS = {
+    "gemini": "antigravity-gemini",
+    "gemini-models": "antigravity-gemini",  # agy-quota's text fallback
+    "3p": "antigravity-claude-gpt",
+    "claude-and-gpt-models": "antigravity-claude-gpt",
+}
+_QUOTA_WINDOWS = {"5h": "five_hour", "weekly": "seven_day"}
 
 
 class PushError(RuntimeError):
@@ -214,10 +221,81 @@ def sync_spend(root, state_path, send, machine):
             save_cursors(state_path, cursors)
 
 
+def _in_range(value, lo, hi):
+    return type(value) in (int, float) and lo <= value <= hi
+
+
+def parse_quota_snapshot(doc) -> list[dict]:
+    """Project agy-quota's latest reading onto the known provider windows."""
+    if not isinstance(doc, dict) or type(doc.get("schema")) is not int or doc["schema"] != 1:
+        return []
+    observed = _epoch(doc.get("read_at"))
+    windows = doc.get("windows")
+    if not observed or not isinstance(windows, list):
+        return []
+
+    groups, invalid = {}, set()
+    for raw in windows:
+        if not isinstance(raw, dict) or not isinstance(raw.get("bucket_id"), str):
+            continue
+        group, _, slot = raw["bucket_id"].rpartition("-")
+        provider, key = _QUOTA_GROUPS.get(group), _QUOTA_WINDOWS.get(slot)
+        if not provider or not key:
+            continue
+        records = groups.setdefault(provider, {})
+        pct = raw.get("used_pct")
+        remaining = raw.get("remaining_fraction")
+        if pct is None and _in_range(remaining, 0, 1):
+            pct = round((1 - remaining) * 100, 4)
+        reset = _epoch(raw.get("reset_at"))
+        if key in records or not _in_range(pct, 0, 100) or not reset:
+            invalid.add(provider)
+            continue
+        window = {"key": key, "pct": pct, "resets_at_epoch": reset}
+        size = raw.get("implied_window_usd")
+        if provider == "antigravity-gemini" and _in_range(size, 0, 10**9) and size > 0:
+            window["implied_window_usd"] = size
+        records[key] = window
+    return [{"provider": provider, "observed_at_epoch": observed,
+             "windows": [records[k] for k in sorted(records)]}
+            for provider, records in groups.items() if provider not in invalid]
+
+
+def sync_quota(path, send, machine):
+    try:
+        doc = json.loads(path.read_bytes())
+    except FileNotFoundError:
+        return  # The poller has not produced a reading yet.
+    limits = parse_quota_snapshot(doc)
+    if not limits:
+        raise PushError("No valid Antigravity quota windows in latest.json")
+    reply = send("/api/provider-usage", {"machine": machine,
+                                        "account_class": "personal", "limits": limits})
+    if reply.get("status") != "ok":
+        raise PushError("Tokenfold did not acknowledge Antigravity quota")
+
+
+def push_once(root, quota, state_path, send, machine):
+    errors = []
+    for name, sync, args in (
+        ("spend", sync_spend, (root, state_path, send, machine)),
+        ("quota", sync_quota, (quota, send, machine)),
+    ):
+        try:
+            sync(*args)
+        except PushError as error:
+            errors.append(str(error))
+        except (OSError, ValueError, RecursionError):
+            errors.append(f"Cannot read Antigravity {name} input or write its state")
+    return errors
+
+
 def main() -> int:
     home = Path.home()
     config = home / ".config"
-    state = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state") / "tokenfold-antigravity"
+    base = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state")
+    state = base / "tokenfold-antigravity"
+    quota = Path(os.environ.get("AGY_QUOTA_STATE_DIR") or base / "agy-quota") / "latest.json"
     try:
         url = _setting("TOKENFOLD_URL", config / "notify-relay-url").rstrip("/")
         key = _setting("TOKENFOLD_API_KEY", config / "tokenfold-api-key", config / "notify-relay-token")
@@ -239,14 +317,17 @@ def main() -> int:
             def send(endpoint, body):
                 return _post(url, key, endpoint, body)
 
-            sync_spend(home / ".gemini/antigravity-cli/brain", state / "cursor.json", send, machine)
+            errors = push_once(home / ".gemini/antigravity-cli/brain", quota,
+                               state / "cursor.json", send, machine)
+            for error in errors:
+                print(error, file=sys.stderr)
+            return int(bool(errors))
     except PushError as error:
         print(error, file=sys.stderr)
         return 1
     except (OSError, ValueError):
-        print("Cannot read Antigravity input or write the push cursor", file=sys.stderr)
+        print("Cannot read Antigravity push settings or start the reporter", file=sys.stderr)
         return 1
-    return 0
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -202,15 +202,50 @@ class ProviderLimitSnapshot(BaseModel):
     plan: str | None = Field(default=None, max_length=32, pattern=r"^[a-z0-9_-]+$")
 
 
+class AntigravityLimitWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    key: Literal["five_hour", "seven_day"]
+    pct: float = Field(ge=0, le=100)
+    resets_at_epoch: float = Field(gt=0, le=10**11)
+    implied_window_usd: float | None = Field(default=None, gt=0, le=10**9)
+
+
+class AntigravityLimitSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    provider: Literal["antigravity-gemini", "antigravity-claude-gpt"]
+    observed_at_epoch: float = Field(gt=0, le=10**11)
+    windows: list[AntigravityLimitWindow] = Field(min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def distinct_windows_and_gemini_calibration(self):
+        if len({window.key for window in self.windows}) != len(self.windows):
+            raise ValueError("duplicate Antigravity window")
+        if (self.provider != "antigravity-gemini"
+                and any(w.implied_window_usd is not None for w in self.windows)):
+            raise ValueError("only Antigravity Gemini supports a dollar estimate")
+        return self
+
+
+ProviderSnapshot = Annotated[
+    ProviderLimitSnapshot | AntigravityLimitSnapshot, Field(discriminator="provider")]
+
+
 class ProviderUsageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     machine: str = Field(min_length=1, max_length=128)
-    # Same fleet classification Pi event batches carry; it selects the
-    # dashboard scope the snapshots land in. Required so pre-scope clients
-    # fail closed instead of stomping a peer scope.
+    # Required for fleet clients. The Antigravity reporter is personal only.
     account_class: Literal["work", "personal"]
-    limits: list[ProviderLimitSnapshot] = Field(max_length=3)
+    limits: list[ProviderSnapshot] = Field(max_length=5)
+
+    @model_validator(mode="after")
+    def antigravity_is_personal(self):
+        if self.account_class == "work" and any(
+                isinstance(limit, AntigravityLimitSnapshot) for limit in self.limits):
+            raise ValueError("Antigravity limits require personal scope")
+        return self
 
 
 class ClaudeUsageBucket(BaseModel):

@@ -50,6 +50,68 @@ class ParseTranscriptTest(unittest.TestCase):
         self.assertIsNone(push.parse_transcript_step(line(), "not-a-conversation"))
 
 
+class QuotaTest(unittest.TestCase):
+    document = {"schema": 1, "read_at": "2026-11-24T05:00:00Z", "windows": [
+        {"bucket_id": "gemini-5h", "group": "ignored label", "used_pct": 0,
+         "reset_at": "2026-11-24T10:00:00Z", "implied_window_usd": 30},
+        {"bucket_id": "gemini-models-weekly", "remaining_fraction": 0.75,
+         "reset_at": "2026-12-01T05:00:00Z", "implied_window_usd": 105},
+        {"bucket_id": "3p-5h", "used_pct": 10, "reset_at": "2026-11-24T10:00:00Z",
+         "implied_window_usd": 99, "unexpected_text": "never post this"},
+        {"bucket_id": "claude-and-gpt-models-weekly", "used_pct": 25,
+         "reset_at": "2026-12-01T05:00:00Z"},
+        {"bucket_id": "unknown", "used_pct": 10, "reset_at": "2026-12-01T05:00:00Z"},
+    ]}
+
+    def test_quota_uses_only_structured_window_fields(self):
+        snapshots = {s["provider"]: s for s in push.parse_quota_snapshot(self.document)}
+        self.assertEqual(snapshots.keys(), {"antigravity-gemini", "antigravity-claude-gpt"})
+        gemini = snapshots["antigravity-gemini"]
+        self.assertEqual(gemini["observed_at_epoch"], 1795496400)
+        self.assertEqual(gemini["windows"], [
+            {"key": "five_hour", "pct": 0, "resets_at_epoch": 1795514400, "implied_window_usd": 30},
+            {"key": "seven_day", "pct": 25, "resets_at_epoch": 1796101200, "implied_window_usd": 105},
+        ])
+        other = snapshots["antigravity-claude-gpt"]["windows"]
+        self.assertEqual([w["pct"] for w in other], [10, 25])
+        self.assertTrue(all(w.keys() == {"key", "pct", "resets_at_epoch"} for w in other))
+        self.assertEqual(push.parse_quota_snapshot(dict(self.document, read_at="not a timestamp")), [])
+        self.assertEqual(push.parse_quota_snapshot(dict(self.document, schema=2)), [])
+
+    def test_invalid_and_duplicate_windows_do_not_replace_other_group(self):
+        short, long, first_3p, *_ = self.document["windows"]
+        windows = [short, dict(short), long, first_3p, {"bucket_id": [], "used_pct": 30}]
+        snapshots = push.parse_quota_snapshot(dict(self.document, windows=windows))
+        self.assertEqual([s["provider"] for s in snapshots], ["antigravity-claude-gpt"])
+        broken = dict(short, used_pct=True)
+        windows = [broken, long, first_3p]
+        snapshots = push.parse_quota_snapshot(dict(self.document, windows=windows))
+        self.assertEqual([s["provider"] for s in snapshots], ["antigravity-claude-gpt"])
+
+    def test_quota_posts_even_when_spend_fails(self):
+        calls = []
+
+        def send(endpoint, body):
+            calls.append((endpoint, body))
+            if endpoint == "/api/ingest/antigravity":
+                raise push.PushError("simulated failure")
+            return {"status": "ok", "providers": [s["provider"] for s in body["limits"]]}
+
+        with tempfile.TemporaryDirectory(dir=CLIENT_DIR) as directory:
+            root = Path(directory)
+            path = root / CID / push.TRANSCRIPT
+            path.parent.mkdir(parents=True)
+            path.write_bytes(line())
+            latest = root / "latest.json"
+            latest.write_text(json.dumps(self.document), encoding="utf-8")
+            errors = push.push_once(root, latest, root / "cursor.json", send, "test-host")
+        self.assertEqual(len(errors), 1)
+        self.assertEqual([endpoint for endpoint, _ in calls],
+                         ["/api/ingest/antigravity", "/api/provider-usage"])
+        self.assertEqual(calls[-1][1]["account_class"], "personal")
+        self.assertEqual(calls[-1][1]["machine"], "test-host")
+
+
 class CursorTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(dir=CLIENT_DIR)
