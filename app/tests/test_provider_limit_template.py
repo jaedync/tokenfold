@@ -81,6 +81,20 @@ for(const scope of ['enterprise','personal']) {
   assert.equal(gauges.at(-1).state,'unverified');
   assert.equal(gauges.at(-1).stats.length,1,'future observation never feeds inference');
 }
+const at = Date.now()/1000 - 60;
+const reset = new Date(Date.now() + 3600000).toISOString();
+const win = {key:'five_hour',label:'5-hour',pct:0,window_seconds:18000,resets_at:reset};
+const providers = {
+  'antigravity-gemini':{updated_at_epoch:at,windows:[{...win,implied_window_usd:30}]},
+  'antigravity-claude-gpt':{updated_at_epoch:at,windows:[{...win,pct:42}]}
+};
+const memory = {providers:Object.fromEntries(Object.entries(providers).map(([name,sample]) =>
+  [name,{at,sample,cells:{}}]))};
+const html = buildReportedProviderGroups(providers,{memory});
+assert(html.includes('Antigravity Gemini'));
+assert(html.includes('Antigravity Claude/GPT'));
+assert.deepEqual(gauges.at(-2).stats,[{value:'~$30.00',label:'est. API-equivalent capacity'}]);
+assert.deepEqual(gauges.at(-1).stats,[]);
 """)
 
     def test_snapshot_merge_preserves_same_sample_dollars_but_not_new_sample(self):

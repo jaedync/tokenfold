@@ -24,9 +24,12 @@ export const FAMILY_NAME = {
   opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet', haiku: 'Haiku', deepseek: 'DeepSeek', glm: 'GLM', gpt: 'GPT',
 };
 
-const PROVIDER_NAME = { claude: 'Claude', 'opencode-go': 'OpenCode Go', codex: 'Codex' };
+const PROVIDER_NAME = {
+  claude: 'Claude', codex: 'Codex', 'opencode-go': 'OpenCode Go',
+  'antigravity-gemini': 'Antigravity Gemini', 'antigravity-claude-gpt': 'Antigravity Claude/GPT',
+};
 // Display order of providers in the window list.
-export const PROVIDER_ORDER = ['claude', 'codex', 'opencode-go'];
+export const PROVIDER_ORDER = Object.keys(PROVIDER_NAME);
 export const providerName = (p) => PROVIDER_NAME[p] || String(p || '');
 
 // "Claude · 7-day" -> {prov: "Claude", name: "7-day"}

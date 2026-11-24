@@ -4,7 +4,7 @@
 
 const KEY = 'tf_hero_window';
 // Same shape as the server's window ids (app/runway.py _WINDOW_ID_RE).
-const ID_RE = /^(claude|codex|opencode-go):[a-z0-9_:-]{1,64}$/;
+const ID_RE = /^(claude|codex|opencode-go|antigravity-(?:gemini|claude-gpt)):[a-z0-9_:-]{1,64}$/;
 
 export function loadPin(storage = globalThis.localStorage) {
   try {

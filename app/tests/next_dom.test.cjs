@@ -163,6 +163,45 @@ const text = (page, sel) => page.locator(sel).first().innerText();
       await context.close();
     });
 
+    await check('Antigravity groups show percents; only Gemini shows calibrated capacity', async () => {
+      const gemini = 'antigravity-gemini', thirdParty = 'antigravity-claude-gpt';
+      const groups = [[gemini, 'Antigravity Gemini'], [thirdParty, 'Antigravity Claude/GPT']];
+      const addAntigravity = (name, body) => {
+        if (name !== 'runway') return null;
+        const windows = groups.flatMap(([provider, label]) => ['five_hour', 'seven_day'].map((key, index) => {
+          const capacity = provider === gemini ? (index ? 105 : 30) : null;
+          const baseline = body.windows.find((w) => w.id === `claude:${key}`);
+          return { ...baseline, provider, key, id: `${provider}:${key}`, pct: index ? 42 : 17,
+            label: `${label} · ${index ? '7-day' : '5-hour'}`, usd_spent: null,
+            usd_per_point: capacity === null ? null : capacity / 100,
+            usd_left: capacity === null ? null : capacity * (index ? .58 : .83),
+            implied_window_usd: capacity };
+        }));
+        return { ...body, windows: [...body.windows, ...windows] };
+      };
+      const {page, errors, context} = await open(browser, {viewport: {width: 390, height: 844},
+        url: '/next?mock=1&scope=personal#runway', fixtureOverride: addAntigravity});
+      try {
+        const geminiGroup = page.locator('.p-rail .rw-grp').filter({has: page.getByRole('heading', {name: 'Antigravity Gemini', exact: true})});
+        const thirdGroup = page.locator('.p-rail .rw-grp').filter({has: page.getByRole('heading', {name: 'Antigravity Claude/GPT', exact: true})});
+        await page.waitForSelector(`.rw[data-window="${thirdParty}:seven_day"]`);
+        assert.equal(await geminiGroup.locator('.rw').count(), 2);
+        assert.equal(await thirdGroup.locator('.rw').count(), 2);
+        assert.match(await geminiGroup.locator(`[data-window="${gemini}:five_hour"]`).innerText(), /17%[\s\S]*\$30\.00 capacity/);
+        assert.match(await geminiGroup.locator(`[data-window="${gemini}:seven_day"]`).innerText(), /42%[\s\S]*\$105 capacity/);
+        assert.doesNotMatch(await thirdGroup.innerText(), /\$|capacity/i);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await thirdGroup.locator(`[data-window="${thirdParty}:seven_day"] .rw-pick`).click();
+        assert.match(await text(page, '.p-hero .hero-k b'), /Antigravity Claude\/GPT/);
+        assert.match(await text(page, '.p-hero .hero-v'), /42%/);
+        assert.doesNotMatch(await text(page, '.p-hero'), /\$|Dollars|per point/i);
+        assert.equal(await page.evaluate(() => localStorage.getItem('tf_hero_window')), `${thirdParty}:seven_day`);
+        assert.deepEqual(errors, []);
+      } finally {
+        await context.close();
+      }
+    });
+
     await check('pin: a pinned window that is gone falls back to the automatic pick', async () => {
       const {page, errors, context} = await open(browser, {viewport: {width: 1440, height: 900}, url: '/next?mock=1&scope=personal#runway'});
       await page.evaluate(() => localStorage.setItem('tf_hero_window', 'codex:gone'));

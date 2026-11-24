@@ -42,6 +42,8 @@ function row(w, now, auto, main) {
   const usedPct = f.missing(w.pct) ? 0 : clamp(w.pct);
   const proj = f.missing(p.projected_pct) ? usedPct : clamp(p.projected_pct);
   const resets = w.kind === 'short' ? `in ${f.dur(w.resets_at - now)}` : f.when(w.resets_at, now);
+  const capacity = f.missing(w.implied_window_usd) ? null : [' · ',
+    h('span', { title: 'Estimated API-equivalent capacity' }, `≈${f.usd(w.implied_window_usd)} capacity`)];
   return h('li', { class: `rw${w.stale ? ' is-stale' : ''}`, 'data-hot': hot ? '' : null, 'data-window': w.id, 'data-key': w.id },
     nameCell(w, name, auto, main),
     h('span', { class: 'rw-pct' }, f.pct(w.pct)),
@@ -53,7 +55,7 @@ function row(w, now, auto, main) {
       h('span', { class: hot ? 'hot' : null }, forecastText(w, now),
         w.waitable ? [' · ', h('span', { class: 'chip chip-yellow' }, 'waitable')] : null,
         w.stale ? ` · data ${f.age(w.age_s)}` : null),
-      h('span', null, resets)));
+      h('span', null, resets, capacity)));
 }
 
 // One provider: its name as a heading over its windows.
