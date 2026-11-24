@@ -809,11 +809,12 @@ def ingest_antigravity(req: AntigravityIngestRequest):
                 days.add(row[3])
 
     if days:
-        from .aggregator import trigger_eager_rebuild
-        from .summarizer import summarize_days
+        # Coalesced like /api/ingest and /api/ingest/pi: one worker re-rolls
+        # the union per interval; the days are durable before this returns.
+        from . import rollup_queue
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
         try:
-            summarize_days(sorted(days))
-            trigger_eager_rebuild()
+            rollup_queue.request(days | {today})
         except Exception:
             # Events are durable. Keep historical days for the startup retry.
             logger.exception("Antigravity summary rebuild failed")

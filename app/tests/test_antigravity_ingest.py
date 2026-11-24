@@ -71,6 +71,27 @@ class AntigravityIngestTest(TempDBTestCase):
                 self.assertEqual(self.post([dict(EVENT, **overrides)]).status_code, 422)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
 
+    def test_ingest_hands_the_days_to_the_coalesced_rollup(self):
+        # Review M1: like /api/ingest and /api/ingest/pi, this route must not
+        # re-roll in the request thread. One worker re-rolls the union.
+        from app.ingest import TZ
+        old = dict(EVENT, step_index=3, timestamp="2026-11-20T12:00:00Z")
+        days = {datetime.strptime(e["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                .replace(tzinfo=timezone.utc).astimezone(TZ).strftime("%Y-%m-%d")
+                for e in (EVENT, old)}
+        self.assertEqual(days, {"2026-11-20", "2026-11-23"})
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        with patch("app.rollup_queue.request") as request, \
+                patch("app.summarizer.summarize_days") as inline, \
+                patch("app.aggregator.trigger_eager_rebuild") as eager:
+            r = self.post([EVENT, old])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"accepted": 2, "duplicates": 0})
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[0], days | {today})
+        inline.assert_not_called()
+        eager.assert_not_called()
+
     def test_transcript_to_daily_summary_ledger_and_quota_isolation(self):
         from app.aggregator import _build_dashboard_data_inner
         from app.cost_windows import compute_window_cost
@@ -88,7 +109,7 @@ class AntigravityIngestTest(TempDBTestCase):
             self.assertEqual(r.json(), {"accepted": 3, "duplicates": 0})
             return r.json()
 
-        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / CID / client.TRANSCRIPT
             path.parent.mkdir(parents=True)
