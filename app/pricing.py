@@ -73,6 +73,15 @@ MODEL_PRICING = {
 # Sonnet rates — Fable 5 launched at 2x Opus and was undercounted ~3-4x.)
 _UNPRICED = (0.0, 0.0, 0.0, 0.0)
 
+# Only use the rates verified for agy-quota's Gemini calibration. Keep
+# Anthropic and LiteLLM prices out of the Antigravity namespace.
+ANTIGRAVITY_DISPLAY = "Antigravity"
+_ANTIGRAVITY_PREFIX = f"{ANTIGRAVITY_DISPLAY} / "
+_ANTIGRAVITY_PRICES = {
+    _ANTIGRAVITY_PREFIX + "gemini-4-neon" + effort: (3.00, 15.00, 0.00, 0.15)
+    for effort in ("", "-xhigh", "-high", "-low")
+}
+
 # Encountering an unknown model forces a TTL-bypassing LiteLLM refresh so new
 # models get real pricing within minutes of first appearing, not up to 24h
 # later. Rate-limited so a permanently-unknown name can't hammer GitHub.
@@ -162,6 +171,7 @@ REPORTED_COST_SUM_SQL = (
 
 _PROVIDER_DISPLAY = {
     "anthropic": "Anthropic",
+    "antigravity": ANTIGRAVITY_DISPLAY,
     "google": "Google",
     "huggingface": "Hugging Face",
     "openai": "OpenAI",
@@ -196,6 +206,8 @@ def display_model_for_row(model: str | None, provider: str | None = None,
     """Return a normalized display key while preserving provider identity."""
     if model is None:
         return None
+    if source_client == "antigravity":
+        return _ANTIGRAVITY_PREFIX + model
     if source_client == "pi-agent" and provider:
         provider_name = _PROVIDER_DISPLAY.get(provider.lower(),
                                               _title_identifier(provider))
@@ -314,6 +326,8 @@ def load_pricing(force=False):
 
 def is_priced(model_name: str) -> bool:
     """True when the model has CONFIRMED pricing (LiteLLM-fetched or static)."""
+    if model_name and model_name.startswith(_ANTIGRAVITY_PREFIX):
+        return model_name in _ANTIGRAVITY_PRICES
     return model_name in _dynamic_pricing or model_name in MODEL_PRICING
 
 
@@ -349,6 +363,8 @@ def era_boundaries() -> list[float]:
 
 
 def get_pricing(model_name: str, ts_epoch: float | None = None) -> tuple:
+    if model_name and model_name.startswith(_ANTIGRAVITY_PREFIX):
+        return _ANTIGRAVITY_PRICES.get(model_name, _UNPRICED)
     static = MODEL_PRICING.get(model_name)
     if isinstance(static, list):
         # Era-listed models: static wins over LiteLLM, which carries a single

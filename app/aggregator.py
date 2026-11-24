@@ -24,7 +24,7 @@ from .cost_windows import compute_window_cost
 from .db import checkpoint_wal, get_conn, read_conn, shutting_down
 from .event_dedupe import canonical_assistant_predicate, counts_as_activity
 from .pricing import (
-    MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
+    ANTIGRAVITY_DISPLAY, MODEL_BENCHMARKS, MODEL_ORDER, WEB_SEARCH_PER_1K, compute_cost,
     REPORTED_COST_SUM_SQL, display_model, display_model_for_row, effective_geo,
     get_pricing, is_priced, load_pricing, reported_cost,
     model_sort_key,
@@ -474,15 +474,20 @@ def _summary_model_identity(name: str) -> tuple[str, str]:
     return "Anthropic", name
 
 
+def _summary_pricing_name(identity: tuple[str, str]) -> str:
+    provider, model = identity
+    return f"{provider} / {model}" if provider == ANTIGRAVITY_DISPLAY else model
+
+
 def _conditional_model_names(
         identities: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
-    """Show providers only when one normalized model has multiple providers."""
+    """Show providers for name collisions and the separate Antigravity price list."""
     providers: dict[str, set[str]] = defaultdict(set)
     for provider, model in identities:
         providers[model].add(provider)
     return {
         identity: (f"{identity[0]} / {identity[1]}"
-                   if len(providers[identity[1]]) > 1 else identity[1])
+                   if len(providers[identity[1]]) > 1 else _summary_pricing_name(identity))
         for identity in identities
     }
 
@@ -967,7 +972,7 @@ def _build_today_data(conn, today_str: str, pred: str) -> dict:
         water = compute_water_ml(base_name, inp, out)
         today_mb.append({
             "model": mname,
-            "unpriced": not is_priced(base_name) and not md.get("has_reported_cost"),
+            "unpriced": not is_priced(_summary_pricing_name(identity)) and not md.get("has_reported_cost"),
             "has_reported_cost": bool(md.get("has_reported_cost")),
             "api_calls": md.get("api_calls", 0),
             "input": inp, "output": out,
@@ -1449,7 +1454,7 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
         recent_water = compute_water_ml(base_name, ms["recent_input"], ms["recent_output"])
         model_breakdown.append({
             "model": name,
-            "unpriced": not is_priced(base_name) and not ms["has_reported_cost"],
+            "unpriced": not is_priced(_summary_pricing_name(identity)) and not ms["has_reported_cost"],
             "has_reported_cost": ms["has_reported_cost"],
             "api_calls": ms["api_calls"],
             "input": ms["input"], "output": ms["output"],
@@ -1650,7 +1655,7 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
         # era is semantically intended — they show what a model costs now, not
         # a historical blend, so no ts_epoch here.
         "output_pricing": {
-            display_names[identity]: get_pricing(identity[1])[1]
+            display_names[identity]: get_pricing(_summary_pricing_name(identity))[1]
             for identity in model_stats
         },
         "model_pricing": {
@@ -1658,7 +1663,7 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
                 "input": p[0], "output": p[1], "cache_write": p[2],
                 "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]
             }
-            for identity in model_stats for p in [get_pricing(identity[1])]
+            for identity in model_stats for p in [get_pricing(_summary_pricing_name(identity))]
         },
         "cutoff_date": cutoff_date,
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),

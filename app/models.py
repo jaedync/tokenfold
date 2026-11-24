@@ -1,4 +1,6 @@
 from typing import Literal
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -152,6 +154,31 @@ class PiIngestRequest(BaseModel):
     session_file: str = Field(min_length=1, max_length=1024)
     cursor: PiCursor = Field(default_factory=PiCursor)
     events: list[PiEvent] = Field(max_length=5000)
+
+
+class AntigravityEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    conversation_id: UUID = Field(strict=False)
+    step_index: int = Field(ge=0, le=10**12)
+    timestamp: str = Field(min_length=20, max_length=40,
+                           pattern=r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$")
+    model: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    input_tokens: int = Field(ge=0, le=10**12)
+    cache_read_tokens: int = Field(ge=0, le=10**12)
+    output_tokens: int = Field(ge=0, le=10**12)
+
+
+class AntigravityIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    machine: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    events: list[AntigravityEvent] = Field(min_length=1, max_length=500)
+
+
+class AntigravityIngestResponse(BaseModel):
+    accepted: int
+    duplicates: int
 
 
 class ProviderLimitWindow(BaseModel):

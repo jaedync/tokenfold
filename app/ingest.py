@@ -15,14 +15,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .auth import require_api_key
 from .config import TZ_NAME
-from .db import get_conn, write_txn
+from .db import get_conn, queue_rollup_days, write_txn
 from .claude_usage import parse_claude_usage
 from .pi_price_check import apply_to_row as apply_pi_price_check
 from .event_dedupe import (flag_new_pi_copies, matching_claude_days,
                            matching_pi_days, pi_copy_key,
                            record_mirror_sessions, session_days,
                            sessions_without_reply)
-from .models import (BackfillRequest, CursorState, IngestRequest, IngestResponse,
+from .models import (AntigravityIngestRequest, AntigravityIngestResponse,
+                     BackfillRequest, CursorState, IngestRequest, IngestResponse,
                      PiIngestRequest, ProviderUsageRequest, ClaudeUsageRequest)
 from .sigheader import decode_header, split_signature
 
@@ -769,6 +770,56 @@ def ingest_pi(req: PiIngestRequest):
         duplicates=duplicates,
         cursor=CursorState(last_line_num=req.cursor.last_line_num + len(req.events)),
     )
+
+
+_AGY_EVENT_SQL = """
+INSERT INTO events(uuid, type, timestamp, ts_epoch, day, session_id,
+                   source_machine, project_dir, account_email, model, request_id,
+                   input_tokens, cache_read_tokens, output_tokens, source_client,
+                   provider, usage_kind)
+VALUES(?, 'assistant', ?, ?, ?, ?, ?, 'Antigravity', 'antigravity-personal', ?, ?,
+       ?, ?, ?, 'antigravity', 'antigravity', 'assistant')
+ON CONFLICT(uuid) DO NOTHING
+"""
+
+
+@router.post("/api/ingest/antigravity", response_model=AntigravityIngestResponse,
+             dependencies=[Depends(require_api_key)])
+def ingest_antigravity(req: AntigravityIngestRequest):
+    """Record model steps from personal Antigravity usage, without content."""
+    rows = []
+    for event in req.events:
+        parsed = _parse_ts(event.timestamp)
+        if parsed is None or not 0 <= parsed[1] <= 10**11:
+            raise HTTPException(status_code=422, detail="Invalid event timestamp")
+        _, epoch, day = parsed
+        session = f"antigravity:{event.conversation_id}"
+        event_id = f"{session}:{event.step_index}"
+        # The transcript's input counter is already uncached. Keep cache
+        # reads separate, even when they exceed uncached input.
+        rows.append((event_id, event.timestamp, epoch, day, session, req.machine,
+                     event.model, event_id, event.input_tokens,
+                     event.cache_read_tokens, event.output_tokens))
+
+    accepted, days = 0, set()
+    with write_txn() as conn:
+        for row in rows:
+            if conn.execute(_AGY_EVENT_SQL, row).rowcount:
+                accepted += 1
+                days.add(row[3])
+
+    if days:
+        from .aggregator import trigger_eager_rebuild
+        from .summarizer import summarize_days
+        try:
+            summarize_days(sorted(days))
+            trigger_eager_rebuild()
+        except Exception:
+            # Events are durable. Keep historical days for the startup retry.
+            logger.exception("Antigravity summary rebuild failed")
+            with write_txn() as conn:
+                queue_rollup_days(conn, days)
+    return AntigravityIngestResponse(accepted=accepted, duplicates=len(rows) - accepted)
 
 
 @router.post("/api/backfill", dependencies=[Depends(require_api_key)])

@@ -12,12 +12,11 @@ from .pricing import (REPORTED_COST_SUM_SQL, compute_cost,
                       display_model_for_row, effective_geo, era_boundaries,
                       reported_cost)
 
-# Claude-subscription spend ONLY. Non-Pi rows (Claude Code CLI etc.) are
-# Claude usage regardless of their (possibly NULL) provider; Pi rows count
-# only when they genuinely used Anthropic. Codex/OpenCode/OpenRouter Pi rows
-# must never inflate the Claude limit-window gauges.
+# Claude-subscription spend only. Legacy Claude rows can have no provider.
+# Pi rows must come from Anthropic. Antigravity has its own limits.
 ANTHROPIC_ONLY_SQL = (
-    " (source_client != 'pi-agent' OR LOWER(provider) = 'anthropic') "
+    " (source_client != 'antigravity' AND "
+    "(source_client != 'pi-agent' OR LOWER(provider) = 'anthropic')) "
 )
 
 
