@@ -18,6 +18,13 @@ SHORT_MAX_S = 86400
 # below 5% the integer-quantized meter makes $/point meaningless.
 MIN_PCT_FOR_RATE = 5.0
 LONG_KINDS = ("long", "month")
+# Antigravity quotas limit only its own jobs (agy), not the owner's main work
+# (owner answer 1221, review M3), so those windows never take the hero. They
+# stay in "All windows", and a pin still selects one: the browser picks the
+# pinned window before binding (static/next/js/select.js heroId). The prefix
+# covers every provider id in app/provider_usage.ANTIGRAVITY_PROVIDERS, and
+# this module stays free of that import (its db dependency).
+NEVER_BINDING_PROVIDER_PREFIX = "antigravity"
 # Owner decision (2026-10-15): a long window projected at this percent or
 # more counts as at risk, so it may take the hero from the main limit.
 AT_RISK_PROJECTED_PCT = 90.0
@@ -65,6 +72,12 @@ def fill_epoch(window):
     return min(times) if times else None
 
 
+def never_binds(window):
+    """True for a window whose provider must never be the hero."""
+    return str(window.get("provider") or "").startswith(
+        NEVER_BINDING_PROVIDER_PREFIX)
+
+
 def binding(windows, now=None):
     """id of the long window most likely to stop work, or None.
 
@@ -72,6 +85,9 @@ def binding(windows, now=None):
     or the month meter in work scope): early in a window the other
     providers' projections would otherwise take the hero from a limit that
     is merely too early to project (owner decision, 2026-10-15).
+
+    A provider in NEVER_BINDING_PROVIDER_PREFIX (Antigravity) is not a
+    candidate at all: its quota stops agy jobs only.
 
     Otherwise the window that fills first binds; without one that fills
     before its reset, the highest score. A high projected percent early in
@@ -83,7 +99,8 @@ def binding(windows, now=None):
     only when every candidate is stale: an old snapshot must not keep the
     hero after a fresh window exists.
     """
-    long_windows = [w for w in windows if w.get("kind") in LONG_KINDS]
+    long_windows = [w for w in windows
+                    if w.get("kind") in LONG_KINDS and not never_binds(w)]
     if not any(at_risk(w) for w in long_windows):
         ids = {w.get("id") for w in long_windows}
         calm = next((d for d in CALM_DEFAULTS if d in ids), None)

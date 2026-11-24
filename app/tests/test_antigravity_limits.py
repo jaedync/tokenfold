@@ -120,6 +120,33 @@ class AntigravityLimitsTest(TempDBTestCase):
         self.assertEqual(long["pct"], 40)
         self.assertNotIn("implied_window_usd", long)
 
+    def test_windows_stay_listed_but_never_take_the_hero(self):
+        # Review M3: an agy quota at 96% must not become the hero, the hero
+        # is the owner's main work. The windows stay in "All windows", so a
+        # pin can still select one (the browser checks the pin first).
+        for provider in (GEMINI, THIRD_PARTY):
+            snap = self.snapshot(provider)
+            snap["windows"][1]["pct"] = 96
+            self.assertEqual(self.post(snap).status_code, 200)
+        r = self.http.get("/api/runway?scope=personal")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual({w["id"] for w in body["windows"]},
+                         {f"{p}:{k}" for p in (GEMINI, THIRD_PARTY)
+                          for k in ("five_hour", "seven_day")})
+        self.assertIsNone(body["binding"])
+
+    def test_hero_filter_covers_every_antigravity_provider(self):
+        from app import provider_usage
+        from app.runway_rules import never_binds
+        for provider in provider_usage.ANTIGRAVITY_PROVIDERS:
+            with self.subTest(provider=provider):
+                self.assertTrue(never_binds({"provider": provider}))
+        for provider in ("claude", "codex", "opencode-go"):
+            with self.subTest(provider=provider):
+                self.assertFalse(never_binds({"provider": provider}))
+        self.assertFalse(never_binds({}))
+
     def test_both_weekly_windows_can_request_runway_trajectory_bounds(self):
         self.assertEqual(self.post(self.snapshot(), self.snapshot(THIRD_PARTY)).status_code, 200)
         for provider in (GEMINI, THIRD_PARTY):

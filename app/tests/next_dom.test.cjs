@@ -240,6 +240,7 @@ const text = (page, sel) => page.locator(sel).first().innerText();
         const runway = {scope: 'personal', binding: 'claude:seven_day', windows: [
           {id: 'claude:seven_day', kind: 'long', window_start: 0, resets_at: 100},
           {id: 'claude:scoped:fable', kind: 'long', window_start: 0, resets_at: 100},
+          {id: 'antigravity-gemini:seven_day', provider: 'antigravity-gemini', kind: 'long', window_start: 0, resets_at: 100},
           {id: 'claude:five_hour', kind: 'short'}]};
         const mixed = [
           {id: 'zed:a', provider: 'zed', kind: 'long', window_s: 7, label: 'Zed · A'},
@@ -252,6 +253,8 @@ const text = (page, sel) => page.locator(sel).first().innerText();
         const mem = (v) => ({getItem: () => v, setItem() { throw new Error('off'); }, removeItem() {}});
         return {
           pinned: sel.heroId(runway, 'claude:scoped:fable'),
+          // An agy window never binds, but a pin still selects it.
+          agyPin: sel.heroId(runway, 'antigravity-gemini:seven_day'),
           gone: sel.heroId(runway, 'codex:gone'),
           short: sel.heroId(runway, 'claude:five_hour'),
           work: sel.heroId({...runway, scope: 'enterprise'}, 'claude:scoped:fable'),
@@ -267,6 +270,7 @@ const text = (page, sel) => page.locator(sel).first().innerText();
         };
       });
       assert.equal(r.pinned, 'claude:scoped:fable');
+      assert.equal(r.agyPin, 'antigravity-gemini:seven_day');
       assert.equal(r.gone, 'claude:seven_day');
       assert.equal(r.short, 'claude:seven_day');
       assert.equal(r.work, 'claude:seven_day');
