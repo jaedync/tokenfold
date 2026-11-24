@@ -192,7 +192,8 @@ def _row_cost(r, enterprise: bool) -> float:
 
 def _is_anthropic(r) -> bool:
     """Claude subscription usage (cost_windows.ANTHROPIC_ONLY_SQL rule)."""
-    return r["source_client"] != "pi-agent" or (r["provider"] or "").lower() == "anthropic"
+    return (r["source_client"] != "antigravity" and
+            (r["source_client"] != "pi-agent" or (r["provider"] or "").lower() == "anthropic"))
 
 
 def session_rollups(conn, event_ids, now: float, scope: str) -> dict[str, dict]:

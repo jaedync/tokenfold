@@ -1,0 +1,10 @@
+[Unit]
+Description=Send Antigravity reports every five minutes
+
+[Timer]
+OnCalendar=*:02/5
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

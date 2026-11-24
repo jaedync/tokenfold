@@ -147,6 +147,8 @@ export default {
 
     function renderPersonal(w, s, now, pinned, offAuto) {
       const p = w.pace || {};
+      const antigravity = w.provider === 'antigravity-gemini' || w.provider === 'antigravity-claude-gpt';
+      const showDollars = !antigravity || !f.missing(w.implied_window_usd);
       setText(kick, pinned ? 'Pinned window' : 'Binding window');
       setText(name, w.label);
       patch(big, f.missing(w.pct) ? f.DASH : String(Math.floor(w.pct)), h('small', null, '%'));
@@ -162,10 +164,12 @@ export default {
         fact('Forecast', f.missing(p.projected_pct) ? f.DASH : [approx(), `${f.pct(p.projected_pct)} at reset`],
           f.missing(p.projected_pct) ? 'needs more data' : 'if the window average holds'),
         fact('Resets', f.dayClock(w.resets_at), `in ${f.dur(w.resets_at - now)}`),
-        fact('Left', f.missing(w.usd_left) ? f.DASH : [approx(), f.usd(w.usd_left)],
-          f.missing(w.usd_per_point) ? 'value per point unknown' : `${(100 - w.pct).toFixed(1)} pts × ≈${f.usd(w.usd_per_point, { cents: true })} per point`));
-      renderBurn(w, s, offAuto);
+        showDollars ? fact('Left', f.missing(w.usd_left) ? f.DASH : [approx(), f.usd(w.usd_left)],
+          f.missing(w.usd_per_point) ? 'value per point unknown' : `${(100 - w.pct).toFixed(1)} pts × ≈${f.usd(w.usd_per_point, { cents: true })} per point`) : null);
+      if (antigravity) burn.hidden = true;
+      else renderBurn(w, s, offAuto);
       renderShort(s);
+      note.hidden = !showDollars;
       patch(note, h('b', null, 'Dollars are API-equivalent at list price, not billed.'),
         ' Your subscription pays for them. They show what the rest of the quota is worth.');
     }
@@ -221,6 +225,7 @@ export default {
       burn.hidden = true;
       short.hidden = false;
       patch(short, h('p', { class: 'burn-none' }, 'The billing meter is the limit. Work usage has no quota windows.'));
+      note.hidden = false;
       patch(note, h('b', null, 'Work dollars on the meter are billed dollars.'),
         ' Session and daily figures are list-price estimates (≈) until the meter catches up.');
     }

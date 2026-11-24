@@ -66,7 +66,7 @@ export function modelColors(costs) {
   return { order, color: (m) => map.get(m) || fallback };
 }
 
-const GROUP_ORDER = ['Anthropic', 'OpenAI', 'OpenCode Go', 'OpenCode Zen', 'Other'];
+const GROUP_ORDER = ['Anthropic', 'OpenAI', 'OpenCode Go', 'OpenCode Zen', 'Antigravity', 'Other'];
 const ANTHROPIC = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 
 // Provider group for the legend, from the server's provider name.
@@ -74,6 +74,7 @@ export function providerGroup(model, providers) {
   const raw = String((providers && providers[model]) || '').toLowerCase();
   if (raw) {
     if (raw === 'anthropic') return 'Anthropic';
+    if (raw === 'antigravity') return 'Antigravity';
     if (raw.includes('openai') || raw.includes('codex')) return 'OpenAI';
     if (raw.includes('opencode')) return raw.includes('zen') ? 'OpenCode Zen' : 'OpenCode Go';
     return 'Other';

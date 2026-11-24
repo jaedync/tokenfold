@@ -3720,7 +3720,7 @@ const mPricing = D.model_pricing || {};
 const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
   const body = document.getElementById('pricingBody');
   if (!body) return;
-  function fP(v){ return fC(v); }
+  function fP(v){ return v == null ? '&mdash;' : fC(v); }
   var _rows = [];
   pricingModels.forEach(name => {
     const p = mPricing[name];
@@ -5930,6 +5930,9 @@ function initRateLimits(){
   // implied capacity (server-aligned when it sends one) only for a current window.
   function providerWindowStats(win, pct, state) {
     if(state === 'expired' || state === 'invalid') return [];
+    if(state === 'current' && typeof win.implied_window_usd === 'number') {
+      return [{value:'~' + fC(win.implied_window_usd), label:'est. API-equivalent capacity'}];
+    }
     var stats = budgetStats(win.window_cost, pct);
     if(!stats.length) return stats;
     stats[0].label = 'API-equivalent \u00b7 this window';
@@ -5948,9 +5951,9 @@ function initRateLimits(){
     view = view || {};
     var memory = view.memory || { providers: {} };
     var nowSeconds = Date.now() / 1000, nowMs = Date.now();
-    var names = { 'codex': 'Codex', 'opencode-go': 'OpenCode Go',
-      'opencode-zen': 'OpenCode Zen' };
-    var order = ['codex', 'opencode-go', 'opencode-zen'];
+    var names = { 'codex': 'Codex', 'opencode-go': 'OpenCode Go', 'opencode-zen': 'OpenCode Zen',
+      'antigravity-gemini': 'Antigravity Gemini', 'antigravity-claude-gpt': 'Antigravity Claude/GPT' };
+    var order = Object.keys(names);
     var html = '';
     for(var pi = 0; pi < order.length; pi++) {
       var key = order[pi], provider = providers[key];

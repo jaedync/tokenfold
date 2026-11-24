@@ -251,10 +251,11 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
     earliest_day = min(days)
     prev_day = (datetime.strptime(earliest_day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Get sessions (for this account) that have events on target days
+    # Antigravity model counters do not measure prompt or tool timing.
     target_sessions = conn.execute(
         f"SELECT DISTINCT session_id FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL AND type IN ('user','assistant') "
+        f"AND source_client != 'antigravity' "
         f"AND day IN ({placeholders}) AND {activity} {acct_filter}",
         days + [account],
     ).fetchall()
@@ -284,7 +285,7 @@ def _accumulate(conn, days: list[str], placeholders: str, account: str) -> dict:
         f"has_tool_use, has_tool_result "
         f"FROM events "
         f"WHERE is_sidechain=0 AND agent_id IS NULL "
-        f"AND type IN ('user','assistant') "
+        f"AND type IN ('user','assistant') AND source_client != 'antigravity' "
         f"AND day IN ({placeholders}) AND {activity} {acct_filter} "
         f"ORDER BY session_id, ts_epoch",
         days + [account],

@@ -46,6 +46,8 @@ Claude Code CLI -> ~/.claude/projects/**/*.jsonl
 
 `/api/ingest/pi` requires `X-API-Key`, a dotfleet `work`/`personal` account class, and bounded, typed, privacy-scrubbed events. The class maps to separate synthetic rollup identities so work and personal Pi usage cannot merge. Pi costs use reported component/total fields and group by provider/model. `/api/usage` remains Anthropic OAuth quota ingestion only; Pi data never enters that path.
 
+`client/antigravity-push.py` sends completed model steps to `/api/ingest/antigravity`. The route stores personal usage and deduplicates by conversation ID and step number. It prices uncached input and cache reads separately. The reporter sends quota from `agy-quota/latest.json` to `/api/provider-usage`. The Gemini capacity comes from that calibration, not the Claude fit in `app/limit_family.py`.
+
 ### Key Modules
 
 | Module | Purpose |

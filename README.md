@@ -66,6 +66,35 @@ launchctl load ~/Library/LaunchAgents/com.tokenfold.push.plist
 tail -f /tmp/tokenfold-push.log
 ```
 
+### Antigravity reporter (optional)
+
+Install this reporter only on a personal machine that runs Antigravity. It uses Python 3.9 or later and no extra packages.
+
+The reporter sends model IDs, conversation IDs, step numbers, times, and token counts. It does not send prompts, replies, tool arguments, or paths.
+
+The reporter reads `agy-quota/latest.json` from `$XDG_STATE_HOME` or `~/.local/state`. If set, `AGY_QUOTA_STATE_DIR` selects the folder that contains `latest.json`. Keep `agy-quota.timer` active to update this file. The reporter does not run `agy`.
+
+Configure `TOKENFOLD_URL` and `TOKENFOLD_API_KEY` or use the existing files below. The URL must use HTTPS unless it points to loopback.
+
+| Setting | File fallback |
+|---------|---------------|
+| `TOKENFOLD_URL` | `~/.config/notify-relay-url` |
+| `TOKENFOLD_API_KEY` | `~/.config/tokenfold-api-key`, then `~/.config/notify-relay-token` |
+
+On Linux with systemd, install the reporter and its user timer after the server supports Antigravity ingest:
+
+```sh
+install -d ~/.local/bin ~/.config/systemd/user
+install -m 755 client/antigravity-push.py ~/.local/bin/tokenfold-antigravity-push.py
+install -m 644 client/systemd/tokenfold-antigravity.service client/systemd/tokenfold-antigravity.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tokenfold-antigravity.timer
+```
+
+Use `journalctl --user -u tokenfold-antigravity.service` to check the reporter. Do not add a second cron job.
+
+In the personal scope, see **All windows** on **Runway** for the Antigravity limits. Gemini shows an estimated API-equivalent capacity when the poller has a calibration. Claude/GPT shows percentages only. See **Ledger** for recorded spend at list price.
+
 ### Client Environment Variables
 
 | Variable | Default | Description |

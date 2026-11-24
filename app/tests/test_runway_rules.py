@@ -160,6 +160,34 @@ class CalmBindingTest(unittest.TestCase):
         self.assertEqual(binding(ws), "opencode-go:weekly")
 
 
+class AntigravityBindingTest(unittest.TestCase):
+    """Antigravity quotas limit agy jobs only, not the owner's main work
+    (review M3, owner answer 1221): they never take the hero."""
+
+    def _agy(self, id_, provider, **kw):
+        return {**_w(id_, **kw), "provider": provider}
+
+    def test_antigravity_long_windows_never_bind(self):
+        ws = [self._agy("antigravity-gemini:seven_day", "antigravity-gemini",
+                        pct=99.0, projected=150.0, reaches=NOW + H, state="above"),
+              self._agy("antigravity-claude-gpt:seven_day",
+                        "antigravity-claude-gpt", pct=98.0)]
+        self.assertIsNone(binding(ws, NOW))
+
+    def test_antigravity_does_not_take_the_hero_from_a_calm_main_limit(self):
+        ws = [_w("claude:seven_day", pct=9.0, state="too_early"),
+              self._agy("antigravity-gemini:seven_day", "antigravity-gemini",
+                        pct=99.0, projected=150.0, reaches=NOW + H,
+                        state="above")]
+        self.assertEqual(binding(ws, NOW), "claude:seven_day")
+
+    def test_other_providers_still_bind(self):
+        ws = [self._agy("codex:primary", "codex", pct=99.0),
+              self._agy("antigravity-gemini:seven_day", "antigravity-gemini",
+                        pct=99.0)]
+        self.assertEqual(binding(ws, NOW), "codex:primary")
+
+
 class WaitableTest(unittest.TestCase):
     def test_short_window_resetting_within_an_hour(self):
         self.assertTrue(waitable(_w("fh", kind="short", resets_in=59 * 60), NOW))

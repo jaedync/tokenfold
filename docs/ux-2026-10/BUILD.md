@@ -93,6 +93,9 @@ account class where the session's events say so; say in the code what is not fil
   (≤ 1 day, e.g. 5 h) never bind; `waitable` = short window that resets within 60 min, or a
   long window whose reset comes within 60 min of its 100% time (pace `reaches_100_epoch`,
   else `tight_epoch`).
+- Owner answer 1221 (2026-11-24): Antigravity windows never bind. Their quota limits only agy
+  jobs, not the owner's main work. They stay in `windows` ("All windows"), and a pin still
+  selects one in the browser (`heroId` checks the pin first).
 - `verdict`: `runs_out` when `reaches_100_epoch` < `resets_at`; `tight` when `tight_epoch` is set;
   `too_early` when pace says so; else `clear`.
 - Work scope: `windows` holds the monthly billing meter as one `kind: "month"` window and

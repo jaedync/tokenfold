@@ -205,11 +205,13 @@ def accumulate_activity(rows) -> dict:
     out: dict = {}
     idle = IDLE_THRESHOLD_S
     for key, group in groupby(rows, key=itemgetter(0, 1)):
-        _sid, _aid, start, prompts = next(group)
+        sid, _aid, start, prompts = next(group)
+        # The Antigravity reporter sends model counters, not prompt or tool timing.
+        measure_active = not (sid or "").startswith("antigravity:")
         prev, active, prompts = start, 0.0, prompts or 0
         for _s, _a, ts, prompt in group:
             gap = ts - prev
-            if 0 < gap < idle:
+            if measure_active and 0 < gap < idle:
                 active += gap
             prev = ts
             if prompt:

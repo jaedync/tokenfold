@@ -9,13 +9,14 @@ import math
 from datetime import datetime, timezone
 
 from .limit_windows import _iso_to_epoch
+from .provider_usage import ANTIGRAVITY_PROVIDERS
 from .quota_freshness import QUOTA_STALE_AFTER_S
 from .runway_rules import kind_for, usd_left, usd_per_point
 from .usage_pace import FIVE_HOUR_S, WEEK_S
 
 PACE_KEYS = ("pace_state", "expected_pct", "projected_pct",
              "reaches_100_epoch", "elapsed_fraction")
-PROVIDER_LABELS = {"codex": "Codex", "opencode-go": "OpenCode Go"}
+PROVIDER_LABELS = {"codex": "Codex", "opencode-go": "OpenCode Go", **ANTIGRAVITY_PROVIDERS}
 CLAUDE_LABELS = {"seven_day": "7-day", "five_hour": "5-hour"}
 # monthly_budget speaks under/on/over; the runway speaks usage_pace's words.
 MONTH_PACE = {"under": "below", "on": "on", "over": "above"}
@@ -104,8 +105,7 @@ def claude_windows(oauth, now):
 
 
 def provider_windows(providers, now):
-    """Codex and OpenCode Go windows. Provider windows have no granted
-    resets, so the nominal start (reset - length) is their real start."""
+    """Subscription provider windows with nominal bounds (reset - length)."""
     out = []
     for provider, label in PROVIDER_LABELS.items():
         block = (providers or {}).get(provider) or {}
@@ -117,15 +117,19 @@ def provider_windows(providers, now):
             if start is None and _num(resets_at) and _num(window_s):
                 start = resets_at - window_s
             spent = w.get("window_cost")
-            rate = usd_per_point(spent, w.get("pct"))
-            out.append(_window(
+            capacity = w.get("implied_window_usd")
+            rate = capacity / 100 if capacity is not None else usd_per_point(spent, w.get("pct"))
+            window = _window(
                 id_=f"{provider}:{w.get('key')}", provider=provider,
                 key=w.get("key"), label=f"{label} · {w.get('label')}",
                 kind=kind_for(window_s), window_s=window_s, pct=w.get("pct"),
                 resets_at=resets_at, window_start=_floor_minute(start),
                 observed=observed, now=now, pace=pace_subset(w.get("pace")),
                 usd_spent=spent, per_point=rate,
-                left=usd_left(rate, w.get("pct"))))
+                left=usd_left(rate, w.get("pct")))
+            if capacity is not None:
+                window["implied_window_usd"] = capacity
+            out.append(window)
     return out
 
 

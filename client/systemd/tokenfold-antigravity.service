@@ -1,0 +1,10 @@
+[Unit]
+Description=Send Antigravity usage and quotas to Tokenfold
+After=agy-quota.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/bin/tokenfold-antigravity-push.py
+TimeoutStartSec=4min
+NoNewPrivileges=yes
+UMask=0077
