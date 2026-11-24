@@ -15,7 +15,8 @@ push = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(push)
 CID = "fbdad862-c5cd-4255-9849-ef2bcfec60b9"
 OTHER = "b948ea48-ec36-4ac1-80f2-b2156c58ae2b"
-CLIENT_DIR = Path(__file__).resolve().parent
+# Temp folders go under tempfile.gettempdir(), not next to this file: an
+# interrupted run must not leave them in the repository (review Low).
 
 
 def step(index=1, **overrides):
@@ -99,7 +100,7 @@ class QuotaTest(unittest.TestCase):
                 raise push.PushError("simulated failure")
             return {"status": "ok", "providers": [s["provider"] for s in body["limits"]]}
 
-        with tempfile.TemporaryDirectory(dir=CLIENT_DIR) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / CID / push.TRANSCRIPT
             path.parent.mkdir(parents=True)
@@ -150,7 +151,7 @@ class HttpTest(unittest.TestCase):
 
 class CursorTest(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(dir=CLIENT_DIR)
+        temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.state_path = self.root / "cursor.json"
