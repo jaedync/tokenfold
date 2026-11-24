@@ -115,7 +115,7 @@ def _parse_ts(ts_str: str) -> tuple[datetime, float, str] | None:
         epoch = ts.timestamp()
         day = ts.astimezone(TZ).strftime("%Y-%m-%d")
         return ts, epoch, day
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 

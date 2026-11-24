@@ -217,8 +217,8 @@ def _fresh_windows(snapshot, provider, now, conn, scope, include_costs):
             # recorded monthly spend or a division by the current percentage.
             size = raw.get("implied_window_usd")
             if (include_costs and provider == "antigravity-gemini"
-                    and _finite(size) and size > 0 and _finite(reset) and reset > now
-                    and fresh_observation(observed, now)):
+                    and _finite(size) and size > 0 and _finite(reset)
+                    and reset // 60 * 60 > now and fresh_observation(observed, now)):
                 window["implied_window_usd"] = size
             result.append(window)
             continue

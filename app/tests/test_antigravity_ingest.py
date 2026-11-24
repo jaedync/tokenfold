@@ -64,6 +64,7 @@ class AntigravityIngestTest(TempDBTestCase):
             {"content": "reject extra keys"}, {"cost": 20}, {"input_tokens": True},
             {"output_tokens": -1}, {"model": "a model with spaces"},
             {"timestamp": "2026-11-24"}, {"timestamp": "2026-11-24T05:58:00"},
+            {"timestamp": "0001-01-01T00:00:00+15:00"},
             {"conversation_id": "not a UUID"}, {"step_index": "1"},
         ):
             with self.subTest(overrides=overrides):
@@ -73,7 +74,6 @@ class AntigravityIngestTest(TempDBTestCase):
     def test_transcript_to_daily_summary_ledger_and_quota_isolation(self):
         from app.aggregator import _build_dashboard_data_inner
         from app.cost_windows import compute_window_cost
-        from app.ledger_query import activity, billable_groups, group_cost
 
         spec = importlib.util.spec_from_file_location("agy_push", ROOT / "client/antigravity-push.py")
         client = importlib.util.module_from_spec(spec)
@@ -128,13 +128,29 @@ class AntigravityIngestTest(TempDBTestCase):
         unknown = breakdown["Antigravity / claude-opus-4-6"]
         self.assertTrue(unknown["unpriced"])
         self.assertEqual(unknown["total_tokens"], 200_090)
+        prices = view["model_pricing"]
+        self.assertEqual(prices["Antigravity / gemini-4-neon-xhigh"], {
+            "input": 3.0, "output": 15.0, "cache_read": 0.15,
+            "cache_write": None, "cache_write_1h": None,
+        })
+        self.assertTrue(all(rate is None for rate in prices["Antigravity / claude-opus-4-6"].values()))
 
         day = datetime(2026, 11, 24, tzinfo=timezone.utc).timestamp()
         bounds = (day, day + 86400)
-        groups = billable_groups(self.conn, self._config.PERSONAL_PRED, *bounds)
-        self.assertAlmostEqual(sum(group_cost(g, False) for g in groups), 3.9)
-        work = activity(self.conn, [raw[0]["session_id"]], *bounds)
-        self.assertEqual(work[raw[0]["session_id"], None]["active_s"], 0)
+        ledger = self.client().get("/api/ledger", params={
+            "scope": "personal", "from": bounds[0], "to": bounds[1],
+        })
+        self.assertEqual(ledger.status_code, 200, ledger.text)
+        ledger = ledger.json()
+        self.assertAlmostEqual(ledger["totals"]["cost_usd"], 3.9)
+        self.assertEqual(ledger["totals"]["active_s"], 0)
+        self.assertEqual(ledger["model_providers"]["Antigravity / gemini-4-neon-xhigh"], "Antigravity")
+        daily = {d["day"]: d["by_model"] for d in ledger["daily"] if d["by_model"]}
+        self.assertEqual(daily.keys(), days.keys())
+        for d, models in daily.items():
+            self.assertEqual(models.keys(), {m for m, cost in days[d].items() if cost > 0})
+            for model, cost in models.items():
+                self.assertAlmostEqual(cost, days[d][model])
         self.assertEqual(compute_window_cost(self.conn, *bounds, scope="enterprise"), 0)
         self.assertEqual(compute_window_cost(
             self.conn, *bounds, scope="personal", anthropic_only=True), 0)

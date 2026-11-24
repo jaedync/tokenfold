@@ -3720,7 +3720,7 @@ const mPricing = D.model_pricing || {};
 const pricingModels = Object.keys(mPricing).slice().sort((a,b)=>modelSort(a,b));
   const body = document.getElementById('pricingBody');
   if (!body) return;
-  function fP(v){ return fC(v); }
+  function fP(v){ return v == null ? '&mdash;' : fC(v); }
   var _rows = [];
   pricingModels.forEach(name => {
     const p = mPricing[name];

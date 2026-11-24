@@ -479,6 +479,15 @@ def _summary_pricing_name(identity: tuple[str, str]) -> str:
     return f"{provider} / {model}" if provider == ANTIGRAVITY_DISPLAY else model
 
 
+def _summary_price_table_row(identity: tuple[str, str]) -> dict:
+    inp, out, cw, cr = get_pricing(_summary_pricing_name(identity))
+    if identity[0] == ANTIGRAVITY_DISPLAY:
+        return {"input": inp or None, "output": out or None, "cache_read": cr or None,
+                "cache_write": None, "cache_write_1h": None}
+    return {"input": inp, "output": out, "cache_read": cr,
+            "cache_write": cw, "cache_write_1h": round(inp * 2.0, 4)}
+
+
 def _conditional_model_names(
         identities: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
     """Show providers for name collisions and the separate Antigravity price list."""
@@ -1659,11 +1668,8 @@ def _build_dashboard_data_from_conn(scope, conn) -> dict:
             for identity in model_stats
         },
         "model_pricing": {
-            display_names[identity]: {
-                "input": p[0], "output": p[1], "cache_write": p[2],
-                "cache_write_1h": round(p[0] * 2.0, 4), "cache_read": p[3]
-            }
-            for identity in model_stats for p in [get_pricing(_summary_pricing_name(identity))]
+            display_names[identity]: _summary_price_table_row(identity)
+            for identity in model_stats
         },
         "cutoff_date": cutoff_date,
         "generation_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),

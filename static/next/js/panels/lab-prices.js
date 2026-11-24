@@ -1,6 +1,6 @@
 // Price table: the list prices per million tokens that Tokenfold uses now to
-// price your use (/api/stats model_pricing). Models whose provider reports
-// the cost (Pi) or that run locally have no list price and are only counted.
+// price your use (/api/stats model_pricing). Only models with a known list
+// price have rate rows here.
 import { h, patch, panelHead } from '../dom.js';
 import * as f from '../format.js';
 import { dataOf, nowFrom } from '../select.js';
@@ -31,7 +31,7 @@ export default {
   mount(el) {
     const head = panelHead('Price table');
     el.setAttribute('aria-labelledby', head.id);
-    const lead = h('p', { class: 'panel-sub hl-lead' }, 'List prices in US dollars per million tokens, as Tokenfold uses them now to price your use. A 1-hour cache write costs 2× the input price.');
+    const lead = h('p', { class: 'panel-sub hl-lead' }, 'List prices in US dollars per million tokens.');
     const state = h('div');
     const body = h('div');
     el.append(head.el, lead, state, body);
@@ -57,7 +57,7 @@ export default {
           h('tbody', null, priced.map(({ name, p, fam }) => h('tr', { 'data-key': name },
             h('th', { scope: 'row' }, h('span', { class: 'swatch', style: { background: familyColor(fam) } }), name),
             COLS.map(([k]) => h('td', { class: k === 'output' ? 'r strong' : 'r' }, money(p[k])))))))),
-        unpriced ? h('p', { class: 'hl-note' }, `${unpriced} more ${unpriced === 1 ? 'model has' : 'models have'} no list price here: the provider reports the cost (Pi), or the model runs locally.`) : null);
+        unpriced ? h('p', { class: 'hl-note' }, `No list price for ${unpriced} more ${unpriced === 1 ? 'model' : 'models'}.`) : null);
     }
     return { update };
   },

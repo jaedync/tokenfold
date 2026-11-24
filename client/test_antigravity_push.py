@@ -4,7 +4,9 @@ import json
 import os
 import random
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +114,40 @@ class QuotaTest(unittest.TestCase):
         self.assertEqual(calls[-1][1]["machine"], "test-host")
 
 
+class HttpTest(unittest.TestCase):
+    def test_keyed_ingest_does_not_follow_redirects(self):
+        hits = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append((self.command, self.path))
+                self.send_response(302)
+                self.send_header("Location", "/another-path")
+                self.end_headers()
+
+            def do_GET(self):
+                hits.append((self.command, self.path))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"accepted":1,"duplicates":0}')
+
+            def log_message(self, *_):
+                pass  # Do not print HTTP requests in this test.
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                endpoint = "/api/ingest/antigravity"
+                with patch.dict(os.environ, {"no_proxy": "127.0.0.1"}):
+                    with self.assertRaisesRegex(push.PushError, "HTTP 302"):
+                        push._post(f"http://127.0.0.1:{server.server_port}", "test-key", endpoint, {})
+                self.assertEqual(hits, [("POST", endpoint)])
+            finally:
+                server.shutdown()
+                thread.join(5)
+
+
 class CursorTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(dir=CLIENT_DIR)
@@ -181,6 +217,16 @@ class CursorTest(unittest.TestCase):
         self.sync()
         self.assertEqual(self.deliveries, [])
         path.write_bytes(line(1, status="DONE"))
+        self.sync()
+        self.assertEqual(self.deliveries, [(CID, 1)])
+
+    def test_bad_ingest_ack_preserves_replay(self):
+        path = self.path(CID)
+        path.write_bytes(line(1))
+        with self.assertRaises(push.PushError):
+            push.sync_spend(self.root, self.state_path,
+                            lambda *_: {"accepted": 0, "duplicates": 0}, "test-host")
+        self.state = push.load_cursors(self.state_path)
         self.sync()
         self.assertEqual(self.deliveries, [(CID, 1)])
 
